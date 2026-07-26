@@ -1,0 +1,45 @@
+[build-system]
+requires = ["hatchling>=1.27"]
+build-backend = "hatchling.build"
+
+[project]
+name = "qasr"
+version = "0.2.0"
+description = "Cohere Conformer and Qwen3-ASR hybrid training pipeline with EAGLE-2 speculative decoding"
+readme = "README.md"
+requires-python = ">=3.10"
+dependencies = [
+    "accelerate>=1.10.1",
+    "huggingface-hub",
+    "librosa>=0.11.0",
+    "numpy>=2.0.0",
+    "protobuf>=5.29.0",
+    "pyyaml>=6.0.2",
+    "scipy>=1.14.0",
+    "sentencepiece>=0.2.0",
+    "soundfile>=0.13.1",
+    "torch==2.10.0",
+    "tqdm>=4.66.0",
+    "transformers>=5.14.1,<5.15",
+    "safetensors>=0.5.0",
+    "wandb>=0.19.0",
+]
+
+[project.optional-dependencies]
+deepspeed = ["deepspeed>=0.18.0"]
+dev = ["pytest>=8.3.0"]
+streaming = ["fastapi>=0.115.0", "uvicorn[standard]>=0.30.0"]
+
+[project.scripts]
+qasr-train = "qasr.train:main"
+qasr-train-eagle = "qasr.train_eagle:main"
+qasr-convert = "qasr.convert_weights:main"
+qasr-stream = "qasr.server:main"
+qasr-validate = "qasr.validate_data:main"
+qasr-evaluate = "qasr.evaluate:main"
+
+[tool.hatch.build.targets.wheel]
+packages = ["src/qasr"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]

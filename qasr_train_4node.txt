@@ -1,0 +1,259 @@
+===============================================================================
+ QASR TRAINING: 4 Node x 8 GPU (32 GPUs) - SLURM Multi-Node
+===============================================================================
+
+-------------------
+ OPTION A: SLURM (Recommended)
+-------------------
+
+# Create logs directory
+mkdir -p logs
+
+# 1. Projector stage (5,000 steps, ~2-4 hours)
+sbatch scripts/qasr_train_4node.slurm
+
+# 2. Smoke test first (validates 2 optimizer updates)
+sbatch scripts/qasr_train_4node.slurm --smoke-test
+
+# 3. Full fine-tuning stage (500,000 steps)
+sbatch --export=ALL,CONFIG=configs/train_full_4node.yaml scripts/qasr_train_4node.slurm
+
+# 4. Resume full stage from checkpoint
+sbatch --export=ALL,CONFIG=configs/train_full_4node.yaml scripts/qasr_train_4node.slurm --resume-from-checkpoint /lustrefs/shared/shahin.konadath/workspace/expmt/qasr/full/checkpoint-50000
+
+# Monitor job
+squeue -u $USER
+tail -f logs/qasr-train_<JOBID>.out
+
+
+-------------------
+ OPTION B: MANUAL (per-node screen sessions)
+-------------------
+
+[0]: Node 0 (Master)
+
+conda deactivate
+conda activate /lustrefs/shared/shahin.konadath/workspace/conda/envs/qasr
+cd /lustrefs/shared/shahin.konadath/workspace/train/qasr
+clear
+
+clear
+pkill -9 python3
+export CUDA_VISIBLE_DEVICES=0,1,2,3,4,5,6,7
+export HF_HOME=/lustrefs/shared/shahin.konadath/workspace/train/qasr/.cache
+export TOKENIZERS_PARALLELISM=false
+export OMP_NUM_THREADS=1
+export NCCL_DEBUG=WARN
+torchrun \
+  --nnodes=4 \
+  --nproc_per_node=8 \
+  --node_rank=0 \
+  --master_addr="inception-H100-hpc-008" \
+  --master_port=29500 \
+  --rdzv_backend=static \
+  --rdzv_endpoint="inception-H100-hpc-008:29500" \
+  --rdzv_conf=timeout=7200 \
+  train.py \
+    --config configs/train_projector_4node.yaml
+
+
+[1]: Node 1
+
+conda deactivate
+conda activate /lustrefs/shared/shahin.konadath/workspace/conda/envs/qasr
+cd /lustrefs/shared/shahin.konadath/workspace/train/qasr
+clear
+
+clear
+pkill -9 python3
+export CUDA_VISIBLE_DEVICES=0,1,2,3,4,5,6,7
+export HF_HOME=/lustrefs/shared/shahin.konadath/workspace/train/qasr/.cache
+export TOKENIZERS_PARALLELISM=false
+export OMP_NUM_THREADS=1
+export NCCL_DEBUG=WARN
+torchrun \
+  --nnodes=4 \
+  --nproc_per_node=8 \
+  --node_rank=1 \
+  --master_addr="inception-H100-hpc-008" \
+  --master_port=29500 \
+  --rdzv_backend=static \
+  --rdzv_endpoint="inception-H100-hpc-008:29500" \
+  --rdzv_conf=timeout=7200 \
+  train.py \
+    --config configs/train_projector_4node.yaml
+
+
+[2]: Node 2
+
+conda deactivate
+conda activate /lustrefs/shared/shahin.konadath/workspace/conda/envs/qasr
+cd /lustrefs/shared/shahin.konadath/workspace/train/qasr
+clear
+
+clear
+pkill -9 python3
+export CUDA_VISIBLE_DEVICES=0,1,2,3,4,5,6,7
+export HF_HOME=/lustrefs/shared/shahin.konadath/workspace/train/qasr/.cache
+export TOKENIZERS_PARALLELISM=false
+export OMP_NUM_THREADS=1
+export NCCL_DEBUG=WARN
+torchrun \
+  --nnodes=4 \
+  --nproc_per_node=8 \
+  --node_rank=2 \
+  --master_addr="inception-H100-hpc-008" \
+  --master_port=29500 \
+  --rdzv_backend=static \
+  --rdzv_endpoint="inception-H100-hpc-008:29500" \
+  --rdzv_conf=timeout=7200 \
+  train.py \
+    --config configs/train_projector_4node.yaml
+
+
+[3]: Node 3
+
+conda deactivate
+conda activate /lustrefs/shared/shahin.konadath/workspace/conda/envs/qasr
+cd /lustrefs/shared/shahin.konadath/workspace/train/qasr
+clear
+
+clear
+pkill -9 python3
+export CUDA_VISIBLE_DEVICES=0,1,2,3,4,5,6,7
+export HF_HOME=/lustrefs/shared/shahin.konadath/workspace/train/qasr/.cache
+export TOKENIZERS_PARALLELISM=false
+export OMP_NUM_THREADS=1
+export NCCL_DEBUG=WARN
+torchrun \
+  --nnodes=4 \
+  --nproc_per_node=8 \
+  --node_rank=3 \
+  --master_addr="inception-H100-hpc-008" \
+  --master_port=29500 \
+  --rdzv_backend=static \
+  --rdzv_endpoint="inception-H100-hpc-008:29500" \
+  --rdzv_conf=timeout=7200 \
+  train.py \
+    --config configs/train_projector_4node.yaml
+
+
+-------------------
+ FULL STAGE (after projector completes)
+-------------------
+
+# Replace --config with configs/train_full_4node.yaml on all nodes.
+# The full config loads from projector/checkpoint-5000 automatically.
+
+# Node 0 example:
+torchrun \
+  --nnodes=4 \
+  --nproc_per_node=8 \
+  --node_rank=0 \
+  --master_addr="inception-H100-hpc-008" \
+  --master_port=29500 \
+  --rdzv_backend=static \
+  --rdzv_endpoint="inception-H100-hpc-008:29500" \
+  --rdzv_conf=timeout=7200 \
+  train.py \
+    --config configs/train_full_4node.yaml
+
+
+-------------------
+ SMOKE TEST (validate before full run)
+-------------------
+
+# SLURM:
+sbatch scripts/qasr_train_4node.slurm --smoke-test
+
+# Manual (add --smoke-test to train.py args on all nodes):
+torchrun \
+  --nnodes=4 \
+  --nproc_per_node=8 \
+  --node_rank=0 \
+  --master_addr="inception-H100-hpc-008" \
+  --master_port=29500 \
+  --rdzv_backend=static \
+  --rdzv_endpoint="inception-H100-hpc-008:29500" \
+  --rdzv_conf=timeout=7200 \
+  train.py \
+    --config configs/train_projector_4node.yaml \
+    --smoke-test
+
+
+-------------------
+ NOTES
+-------------------
+
+- Global batch size: 32 GPUs x 4 per_device x 1 accum = 128
+- Projector stage: 5,000 steps, LR 1e-4, encoder+LLM frozen
+- Full stage: 500,000 steps, LR 2e-5, all parameters trainable
+- DeepSpeed ZeRO-3, BF16, TF32, SDPA attention, gradient checkpointing
+- Augmentation: SpecAugment + SpeedPerturb + NoiseInjection + CodecAugment (p=0.37)
+- Master node hostname: update "inception-H100-hpc-008" to your actual master
+- All nodes must share the same filesystem (lustrefs)
+- Ensure NCCL InfiniBand is available for inter-node communication
+- Set NCCL_DEBUG=INFO for debugging connectivity issues
+
+
+================================================================================
+PHASE 3: EAGLE-2 SPECULATIVE DECODING HEAD (Optional - Inference Acceleration)
+================================================================================
+
+After Phase 2 (full fine-tuning) completes, train the EAGLE-2 draft head for
+2-3x faster inference. This trains only ~8M parameters on a frozen QASR
+checkpoint using KL-divergence against the target model's logits.
+
+Expected time: 30-60 minutes on 8 GPUs (single node).
+Expected speedup: 2-3x decode throughput, ~200ms faster partials in streaming.
+
+--- Option A: SLURM (single node) ---
+
+    sbatch scripts/qasr_train_eagle.slurm
+
+--- Option B: Manual (single node, 8 GPUs) ---
+
+    PYTHONPATH=src torchrun \
+      --nnodes=1 \
+      --nproc_per_node=8 \
+      --node_rank=0 \
+      --master_addr="127.0.0.1" \
+      --master_port=29501 \
+      --rdzv_backend=static \
+      train_eagle.py --config configs/train_eagle_4node.yaml
+
+--- EAGLE Training Parameters ---
+
+    Model:          frozen QASR checkpoint from Phase 2
+    EAGLE head:     FC(2048,2048) + SiLU + LayerNorm + residual + FC(2048,151936)
+    Parameters:     ~8M (vs 1.7B for full model)
+    Steps:          2,000
+    Batch size:     8 per GPU × 8 GPUs = 64 global
+    Learning rate:  3e-4 (cosine, 100 warmup)
+    Loss:           KL-divergence (draft || target logits)
+    Output:         /lustrefs/shared/shahin.konadath/workspace/expmt/qasr/eagle
+
+--- Using EAGLE for Inference ---
+
+    # CLI inference with speculative decoding:
+    PYTHONPATH=src python inference.py audio.wav \
+      --model /lustrefs/shared/shahin.konadath/workspace/expmt/qasr/full \
+      --eagle /lustrefs/shared/shahin.konadath/workspace/expmt/qasr/eagle \
+      --num-draft-tokens 5
+
+    # Streaming server with speculative decoding:
+    PYTHONPATH=src python -m qasr.server \
+      --model /lustrefs/shared/shahin.konadath/workspace/expmt/qasr/full \
+      --eagle /lustrefs/shared/shahin.konadath/workspace/expmt/qasr/eagle \
+      --port 8765
+
+--- Full Training Pipeline Summary ---
+
+    Phase 1: Projector    → 5,000 steps   → projector/checkpoint-5000
+    Phase 2: Full         → 500,000 steps → full/checkpoint-500000
+    Phase 3: EAGLE head   → 2,000 steps   → eagle/eagle_head.pt
+
+    Total GPU-hours: ~2,500 (Phase 1+2) + ~10 (Phase 3)
+    Inference speedup from EAGLE: 2-3x decode throughput
+
+================================================================================

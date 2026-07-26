@@ -1,0 +1,240 @@
+================================================================================
+ QASR 1.7B TRAINING — 4 NODE × 8 GPU MANUAL LAUNCH
+================================================================================
+
+ Master node: inception-H100-hpc-001  (change to your first node hostname)
+ Nodes:       inception-H100-hpc-001, -002, -003, -004
+ Port:        29500
+
+ IMPORTANT:
+   - Start ALL 4 nodes within the rdzv timeout (7200s = 2 hours)
+   - Node 0 (master) MUST be started first or simultaneously
+   - All nodes must see the same shared filesystem paths
+   - Run `hostname` on each node to confirm the correct master_addr
+
+================================================================================
+ PHASE 1: PROJECTOR TRAINING (5,000 steps, ~3 hours)
+================================================================================
+
+--- [NODE 0] Master --- screen -S qasr-node0
+
+conda deactivate
+conda activate /lustrefs/shared/shahin.konadath/workspace/conda/envs/qasr
+cd /lustrefs/shared/shahin.konadath/workspace/train/qasr
+clear
+
+pkill -9 python3
+export CUDA_VISIBLE_DEVICES=0,1,2,3,4,5,6,7
+export HF_HOME=/lustrefs/shared/shahin.konadath/workspace/train/qasr/.cache
+export PYTHONPATH=$(pwd)/src
+export TOKENIZERS_PARALLELISM=false
+export OMP_NUM_THREADS=1
+export NCCL_DEBUG=WARN
+export NCCL_IB_DISABLE=0
+export NCCL_NET_GDR_LEVEL=2
+
+torchrun \
+  --nnodes=4 \
+  --nproc_per_node=8 \
+  --node_rank=0 \
+  --master_addr="inception-H100-hpc-001" \
+  --master_port=29500 \
+  --rdzv_backend=static \
+  --rdzv_endpoint="inception-H100-hpc-001:29500" \
+  --rdzv_conf=timeout=7200 \
+  train.py --config configs/train_projector_4node.yaml
+
+
+--- [NODE 1] --- screen -S qasr-node1
+
+conda deactivate
+conda activate /lustrefs/shared/shahin.konadath/workspace/conda/envs/qasr
+cd /lustrefs/shared/shahin.konadath/workspace/train/qasr
+clear
+
+pkill -9 python3
+export CUDA_VISIBLE_DEVICES=0,1,2,3,4,5,6,7
+export HF_HOME=/lustrefs/shared/shahin.konadath/workspace/train/qasr/.cache
+export PYTHONPATH=$(pwd)/src
+export TOKENIZERS_PARALLELISM=false
+export OMP_NUM_THREADS=1
+export NCCL_DEBUG=WARN
+export NCCL_IB_DISABLE=0
+export NCCL_NET_GDR_LEVEL=2
+
+torchrun \
+  --nnodes=4 \
+  --nproc_per_node=8 \
+  --node_rank=1 \
+  --master_addr="inception-H100-hpc-001" \
+  --master_port=29500 \
+  --rdzv_backend=static \
+  --rdzv_endpoint="inception-H100-hpc-001:29500" \
+  --rdzv_conf=timeout=7200 \
+  train.py --config configs/train_projector_4node.yaml
+
+
+--- [NODE 2] --- screen -S qasr-node2
+
+conda deactivate
+conda activate /lustrefs/shared/shahin.konadath/workspace/conda/envs/qasr
+cd /lustrefs/shared/shahin.konadath/workspace/train/qasr
+clear
+
+pkill -9 python3
+export CUDA_VISIBLE_DEVICES=0,1,2,3,4,5,6,7
+export HF_HOME=/lustrefs/shared/shahin.konadath/workspace/train/qasr/.cache
+export PYTHONPATH=$(pwd)/src
+export TOKENIZERS_PARALLELISM=false
+export OMP_NUM_THREADS=1
+export NCCL_DEBUG=WARN
+export NCCL_IB_DISABLE=0
+export NCCL_NET_GDR_LEVEL=2
+
+torchrun \
+  --nnodes=4 \
+  --nproc_per_node=8 \
+  --node_rank=2 \
+  --master_addr="inception-H100-hpc-001" \
+  --master_port=29500 \
+  --rdzv_backend=static \
+  --rdzv_endpoint="inception-H100-hpc-001:29500" \
+  --rdzv_conf=timeout=7200 \
+  train.py --config configs/train_projector_4node.yaml
+
+
+--- [NODE 3] --- screen -S qasr-node3
+
+conda deactivate
+conda activate /lustrefs/shared/shahin.konadath/workspace/conda/envs/qasr
+cd /lustrefs/shared/shahin.konadath/workspace/train/qasr
+clear
+
+pkill -9 python3
+export CUDA_VISIBLE_DEVICES=0,1,2,3,4,5,6,7
+export HF_HOME=/lustrefs/shared/shahin.konadath/workspace/train/qasr/.cache
+export PYTHONPATH=$(pwd)/src
+export TOKENIZERS_PARALLELISM=false
+export OMP_NUM_THREADS=1
+export NCCL_DEBUG=WARN
+export NCCL_IB_DISABLE=0
+export NCCL_NET_GDR_LEVEL=2
+
+torchrun \
+  --nnodes=4 \
+  --nproc_per_node=8 \
+  --node_rank=3 \
+  --master_addr="inception-H100-hpc-001" \
+  --master_port=29500 \
+  --rdzv_backend=static \
+  --rdzv_endpoint="inception-H100-hpc-001:29500" \
+  --rdzv_conf=timeout=7200 \
+  train.py --config configs/train_projector_4node.yaml
+
+
+================================================================================
+ PHASE 2: FULL FINE-TUNING (500,000 steps, ~5 days)
+================================================================================
+
+ Same as Phase 1 but change the config on ALL nodes:
+
+   train.py --config configs/train_full_4node.yaml
+
+ To resume from a checkpoint (after crash/restart):
+
+   train.py --config configs/train_full_4node.yaml \
+     --resume-from-checkpoint /lustrefs/shared/shahin.konadath/workspace/expmt/qasr/full/checkpoint-250000
+
+
+================================================================================
+ SMOKE TEST (run FIRST to validate everything)
+================================================================================
+
+ Add --smoke-test flag on ALL nodes:
+
+   train.py --config configs/train_projector_4node.yaml --smoke-test
+
+ This runs only 2 steps + 1 eval on 256 samples. Takes ~2 minutes.
+ If this passes, the full run will work.
+
+
+================================================================================
+ PHASE 3: EAGLE HEAD (single node, ~1 hour)
+================================================================================
+
+ Run on NODE 0 only (single node, 8 GPUs):
+
+conda deactivate
+conda activate /lustrefs/shared/shahin.konadath/workspace/conda/envs/qasr
+cd /lustrefs/shared/shahin.konadath/workspace/train/qasr
+clear
+
+pkill -9 python3
+export CUDA_VISIBLE_DEVICES=0,1,2,3,4,5,6,7
+export HF_HOME=/lustrefs/shared/shahin.konadath/workspace/train/qasr/.cache
+export PYTHONPATH=$(pwd)/src
+
+torchrun \
+  --nnodes=1 \
+  --nproc_per_node=8 \
+  --node_rank=0 \
+  --master_addr="127.0.0.1" \
+  --master_port=29501 \
+  --rdzv_backend=static \
+  --rdzv_endpoint="127.0.0.1:29501" \
+  train_eagle.py --config configs/train_eagle_4node.yaml
+
+
+================================================================================
+ MONITORING & CONTROL
+================================================================================
+
+ # Attach to a screen session:
+ screen -r qasr-node0
+
+ # Detach from screen (keeps running):
+ Ctrl+A, then D
+
+ # Kill training on a node:
+ pkill -9 python3
+
+ # Watch GPU utilization:
+ watch -n 2 nvidia-smi
+
+ # Watch training loss:
+ tail -f logs/qasr-train_*.out | grep loss
+
+ # Check NCCL connectivity:
+ NCCL_DEBUG=INFO torchrun ... (set before launch for verbose NCCL logs)
+
+ # WandB monitoring:
+ wandb login
+ # Project: "qasr"
+
+================================================================================
+ TROUBLESHOOTING
+================================================================================
+
+ Problem: "Connection refused" or rendezvous timeout
+ Fix:     Ensure master node (node 0) is started first.
+          Check: nc -zv inception-H100-hpc-001 29500
+
+ Problem: "NCCL WARN Cuda failure"
+ Fix:     export CUDA_VISIBLE_DEVICES=0,1,2,3,4,5,6,7
+          Ensure no other python processes: pkill -9 python3
+
+ Problem: One node hangs, others wait
+ Fix:     Check IB links: ibstat
+          Check FS access: ls /lustrefs/shared/
+          Restart that node's torchrun
+
+ Problem: OOM on some GPUs
+ Fix:     Reduce per_device_train_batch_size in config (4 → 2)
+          Or increase gradient_accumulation_steps (1 → 2)
+
+ Problem: Loss = NaN
+ Fix:     Corrupt audio in dataset. Run data validation first:
+          python -m qasr.validate_data --config configs/train_full_4node.yaml \
+            --output-dir filtered/ --workers 64
+
+================================================================================

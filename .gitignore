@@ -1,0 +1,47 @@
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+*.egg-info/
+*.egg
+dist/
+build/
+.eggs/
+
+# Virtual environments
+.venv/
+venv/
+env/
+
+# IDE
+.idea/
+.vscode/
+.qoder/
+*.swp
+*.swo
+
+# Training artifacts
+logs/*.out
+logs/*.err
+wandb/
+*.wandb
+runs/
+checkpoints/
+
+# Model weights (too large for git)
+*.safetensors
+*.bin
+*.pt
+!configs/*.json
+
+# Caches
+.cache/
+*.cache
+.pytest_cache/
+
+# OS
+.DS_Store
+Thumbs.db
+
+# History
+.history/

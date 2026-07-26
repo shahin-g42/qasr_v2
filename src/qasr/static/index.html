@@ -1,0 +1,87 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+    <meta name="theme-color" content="#101b19">
+    <title>QASR Live Transcription</title>
+    <link rel="stylesheet" href="/static/styles.css">
+  </head>
+  <body>
+    <main class="shell">
+      <header class="masthead">
+        <a class="brand" href="/" aria-label="QASR home">
+          <span class="brand-mark" aria-hidden="true">
+            <i></i><i></i><i></i><i></i><i></i>
+          </span>
+          <span>QASR</span>
+        </a>
+        <div class="status" role="status" aria-live="polite">
+          <span id="status-dot" data-state="idle"></span>
+          <span id="status-text">Ready</span>
+        </div>
+      </header>
+
+      <section class="hero">
+        <p class="eyebrow">Realtime speech intelligence</p>
+        <h1>Your voice,<br><em>as it happens.</em></h1>
+        <p class="intro">
+          Stream your microphone directly to QASR and watch the transcript
+          resolve while you speak.
+        </p>
+      </section>
+
+      <section class="workspace" aria-label="Live transcription controls">
+        <div class="toolbar">
+          <label class="select-wrap" for="language">
+            <span>Spoken language</span>
+            <select id="language">
+              <option value="">Automatic</option>
+              <option value="ar">Arabic</option>
+              <option value="en">English</option>
+              <option value="zh">Chinese</option>
+              <option value="hi">Hindi</option>
+              <option value="ml">Malayalam</option>
+            </select>
+          </label>
+          <div class="clock" aria-label="Recording duration">
+            <span class="clock-label">Session</span>
+            <span id="timer">00:00</span>
+          </div>
+        </div>
+
+        <div class="transcript-card">
+          <div class="card-heading">
+            <span>Live transcript</span>
+            <button id="clear-button" class="text-button" type="button">Clear</button>
+          </div>
+          <div class="transcript-body">
+            <p id="placeholder">
+              Press start, allow microphone access, and begin speaking.
+            </p>
+            <p id="transcript" aria-live="polite" aria-atomic="true"></p>
+          </div>
+          <div class="card-footer">
+            <div class="level" aria-hidden="true"><span id="level-bar"></span></div>
+            <span id="timing">Results appear as you speak</span>
+          </div>
+        </div>
+
+        <div class="controls">
+          <button id="start-button" class="primary-button" type="button">
+            <span class="mic-icon" aria-hidden="true"></span>
+            Start listening
+          </button>
+          <button id="stop-button" class="stop-button" type="button" disabled>
+            <span aria-hidden="true"></span>
+            Stop &amp; finalize
+          </button>
+        </div>
+        <p class="privacy-note">
+          Audio travels only to this QASR server and is held in a bounded memory window.
+        </p>
+      </section>
+    </main>
+    <script src="/static/app.js" defer></script>
+  </body>
+</html>

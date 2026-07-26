@@ -1,0 +1,76 @@
+# EAGLE-2 draft head training configuration (8-node / 64-GPU cluster).
+# Phase 3b: proper EAGLE lookahead head. Trains only the ~8.4M parameter
+# fusion layer (fc1 4096x2048 + norm) on a frozen QASR checkpoint; the draft
+# lm_head is copied from the target model and frozen. The head is conditioned
+# on (hidden_state, next-token embedding) and distilled one position ahead, so
+# it learns genuine lookahead instead of relearning the target's lm_head.
+# Global batch = 64 GPUs x 32 = 2,048, so 10,000 steps sees ~20M utterances.
+# save_steps keeps every checkpoint so the best draft head can be selected
+# once acceptance rate is measured in the inference/eval phase.
+model_name_or_path: /lustrefs/shared/shahin.konadath/workspace/train/stt/qasr/output/full
+# Phase 3b uses a fresh dir: its head architecture (fc1 4096x2048) is not
+# load-compatible with the old output/eagle checkpoints (fc1 2048x2048).
+eagle_output_dir: /lustrefs/shared/shahin.konadath/workspace/train/stt/qasr/output/eagle_v2
+
+# EAGLE architecture
+hidden_size: 2048
+vocab_size: 151936
+num_draft_tokens: 5
+
+# Training
+max_steps: 10000
+per_device_train_batch_size: 32
+learning_rate: 3.0e-4
+weight_decay: 0.01
+warmup_steps: 200
+max_grad_norm: 1.0
+kl_temperature: 1.0
+
+# Data (validated manifests, same distribution as QASR full-model training)
+train_manifest:
+  ar:
+    - /lustrefs/shared/shahin.konadath/workspace/train/stt/qasr/validated_manifests/train_ar_q3asr.json
+    - /lustrefs/shared/shahin.konadath/workspace/train/stt/qasr/validated_manifests/train_ar_ar_ae.json
+    - /lustrefs/shared/shahin.konadath/workspace/train/stt/qasr/validated_manifests/train_ar_camel_race.json
+    - /lustrefs/shared/shahin.konadath/workspace/train/stt/qasr/validated_manifests/train_ar_inworld_full.json
+    - /lustrefs/shared/shahin.konadath/workspace/train/stt/qasr/validated_manifests/train_ar_qudratech_batch2.json
+    - /lustrefs/shared/shahin.konadath/workspace/train/stt/qasr/validated_manifests/train_ar_qudratech_phase4.json
+    - /lustrefs/shared/shahin.konadath/workspace/train/stt/qasr/validated_manifests/train_ar_khalid_msa.json
+    - /lustrefs/shared/shahin.konadath/workspace/train/stt/qasr/validated_manifests/train_ar_el_gen_v5.json
+    - /lustrefs/shared/shahin.konadath/workspace/train/stt/qasr/validated_manifests/train_ar_el_ar_v1.json
+    - /lustrefs/shared/shahin.konadath/workspace/train/stt/qasr/validated_manifests/train_ar_se_v1.json
+    - /lustrefs/shared/shahin.konadath/workspace/train/stt/qasr/validated_manifests/train_ar_spotify_v1.json
+    - /lustrefs/shared/shahin.konadath/workspace/train/stt/qasr/validated_manifests/train_ar_dialect_gulf.json
+    - /lustrefs/shared/shahin.konadath/workspace/train/stt/qasr/validated_manifests/train_ar_ar_ae_train.json
+  en:
+    - /lustrefs/shared/shahin.konadath/workspace/train/stt/qasr/validated_manifests/train_en_q3asr.json
+    - /lustrefs/shared/shahin.konadath/workspace/train/stt/qasr/validated_manifests/train_en_commentary.json
+    - /lustrefs/shared/shahin.konadath/workspace/train/stt/qasr/validated_manifests/train_en_inworld.json
+    - /lustrefs/shared/shahin.konadath/workspace/train/stt/qasr/validated_manifests/train_en_expresso.json
+    - /lustrefs/shared/shahin.konadath/workspace/train/stt/qasr/validated_manifests/train_en_anispeech.json
+    - /lustrefs/shared/shahin.konadath/workspace/train/stt/qasr/validated_manifests/train_en_hifi_tts.json
+  zh:
+    - /lustrefs/shared/shahin.konadath/workspace/train/stt/qasr/validated_manifests/train_zh_q3asr.json
+  hi:
+    - /lustrefs/shared/shahin.konadath/workspace/train/stt/qasr/validated_manifests/train_hi_q3asr.json
+  ml:
+    - /lustrefs/shared/shahin.konadath/workspace/train/stt/qasr/validated_manifests/train_ml_itn_punct.json
+
+language: ar
+min_duration_seconds: 0.1
+max_duration_seconds: 35.0
+max_target_length: 512
+
+# Infrastructure (uniform with Phase 2: HF Trainer + Accelerate + DeepSpeed ZeRO-2)
+deepspeed: configs/deepspeed_zero2.json
+bf16: true
+tf32: true
+# Teacher runs under no_grad, so there is nothing for activation checkpointing to save.
+gradient_checkpointing: false
+dataloader_num_workers: 8
+logging_steps: 10
+save_steps: 500
+save_total_limit: null
+report_to: none
+seed: 42
+attn_implementation: sdpa

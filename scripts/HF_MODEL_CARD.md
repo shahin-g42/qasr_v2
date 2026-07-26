@@ -124,7 +124,7 @@ pip install "transformers>=5.14.1,<5.15" torch librosa soundfile
 
 # EAGLE speculative decoding and the streaming server additionally need the
 # companion `qasr` package (provides EagleSpeculativeDecoder + the server):
-git clone https://github.com/audarai/qasr && cd qasr
+git clone https://github.com/shahin-g42/qasr_v2 && cd qasr_v2
 pip install -e ".[streaming]"
 ```
 

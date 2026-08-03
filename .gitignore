@@ -28,6 +28,9 @@ wandb/
 runs/
 checkpoints/
 
+# Data pipeline outputs (large JSONL manifests, regenerated on cluster)
+cleaned_manifests/
+
 # Model weights (too large for git)
 *.safetensors
 *.bin
@@ -45,3 +48,6 @@ Thumbs.db
 
 # History
 .history/
+
+# Generated analysis reports
+logs/*.json

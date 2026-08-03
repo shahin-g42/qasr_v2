@@ -1,0 +1,52 @@
+# Multilingual (non-Arabic) Transcript Processing Pipeline Configuration
+# Distributed cleaning, ITN, and punctuation for English, Chinese, Hindi,
+# and Malayalam ASR manifests using Qwen3.6-35B-A3B via vLLM.
+#
+# All non-Arabic languages share the generic language-aware cleaner/validator.
+# Arabic has its own specialized config: arabic_cleaning.yaml
+
+# vLLM server settings
+vllm_model: Qwen/Qwen3.6-35B-A3B
+vllm_host: localhost
+vllm_port: 8010
+vllm_tp: 8
+vllm_max_model_len: 16384
+vllm_max_num_seqs: 512
+vllm_gpu_memory_utilization: 0.93
+
+# Worker settings
+# batch_size = concurrent in-flight LLM calls per worker (asyncio.gather);
+# each record gets its own focused prompt. vLLM continuous batching schedules
+# the parallel requests on the GPU.
+# 96 workers (one per CPU core) x 10 = ~960 peak in-flight vs
+# vllm_max_num_seqs=512: ~1.9x oversubscription keeps all 512 decode slots
+# busy behind a queue while staying well inside the 300s request timeout.
+# Note: workers are asyncio tasks in one process (HTTP-bound, not CPU-bound);
+# throughput is capped by the 512-seq ceiling, but 96 shards improve tail-end
+# load balancing since shards = workers.
+workers_per_node: 96
+batch_size: 10
+max_retries: 5
+retry_backoff_base: 2.0
+request_timeout: 300.0
+checkpoint_interval: 50
+
+# Paths (outputs are namespaced by language: <output_dir>/<lang>/...)
+manifests_config: configs/train_full_8node_filtered.yaml
+output_dir: /lustrefs/shared/shahin.konadath/workspace/train/stt/qasr/cleaned_manifests
+checkpoint_dir: /lustrefs/shared/shahin.konadath/workspace/train/stt/qasr/cleaning_checkpoints
+shard_dir: /lustrefs/shared/shahin.konadath/workspace/train/stt/qasr/cleaning_shards
+
+# Processing options
+# Comma-separated list: all training languages except Arabic
+language_filter: en,zh,hi,ml
+# Arabic-only flags (ignored by the generic agents)
+preserve_dialects: true
+restore_diacritics: false
+itn_enabled: true
+punctuate: true
+validation_sample_rate: 1.0
+
+# Node distribution (override via CLI --node-rank and --num-nodes)
+node_rank: 0
+num_nodes: 8

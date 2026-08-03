@@ -10,6 +10,7 @@ readme = "README.md"
 requires-python = ">=3.10"
 dependencies = [
     "accelerate>=1.10.1",
+    "httpx>=0.27.0",
     "huggingface-hub",
     "librosa>=0.11.0",
     "numpy>=2.0.0",
@@ -37,9 +38,10 @@ qasr-convert = "qasr.convert_weights:main"
 qasr-stream = "qasr.server:main"
 qasr-validate = "qasr.validate_data:main"
 qasr-evaluate = "qasr.evaluate:main"
+qasr-process = "data_processing.pipeline:main"
 
 [tool.hatch.build.targets.wheel]
-packages = ["src/qasr"]
+packages = ["src/qasr", "src/data_processing"]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]

@@ -10,7 +10,6 @@ import torch
 from .modeling import QASRForConditionalGeneration
 from .processing import QASRProcessor
 
-
 PCM_SAMPLE_WIDTH_BYTES = 2
 
 
@@ -38,15 +37,15 @@ class StreamingConfig:
 
     @property
     def partial_interval_samples(self) -> int:
-        return max(1, int(round(self.partial_interval_seconds * self.sample_rate)))
+        return max(1, round(self.partial_interval_seconds * self.sample_rate))
 
     @property
     def min_audio_samples(self) -> int:
-        return max(1, int(round(self.min_audio_seconds * self.sample_rate)))
+        return max(1, round(self.min_audio_seconds * self.sample_rate))
 
     @property
     def window_samples(self) -> int:
-        return max(1, int(round(self.window_seconds * self.sample_rate)))
+        return max(1, round(self.window_seconds * self.sample_rate))
 
 
 class PCM16Buffer:

@@ -24,7 +24,6 @@ from .manifest_io import (
 )
 from .worker import WorkerStats, run_worker
 
-
 LOGGER = logging.getLogger("data_processing.orchestrator")
 
 
@@ -37,6 +36,12 @@ class ManifestJob:
     record_count: int = 0
     shard_paths: list[Path] = field(default_factory=list)
     output_path: Path | None = None
+    # Slice-aware output identity, filled in by process_manifest(). Reporting
+    # must read these off the job instead of re-deriving names from
+    # path.stem — that loses the record-range suffix and names files that
+    # do not exist.
+    manifest_name: str = ""
+    rejected_path: Path | None = None
 
 
 @dataclass
@@ -49,6 +54,9 @@ class OrchestratorReport:
     total_rejected: int = 0
     worker_stats: list[dict[str, Any]] = field(default_factory=list)
     errors: list[str] = field(default_factory=list)
+    # The jobs this node actually ran, carrying their resolved output paths
+    # so downstream reporting does not have to re-discover them.
+    jobs: list[ManifestJob] = field(default_factory=list)
 
 
 class Orchestrator:
@@ -154,14 +162,6 @@ class Orchestrator:
 
         LOGGER.info("Processing manifest: %s (language=%s)", manifest_name, job.language)
 
-        # Count records
-        job.record_count = count_manifest_records(manifest_path)
-        LOGGER.info("  %d records to process", job.record_count)
-
-        if job.record_count == 0:
-            LOGGER.warning("  Skipping empty manifest: %s", manifest_name)
-            return []
-
         # Set up directories (namespaced by language to avoid stem collisions)
         shard_base = Path(self.config.shard_dir) / job.language / manifest_name
         output_base = Path(self.config.output_dir) / job.language
@@ -170,6 +170,20 @@ class Orchestrator:
         shard_base.mkdir(parents=True, exist_ok=True)
         output_base.mkdir(parents=True, exist_ok=True)
         checkpoint_base.mkdir(parents=True, exist_ok=True)
+
+        # Resolve output identity BEFORE any early return, so reporting still
+        # covers a resumed run that finds nothing left to process.
+        job.manifest_name = manifest_name
+        job.output_path = output_base / f"{manifest_name}_cleaned.jsonl"
+        job.rejected_path = output_base / f"{manifest_name}_rejected.jsonl"
+
+        # Count records
+        job.record_count = count_manifest_records(manifest_path)
+        LOGGER.info("  %d records to process", job.record_count)
+
+        if job.record_count == 0:
+            LOGGER.warning("  Skipping empty manifest: %s", manifest_name)
+            return []
 
         # Skip records already processed by earlier runs / other slices
         skip_keys = None
@@ -198,8 +212,7 @@ class Orchestrator:
             return []
 
         # Set up output paths
-        job.output_path = output_base / f"{manifest_name}_cleaned.jsonl"
-        rejected_path = output_base / f"{manifest_name}_rejected.jsonl"
+        rejected_path = job.rejected_path
 
         # Launch workers
         worker_stats = await self._launch_workers(
@@ -248,7 +261,7 @@ class Orchestrator:
             self.progress_counter.value = 0
 
         # Track retry counts per shard index
-        shard_retries: dict[int, int] = {i: 0 for i in range(num_shards)}
+        shard_retries: dict[int, int] = dict.fromkeys(range(num_shards), 0)
         failed_shards: list[int] = []
 
         def _create_worker_task(shard_idx: int) -> asyncio.Task:
@@ -346,6 +359,7 @@ class Orchestrator:
         # Discover and distribute manifests
         all_jobs = self.discover_manifests()
         node_jobs = self.distribute_jobs(all_jobs)
+        report.jobs = node_jobs
 
         if not node_jobs:
             LOGGER.warning("No manifests assigned to this node")

@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from dataclasses import dataclass, field
+from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 
@@ -8,7 +8,7 @@ import torch
 
 from .audio import load_mono_audio, validate_audio_duration
 from .augmentation import AudioAugmenter
-from .utils import get_subsampling_output_lengths
+from .utils import get_projector_pool_output_lengths, get_subsampling_output_lengths
 
 
 @dataclass
@@ -60,6 +60,11 @@ class QASRDataCollator:
             kernel_size=self.processor.subsampling_conv_kernel_size,
             stride=self.processor.subsampling_conv_stride,
         )
+        pool_stride = int(getattr(self.processor, "projector_pool_stride", 1) or 1)
+        if pool_stride > 1:
+            expected_tokens = get_projector_pool_output_lengths(
+                expected_tokens, pool_stride=pool_stride
+            )
         audio_tokens = batch["input_ids"].eq(self.processor.audio_token_id).sum(-1)
         if not torch.equal(expected_tokens.to(audio_tokens.device), audio_tokens):
             raise RuntimeError(

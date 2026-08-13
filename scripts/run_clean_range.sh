@@ -1,11 +1,12 @@
 #!/bin/bash
 # Spread ONE huge manifest across multiple nodes by record-index range.
 #
-# Usage: bash scripts/run_clean_range.sh <SLICE_IDX> <NUM_SLICES> <MANIFEST_PATH> [arabic|multilingual] [--verbose]
+# Usage: bash scripts/run_clean_range.sh <SLICE_IDX> <NUM_SLICES> <MANIFEST_PATH> [arabic|multilingual] [--verbose] [--workers N]
 # Example (train_ar_q3asr.jsonl across 3 nodes):
 #   node A: bash scripts/run_clean_range.sh 0 3 /path/to/train_ar_q3asr.jsonl
 #   node B: bash scripts/run_clean_range.sh 1 3 /path/to/train_ar_q3asr.jsonl
 #   node C: bash scripts/run_clean_range.sh 2 3 /path/to/train_ar_q3asr.jsonl
+# Workers: default 256 per node (override with --workers, e.g. --workers 96)
 #
 # Each slice gets its own outputs/checkpoints (…_r<START>_<END>_cleaned.jsonl)
 # so nodes never collide, each slice is independently resumable (--resume),
@@ -16,7 +17,25 @@
 
 set -euo pipefail
 
-SLICE_IDX=${1:?"Usage: bash scripts/run_clean_range.sh <SLICE_IDX> <NUM_SLICES> <MANIFEST_PATH> [arabic|multilingual] [--verbose]"}
+# Parse out the optional --workers flag anywhere in argv, then restore the
+# positional arguments (SLICE_IDX, NUM_SLICES, MANIFEST_PATH, ...).
+WORKERS=256
+POSITIONAL=()
+while [[ $# -gt 0 ]]; do
+    case "$1" in
+        --workers)
+            WORKERS="${2:?--workers requires a value}"
+            shift 2
+            ;;
+        *)
+            POSITIONAL+=("$1")
+            shift
+            ;;
+    esac
+done
+set -- "${POSITIONAL[@]}"
+
+SLICE_IDX=${1:?"Usage: bash scripts/run_clean_range.sh <SLICE_IDX> <NUM_SLICES> <MANIFEST_PATH> [arabic|multilingual] [--verbose] [--workers N]"}
 NUM_SLICES=${2:?"NUM_SLICES required"}
 MANIFEST_PATH=${3:?"MANIFEST_PATH required"}
 PIPELINE=${4:-arabic}
@@ -41,24 +60,33 @@ fi
 BASENAME=$(basename "${MANIFEST_PATH}")
 STEM="${BASENAME%.jsonl}"; STEM="${STEM%.json}"
 
-# Equal slices over the line count. Boundaries just partition the record
-# index space — the pipeline enumerates valid records consistently on every
-# node, and the LAST slice runs to EOF, so the partition is exact.
-TOTAL_LINES=$(wc -l < "${MANIFEST_PATH}")
-START=$(( SLICE_IDX * TOTAL_LINES / NUM_SLICES ))
+export PYTHONPATH="${PROJECT_DIR}/src:${PYTHONPATH:-}"
+
+# Equal slices over the VALID-RECORD count, NOT the raw line count:
+# --record-range indexes the pipeline's valid-record space (read_manifest
+# skips blank/malformed lines), so wc -l boundaries would misalign slices
+# across nodes and create overlapping coverage. Every node recomputes the
+# same count with the same enumerator, so the partition is exact.
+TOTAL_RECORDS=$(python3 -c "
+from data_processing.manifest_io import count_manifest_records
+import sys
+print(count_manifest_records(sys.argv[1]))
+" "${MANIFEST_PATH}")
+START=$(( SLICE_IDX * TOTAL_RECORDS / NUM_SLICES ))
 if [ "${SLICE_IDX}" -eq $(( NUM_SLICES - 1 )) ]; then
     END=""   # last slice: to EOF
 else
-    END=$(( (SLICE_IDX + 1) * TOTAL_LINES / NUM_SLICES ))
+    END=$(( (SLICE_IDX + 1) * TOTAL_RECORDS / NUM_SLICES ))
 fi
 RANGE="${START}:${END}"
 
 echo "========================================"
 echo "Range Processing (${PIPELINE})"
 echo "========================================"
-echo "Manifest:   ${BASENAME} (${TOTAL_LINES} lines)"
+echo "Manifest:   ${BASENAME} (${TOTAL_RECORDS} valid records)"
 echo "Slice:      ${SLICE_IDX}/${NUM_SLICES}  ->  records [${RANGE}]"
 echo "Config:     ${CONFIG}"
+echo "Workers:    ${WORKERS}"
 echo "vLLM port:  ${VLLM_PORT}"
 echo "========================================"
 
@@ -69,7 +97,6 @@ if ! curl -s "http://localhost:${VLLM_PORT}/health" > /dev/null 2>&1; then
 fi
 echo "[$(date)] vLLM is healthy!"
 
-export PYTHONPATH="${PROJECT_DIR}/src:${PYTHONPATH:-}"
 export TOKENIZERS_PARALLELISM=false
 cd "${PROJECT_DIR}"
 
@@ -82,6 +109,7 @@ python3 -m data_processing \
     --num-nodes 1 \
     --manifests "${STEM}" \
     --record-range "${RANGE}" \
+    --workers "${WORKERS}" \
     --skip-processed \
     --resume \
     ${VERBOSE_FLAG}

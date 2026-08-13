@@ -37,13 +37,11 @@ import argparse
 import json
 import logging
 import math
-import os
 import sys
 import time
 from concurrent.futures import ProcessPoolExecutor, as_completed
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Any
 
 import numpy as np
 
@@ -60,6 +58,7 @@ class ValidationResult:
     error: str | None = None
     actual_duration: float | None = None
     token_count: int | None = None
+    duration_mismatch: bool = False
 
 
 @dataclass
@@ -93,6 +92,8 @@ class ManifestReport:
             lines.append("  Errors:")
             for category, count in sorted(self.errors.items(), key=lambda x: -x[1]):
                 lines.append(f"    {category}: {count:,}")
+        if self.duration_mismatches:
+            lines.append(f"  Duration mismatches (>1s): {self.duration_mismatches:,}")
         if self.filtered_output_path:
             lines.append(f"  Filtered output: {self.filtered_output_path}")
         return "\n".join(lines)
@@ -189,16 +190,15 @@ def _validate_single_sample(
             actual_duration=actual_duration,
         )
 
-    # Check metadata duration mismatch (> 1 second difference)
+    # Check metadata duration mismatch (> 1 second difference). Not a hard
+    # failure — the sample is still usable — but it is flagged for reporting.
+    duration_mismatch = False
     meta_duration = record.get("duration")
     if meta_duration is not None:
         try:
-            meta_duration = float(meta_duration)
-            if abs(meta_duration - actual_duration) > 1.0:
-                # Not a hard failure, but flag it
-                pass
+            duration_mismatch = abs(float(meta_duration) - actual_duration) > 1.0
         except (TypeError, ValueError):
-            pass
+            duration_mismatch = True
 
     # Check transcript token length (approximate with character count if no tokenizer)
     token_count = None
@@ -214,12 +214,14 @@ def _validate_single_sample(
                 f"transcript_too_long: ~{estimated_tokens} chars",
                 actual_duration=actual_duration,
                 token_count=estimated_tokens,
+                duration_mismatch=duration_mismatch,
             )
 
     return ValidationResult(
         line_number, str(audio_path), True,
         actual_duration=actual_duration,
         token_count=token_count,
+        duration_mismatch=duration_mismatch,
     )
 
 
@@ -311,6 +313,8 @@ def validate_manifest(
                 report.add_error(error_category)
                 if result.actual_duration:
                     report.total_invalid_hours += result.actual_duration / 3600.0
+            if result.duration_mismatch:
+                report.duration_mismatches += 1
 
             if completed % 5000 == 0 or completed == len(lines):
                 elapsed = time.time() - t0
@@ -506,7 +510,7 @@ Examples:
         total_invalid_hours += report.total_invalid_hours
 
     print("\n" + "-" * 70)
-    print(f" TOTALS:")
+    print(" TOTALS:")
     print(f"   Records: {total_records:,} total | {total_valid:,} valid | {total_invalid:,} invalid")
     print(f"   Hours:   {total_valid_hours:.1f}h valid | {total_invalid_hours:.1f}h lost")
     if total_records > 0:
@@ -515,7 +519,7 @@ Examples:
 
     # Exit with error if too many samples are invalid
     if total_records > 0 and total_valid / total_records < 0.5:
-        LOGGER.warning("Less than 50%% of samples are valid! Check your data paths.")
+        LOGGER.warning("Less than 50% of samples are valid - check your data paths.")
         sys.exit(1)
 
 

@@ -9,7 +9,6 @@ from __future__ import annotations
 import re
 import unicodedata
 
-
 # Arabic Unicode ranges
 ARABIC_LETTER_RANGE = re.compile(r"[\u0621-\u064A\u0660-\u0669\u0671-\u06D5]")
 ARABIC_DIACRITICS = re.compile(r"[\u0610-\u061A\u064B-\u065F\u0670]")

@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-
 # --- Rule fragments (conditionally composed) ---
 
 _RULE_CLEANING = """\
@@ -30,7 +29,19 @@ _RULE_ITN = """\
    - Convert EXACTLY the number spoken — never expand or infer: \
 "عام ثلاثين" → "عام 30" (NEVER "2030"), "خمسة بالمئة" → "5٪".
    - Always use Western digits (0-9), never Arabic-Indic (٠-٩).
-   - Preserve phone numbers, dates, and measurements in standard formats.
+   - TIMES: H:MM when minutes are spoken ("الساعة الثالثة والنصف" → \
+"الساعة 3:30"), bare digits when they are not ("الساعة الثالثة" → \
+"الساعة 3"). Keep the spoken period word ("صباحًا"، "مساءً"، "عصرًا") — \
+never convert to a 24-hour clock and never add a period that was not said.
+   - DATES: digits for day and year, the month EXACTLY as spoken \
+("الحادي والعشرين من مارس ألفين وأربعة وعشرين" → "21 مارس 2024"). \
+Never renumber a spoken month name, never reorder the fields, and never \
+supply a year or century that was not spoken ("الحادي والعشرين من مارس" \
+→ "21 مارس", never a year appended).
+   - NEVER convert between Hijri and Gregorian, and never add an era marker \
+(هـ / م) the speaker did not say.
+   - Phone numbers and measurements: digits exactly as spoken, with no \
+invented separators or unit symbols.
    - NEVER alter the counted noun to "fix" number-noun agreement: \
 colloquial speakers often use a singular after 3-10 ("خمس مرة") — the noun \
 stays exactly as spoken; only the number becomes digits."""
@@ -146,7 +157,10 @@ filler markers). Fix ASR misrecognitions. Remove stuttering but keep \
 meaningful repetitions.
 2. ITN: Convert spoken-form numbers to Western digits (0-9, never ٠-٩). \
 Convert EXACTLY the number spoken — "عام ثلاثين" → "عام 30" NEVER "2030". \
-Preserve ordinals and idioms in words. Never alter the counted noun to \
+Preserve ordinals and idioms in words. Dates and times keep the spoken \
+month name and clock reading ("21 مارس 2024"، "الساعة 3:30 عصرًا"); never \
+infer an absent year, century, or era marker, and never convert between \
+Hijri and Gregorian. Never alter the counted noun to \
 "fix" number-noun agreement — the noun stays exactly as spoken.
 3. PUNCTUATION: Add Arabic punctuation (\u060c . \u061f ! \u061b : \u00ab\u00bb) based on meaning \
 units. Use Arabic comma (\u060c) and question mark (\u061f), never Latin equivalents.
@@ -194,6 +208,10 @@ The processed text conveys exactly what the speaker said.
 2. DIALECT INTEGRITY: All dialectal forms are preserved. No MSA normalization \
 of colloquial vocabulary, verb forms, or phonological spellings.
 3. ITN CORRECTNESS: All number conversions are numerically accurate. \
+Dates and times keep the spoken month name and clock reading; no year, \
+century, or era marker may be inferred, and Hijri is never converted to \
+Gregorian or back. An impossible field value (hour above 23, month above \
+12) is mis-assembled ITN — correct it. \
 The counted noun must remain exactly as spoken — never require \
 number-noun agreement "fixes".
 4. PUNCTUATION QUALITY: Punctuation is syntactically valid, uses Arabic \
@@ -473,13 +491,13 @@ def build_corrector_messages(
 
 
 __all__ = [
+    "CLEANER_BATCH_USER_TEMPLATE",
     "CLEANER_SYSTEM_PROMPT",
     "CLEANER_USER_TEMPLATE",
-    "CLEANER_BATCH_USER_TEMPLATE",
-    "VALIDATOR_SYSTEM_PROMPT",
-    "VALIDATOR_USER_TEMPLATE",
     "CORRECTOR_SYSTEM_PROMPT",
     "CORRECTOR_USER_TEMPLATE",
+    "VALIDATOR_SYSTEM_PROMPT",
+    "VALIDATOR_USER_TEMPLATE",
     "build_batch_cleaner_messages",
     "build_cleaner_messages",
     "build_cleaner_system_prompt",

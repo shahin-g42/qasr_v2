@@ -12,7 +12,6 @@ from __future__ import annotations
 import argparse
 import asyncio
 import logging
-import sys
 import time
 from pathlib import Path
 
@@ -25,7 +24,6 @@ from .reporting import (
     generate_summary_report,
     save_report,
 )
-
 
 LOGGER = logging.getLogger("data_processing")
 
@@ -85,6 +83,13 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
         "manifest (cleaned/shards/rejected) before processing",
     )
     parser.add_argument(
+        "--workers",
+        type=int,
+        default=None,
+        help="Override workers_per_node from the YAML config "
+        "(asyncio tasks; vLLM queues anything past its max-num-seqs)",
+    )
+    parser.add_argument(
         "--dry-run",
         action="store_true",
         help="Count records and validate connectivity without processing",
@@ -92,12 +97,8 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     parser.add_argument(
         "--resume",
         action="store_true",
-        help="Resume from checkpoint",
-    )
-    parser.add_argument(
-        "--validate-only",
-        action="store_true",
-        help="Run only validation on existing cleaned output",
+        help="Accepted for compatibility; workers ALWAYS resume from their "
+        "per-shard checkpoints when present",
     )
     parser.add_argument(
         "--verbose",
@@ -171,24 +172,29 @@ async def run_pipeline(config: PipelineConfig) -> None:
     orchestrator = Orchestrator(config)
     report = await orchestrator.run()
 
-    # Generate reports
+    # Generate reports.
+    # Report on the jobs the orchestrator actually ran — they carry the
+    # resolved, slice-aware output/rejected paths. Re-discovering manifests
+    # here would hand back fresh ManifestJob objects with output_path=None,
+    # so the loop produced no reports at all.
     output_dir = Path(config.output_dir)
     reports: list[ManifestReport] = []
 
-    for job in orchestrator.distribute_jobs(orchestrator.discover_manifests()):
-        if job.output_path and job.output_path.is_file():
-            lang_dir = output_dir / job.language
-            manifest_report = generate_manifest_report(
-                source_path=job.path,
-                cleaned_path=job.output_path,
-                rejected_path=lang_dir / f"{job.path.stem}_rejected.jsonl",
-                processing_start_time=start_time,
-            )
-            reports.append(manifest_report)
-            save_report(
-                manifest_report,
-                lang_dir / f"{job.path.stem}_report.json",
-            )
+    for job in report.jobs:
+        if not (job.output_path and job.output_path.is_file()):
+            continue
+        lang_dir = output_dir / job.language
+        manifest_report = generate_manifest_report(
+            source_path=job.path,
+            cleaned_path=job.output_path,
+            rejected_path=job.rejected_path,
+            processing_start_time=start_time,
+        )
+        reports.append(manifest_report)
+        save_report(
+            manifest_report,
+            lang_dir / f"{job.manifest_name}_report.json",
+        )
 
     # Generate summary
     if reports:
@@ -229,6 +235,8 @@ def main(argv: list[str] | None = None) -> None:
         config.record_range = args.record_range
     if args.skip_processed:
         config.skip_processed = True
+    if args.workers is not None:
+        config.workers_per_node = args.workers
 
     config.validate()
 

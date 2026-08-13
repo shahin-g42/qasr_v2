@@ -39,14 +39,12 @@ from __future__ import annotations
 
 import logging
 import random
-import warnings
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
 
 import numpy as np
 import torch
-
 
 LOGGER = logging.getLogger("qasr")
 
@@ -106,7 +104,7 @@ class SpecAugment:
             return features
 
         features = features.clone()
-        batch_size, max_time, num_freq = features.shape
+        batch_size, _max_time, num_freq = features.shape
 
         for b in range(batch_size):
             valid_length = int(attention_mask[b].sum().item())
@@ -204,7 +202,7 @@ class SpeedPerturbation:
 
         # Use linear interpolation for resampling (fast, good enough for ±15%)
         original_length = len(waveform)
-        new_length = int(round(original_length / rate))
+        new_length = round(original_length / rate)
         if new_length <= 0:
             return waveform
 
@@ -563,6 +561,28 @@ class AudioAugmenter:
         return self.spec_augment(features, attention_mask)
 
 
+def build_augmenter(
+    augmentation: dict[str, Any] | None,
+    sampling_rate: int,
+) -> AudioAugmenter | None:
+    """Build an :class:`AudioAugmenter` from a training-config ``augmentation`` dict.
+
+    Each sub-dict (``spec_augment``, ``speed_perturb``, ``noise_injection``,
+    ``codec_augment``) is merged over the :class:`AugmentationConfig` defaults,
+    so YAMLs only need to spell out the keys they change. Returns ``None``
+    when no augmentation section is configured.
+    """
+    if not augmentation:
+        return None
+    aug_config = AugmentationConfig()
+    for aug_name, aug_params in augmentation.items():
+        if hasattr(aug_config, aug_name) and isinstance(aug_params, dict):
+            merged = getattr(aug_config, aug_name).copy()
+            merged.update(aug_params)
+            setattr(aug_config, aug_name, merged)
+    return AudioAugmenter(aug_config, sampling_rate=sampling_rate)
+
+
 __all__ = [
     "AudioAugmenter",
     "AugmentationConfig",
@@ -570,4 +590,5 @@ __all__ = [
     "NoiseInjection",
     "SpecAugment",
     "SpeedPerturbation",
+    "build_augmenter",
 ]

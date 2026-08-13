@@ -30,12 +30,12 @@ import yaml
 from torch import nn
 from transformers import Trainer, TrainingArguments
 
+from .augmentation import build_augmenter
 from .collator import QASRDataCollator
 from .data import CombinedSpeechDataset, JsonlSpeechDataset, ResilientAudioDataset
 from .eagle import EagleConfig, EagleHead, compute_eagle_loss
 from .modeling import QASRForConditionalGeneration
 from .processing import QASRProcessor
-
 
 LOGGER = logging.getLogger("qasr.eagle.train")
 
@@ -52,6 +52,10 @@ class EagleTrainConfig:
     hidden_size: int = 2048
     vocab_size: int = 151936
     num_draft_tokens: int = 5
+    # EAGLE-3 multi-layer fusion: indices into outputs.hidden_states
+    # (0 = embedding output, -1 = last layer). Keep the legacy single-layer
+    # default unless retraining the head with fusion enabled.
+    fusion_layer_indices: tuple[int, ...] = (-1,)
 
     # Training hyperparameters
     max_steps: int = 2000
@@ -70,6 +74,10 @@ class EagleTrainConfig:
     min_duration_seconds: float = 0.1
     max_duration_seconds: float = 30.0
     max_target_length: int = 256
+    # Data augmentation (same schema as Phase 2 training YAMLs). Applied to
+    # the teacher's input audio so the head learns to draft on augmented
+    # spectrograms, matching what the deployed model sees during fine-tune.
+    augmentation: dict[str, Any] | None = None
 
     # Infrastructure (uniform with Phase 2: Trainer + DeepSpeed ZeRO-2)
     deepspeed: str | None = None
@@ -89,7 +97,7 @@ class EagleTrainConfig:
     attn_implementation: str = "sdpa"
 
     @classmethod
-    def from_args(cls, args: argparse.Namespace) -> "EagleTrainConfig":
+    def from_args(cls, args: argparse.Namespace) -> EagleTrainConfig:
         config = cls()
         for key in vars(args):
             if hasattr(config, key) and getattr(args, key) is not None:
@@ -102,7 +110,7 @@ class EagleDistillModel(nn.Module):
 
     The forward pass runs the teacher under ``torch.no_grad`` and returns the
     KL distillation loss, so the standard Trainer/Accelerate/DeepSpeed loop
-    only backprops through the ~4.2M-parameter fusion layer of the head.
+    only backprops through the ~8.4M-parameter fusion layer of the head.
     """
 
     def __init__(
@@ -118,7 +126,7 @@ class EagleDistillModel(nn.Module):
         # Trainer/DeepSpeed introspect model.config (e.g. for "auto" values).
         self.config = qasr.config
 
-    def train(self, mode: bool = True) -> "EagleDistillModel":
+    def train(self, mode: bool = True) -> EagleDistillModel:
         # Keep the teacher in eval mode (no dropout) so distillation targets
         # stay deterministic; only the EAGLE head follows train/eval.
         super().train(mode)
@@ -134,8 +142,9 @@ class EagleDistillModel(nn.Module):
         labels: torch.Tensor | None = None,
         **kwargs: Any,
     ) -> dict[str, torch.Tensor]:
-        # Frozen teacher forward: last-layer hidden states, target logits, and
-        # the input token embeddings the lookahead head conditions on.
+        # Frozen teacher forward: hidden states (optionally multi-layer fused),
+        # target logits, and the input token embeddings the lookahead head
+        # conditions on.
         with torch.no_grad():
             outputs = self.qasr(
                 input_ids=input_ids,
@@ -144,7 +153,12 @@ class EagleDistillModel(nn.Module):
                 attention_mask=attention_mask,
                 output_hidden_states=True,
             )
-            hidden_states = outputs.hidden_states[-1].detach()
+            if self.eagle_head.fuses_multiple_layers:
+                # Not detached: the learnable layer-mix weights must receive
+                # gradients. Teacher activations carry none (no_grad context).
+                hidden_states = self.eagle_head.fuse_hidden_states(outputs.hidden_states)
+            else:
+                hidden_states = outputs.hidden_states[-1].detach()
             target_logits = outputs.logits.detach()
             token_embeds = self.qasr.get_input_embeddings()(input_ids).detach()
 
@@ -231,8 +245,14 @@ def train_eagle(config: EagleTrainConfig) -> Path:
         hidden_size=config.hidden_size,
         vocab_size=config.vocab_size,
         num_draft_tokens=config.num_draft_tokens,
+        fusion_layer_indices=tuple(config.fusion_layer_indices),
     )
     eagle_head = EagleHead(eagle_config).to(dtype=dtype)
+    if eagle_head.fuses_multiple_layers:
+        LOGGER.info(
+            "EAGLE-3 multi-layer fusion enabled over layers %s",
+            eagle_head.fusion_layer_indices,
+        )
 
     # Reuse the target model's output projection instead of learning a ~311M
     # parameter lm_head from scratch. Only the ~8.4M-parameter fusion layer
@@ -253,12 +273,22 @@ def train_eagle(config: EagleTrainConfig) -> Path:
 
     # --- Dataset + collator (identical pipeline to Phase 2) ---
     train_dataset = _build_dataset(config, processor)
+    augmenter = build_augmenter(
+        config.augmentation,
+        sampling_rate=int(processor.feature_extractor.sampling_rate),
+    )
+    if augmenter is not None:
+        LOGGER.info("EAGLE training augmentation enabled: %s", [
+            name for name in ["spec_augment", "speed_perturb", "noise_injection", "codec_augment"]
+            if getattr(augmenter.config, name).get("enabled", False)
+        ])
     collator = QASRDataCollator(
         processor=processor,
         language=config.language,
         min_audio_seconds=config.min_duration_seconds,
         max_audio_seconds=config.max_duration_seconds,
         max_target_length=config.max_target_length,
+        augmenter=augmenter,
     )
 
     # --- TrainingArguments mirroring the Phase 2 setup ---

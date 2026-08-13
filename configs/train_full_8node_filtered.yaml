@@ -4,7 +4,10 @@
 # Schedule: 250K steps x 512 = 128M samples ~= 1.17 epochs over the ~110M-sample
 # corpus (~214.5K steps/epoch). Full coverage plus a light second-pass
 # reinforcement, safely below the noisy-label memorization boundary (~2 epochs).
-model_name_or_path: /lustrefs/shared/shahin.konadath/workspace/train/stt/qasr/output/projector
+# Phase A accuracy recipe: balanced sampling (hours^0.5), per-group LR split
+# (4e-5 / 2e-5 / 1e-5), WSD schedule, label smoothing 0.1, WER eval callback.
+# Input = Phase 1 output (deep-projector warm-up, output/projector_v2).
+model_name_or_path: /lustrefs/shared/shahin.konadath/workspace/train/stt/qasr/output/projector_v2
 freeze_audio_tower: false
 freeze_language_model: false
 
@@ -50,6 +53,8 @@ eval_manifest:
     - /lustrefs/shared/shahin.konadath/workspace/train/stt/qasr/validated_manifests/eval_ml_inworld.json
   zh:
     - /lustrefs/shared/shahin.konadath/workspace/train/stt/qasr/validated_manifests/eval_zh_inworld.json
+  hi:
+    - /lustrefs/shared/shahin.konadath/workspace/train/stt/qasr/validated_manifests/eval_hi_inworld.json
 
 audio_root: null
 
@@ -72,16 +77,49 @@ per_device_eval_batch_size: 4
 gradient_accumulation_steps: 1
 # sqrt(2) scaling from 3.0e-5 (batch 256) → 4.24e-5 ≈ 4.0e-5.
 # Peak VRAM ~50 GB/GPU with ~30 GB headroom on H100-80GB.
+# Per-group split (see llm_lr_factor / embed_lr_factor below):
+#   encoder + projector: 4.0e-5 | LLM body: 2.0e-5 | token embeddings: 1.0e-5.
 learning_rate: 4.0e-5
 weight_decay: 0.01
+# Warmup-Stable-Decay: 1.5k warmup, 20k decay tail, stable plateau in between.
+# Steering rule: if per-language WER flattens for 2 consecutive evals in the
+# stable region, stop and fire the decay branch from the best checkpoint.
+lr_scheduler_type: warmup_stable_decay
+lr_scheduler_kwargs:
+  num_decay_steps: 20000
+  min_lr_ratio: 0.1
 warmup_steps: 1500
-lr_scheduler_type: cosine
 max_grad_norm: 1.0
+
+# --- Phase A accuracy recipe ---
+# Language-balanced sampling: draw weight per language proportional to
+# hours^0.5 so ml/hi are not starved by naive concatenation.
+balanced_sampling: true
+sampling_temperature: 0.5
+# Per-group learning rates: LLM body and tied embeddings train slower than the
+# encoder/projector to protect Qwen3's text priors from drift.
+llm_lr_factor: 0.5
+embed_lr_factor: 0.25
+# Label smoothing for the causal LM loss (custom loss_function swap).
+label_smoothing: 0.1
+# Non-speech / silence manifests (anti-hallucination). Set once the silence
+# manifests are assembled; do not block the run on them, a follow-up run can
+# absorb them. Example:
+#   non_speech_manifest:
+#     ar: [ .../training_manifests/v1/silence/train_silence_ar.jsonl ]
+non_speech_manifest: null
+# CTC auxiliary head (Tier B scaffold): 0 disables. Enable with 0.3 for the
+# phase-2 experiment after the Phase A run lands.
+ctc_loss_weight: 0.0
+# Per-language WER/CER eval callback (rank 0, fixed sample subset).
+eval_wer_samples_per_language: 100
 
 logging_steps: 10
 eval_steps: 5000
-save_steps: 5000
-save_total_limit: 5
+# Step-budget discipline: keep every 25k-step checkpoint until selection is
+# done; save_total_limit 6 retains 150k steps of checkpoints.
+save_steps: 25000
+save_total_limit: 6
 
 smoke_test: false
 smoke_test_max_steps: 2
@@ -105,12 +143,12 @@ deepspeed: configs/deepspeed_zero2.json
 ddp_find_unused_parameters: false
 report_to: wandb
 wandb_project: qasr
-run_name: qasr-full-8node-filtered
+run_name: qasr-full-8node-v2-phaseA
 seed: 42
 data_seed: 42
 
 resume_from_checkpoint: null
-output_dir: /lustrefs/shared/shahin.konadath/workspace/train/stt/qasr/output/full
+output_dir: /lustrefs/shared/shahin.konadath/workspace/train/stt/qasr/output/full_v2
 attn_implementation: sdpa
 
 # Data augmentation (applied during training only).

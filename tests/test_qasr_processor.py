@@ -9,7 +9,6 @@ from transformers import PreTrainedTokenizerFast
 from qasr import QASRFeatureExtractor, QASRProcessor
 from qasr.processing import resolve_qasr_language
 
-
 CHAT_TEMPLATE = """{%- set ns = namespace(system_text='') -%}
 {%- for m in messages -%}{%- if m.role == 'system' -%}
 {%- for c in m.content -%}{%- if c.type == 'text' -%}{%- set ns.system_text = ns.system_text + c.text -%}{%- endif -%}{%- endfor -%}
@@ -138,14 +137,43 @@ class ProcessorContractTest(unittest.TestCase):
         self.assertNotIn("labels", batch)
         self.assertGreater(batch.input_ids.eq(processor.audio_token_id).sum().item(), 0)
 
+    def test_empty_transcript_produces_tag_then_eos_targets(self) -> None:
+        # Non-speech / silence records train with text="": the target must be
+        # exactly `language <Lang><asr_text><eos>` with nothing between the
+        # tag and EOS, and labels must exist (the row still supervises).
+        processor = toy_processor()
+
+        batch = processor.prepare_training_batch(
+            audio=[np.zeros(3_200, dtype=np.float32)],
+            text=[""],
+            language=["ar"],
+            sampling_rate=16_000,
+            padding=True,
+            return_tensors="pt",
+        )
+
+        labels = batch.labels[0]
+        target_ids = labels[labels != -100]
+        self.assertGreater(len(target_ids), 0)
+        target = processor.tokenizer.decode(target_ids)
+        normalized = target.replace("Ġ", "").replace(" ", "")
+        self.assertIn("languageArabic<asr_text>", normalized)
+        # Nothing follows the tag except the end-of-sequence turn marker.
+        tail = normalized.split("<asr_text>", 1)[1]
+        self.assertEqual(tail, "<|im_end|>")
+
     def test_processor_save_reload_round_trip(self) -> None:
         processor = toy_processor()
+        processor.projector_pool_stride = 2
         with tempfile.TemporaryDirectory() as directory:
             processor.save_pretrained(directory)
             reloaded = QASRProcessor.from_pretrained(directory)
 
         self.assertIsInstance(reloaded.feature_extractor, QASRFeatureExtractor)
         self.assertEqual(reloaded.subsampling_factor, 8)
+        # The Tier B pool stride must survive save/reload or a reloaded
+        # processor would silently insert the wrong placeholder count.
+        self.assertEqual(reloaded.projector_pool_stride, 2)
         self.assertEqual(reloaded.audio_token_id, processor.audio_token_id)
         self.assertEqual(reloaded.chat_template, processor.chat_template)
 

@@ -25,7 +25,7 @@ from collections import Counter, defaultdict
 from pathlib import Path
 
 sys.path.insert(0, "src")
-from data_processing.audit import classify_record  # noqa: E402
+from data_processing.audit import classify_record
 
 FENCE = re.compile(r"```|~~~")
 META = re.compile(

@@ -18,12 +18,16 @@ vllm_gpu_memory_utilization: 0.93
 # batch_size = concurrent in-flight LLM calls per worker (asyncio.gather);
 # each record gets its own focused prompt. vLLM continuous batching schedules
 # the parallel requests on the GPU.
-# 96 workers (one per CPU core) x 10 = ~960 peak in-flight vs
-# vllm_max_num_seqs=512: ~1.9x oversubscription keeps all 512 decode slots
-# busy behind a queue while staying well inside the 300s request timeout.
+# workers_per_node is the YAML default; the CLI can override per run:
+#   python3 -m data_processing ... --workers 256
+#   (scripts/run_clean_range.sh defaults to 256 and passes --workers through)
+# 256 workers x 10 = ~2560 peak in-flight vs vllm_max_num_seqs=512: ~5x
+# oversubscription — vLLM queues everything past its 512 decode slots, so
+# this only raises throughput if the GPU is the bottleneck; watch the 300s
+# request_timeout for queue-wait on the largest manifests.
 # Note: workers are asyncio tasks in one process (HTTP-bound, not CPU-bound);
-# throughput is capped by the 512-seq ceiling, but 96 shards improve tail-end
-# load balancing since shards = workers.
+# throughput is capped by the 512-seq ceiling, but more shards improve
+# tail-end load balancing since shards = workers.
 workers_per_node: 96
 batch_size: 10
 max_retries: 5

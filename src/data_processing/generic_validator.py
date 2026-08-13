@@ -15,9 +15,15 @@ from typing import TYPE_CHECKING
 
 from .config import PipelineConfig
 from .generic_prompts import build_generic_validator_messages
+from .itn import numeric_soft_flags
 from .llm_client import VLLMClient
 from .manifest_io import CleanedRecord
-from .text_utils import contains_expected_script, expected_script_ratio
+from .text_utils import (
+    check_codeswitch_preservation,
+    contains_expected_script,
+    devanagari_to_western,
+    expected_script_ratio,
+)
 from .validator import ValidationResult, ValidatorAgent
 
 if TYPE_CHECKING:
@@ -64,7 +70,7 @@ class GenericValidatorAgent(ValidatorAgent):
         max_retries: int = 2,
         config: PipelineConfig | None = None,
         language: str = "en",
-        corrector: "CorrectorAgent | None" = None,
+        corrector: CorrectorAgent | None = None,
     ) -> None:
         super().__init__(
             client, max_retries=max_retries, config=config, corrector=corrector
@@ -122,7 +128,9 @@ class GenericValidatorAgent(ValidatorAgent):
         """
         flags = []
 
-        # Expected script ratio (soft: code-switching legitimately dips it)
+        # Expected script ratio. Code-switching does NOT dip this, because
+        # expected_script_ratio() counts Latin as expected for every
+        # non-English language — a low value means a third script appeared.
         ratio = expected_script_ratio(record.text, self.language)
         if ratio < 0.8:
             flags.append(
@@ -133,7 +141,31 @@ class GenericValidatorAgent(ValidatorAgent):
         if record.confidence < 0.3:
             flags.append(f"Cleaner reported low confidence: {record.confidence:.2f}")
 
+        # Code-switching: Hinglish and Manglish carry English in Latin script,
+        # and Chinese transcripts embed Latin brand/technical terms. Skipped
+        # for English, where every token is Latin and a lost word is an
+        # ordinary omission for the LLM to judge, not a script violation.
+        if self.language != "en":
+            flags.extend(
+                check_codeswitch_preservation(record.text, record.original_text)
+            )
+
+        # ITN verification. Only the script-independent (digit-only) checks
+        # apply here — the Arabic set inspects Arabic number words.
+        if self.itn_enabled:
+            flags.extend(numeric_soft_flags(record.text, record.original_text))
+
         return flags
+
+    def _normalize_corrected(self, text: str) -> str:
+        """Mirror GenericCleanerAgent's post-processing, not the Arabic one.
+
+        The inherited implementation enforces the Arabic charset, which would
+        rewrite digits in every other language's output.
+        """
+        if self.language == "hi":
+            return devanagari_to_western(text)
+        return text
 
     async def _llm_validate(
         self, record: CleanedRecord, auto_flags: list[str] | None = None
@@ -151,7 +183,10 @@ class GenericValidatorAgent(ValidatorAgent):
             messages, thinking=self.thinking
         )
 
-        is_valid = result.get("valid", True)
+        # Fail CLOSED: a parseable-but-schema-broken verdict (missing
+        # "valid" key) must never auto-accept — it goes through the
+        # retry/correction loop and is rejected if it cannot settle.
+        is_valid = result.get("valid", False)
         issues = result.get("issues", [])
         corrected_text = result.get("corrected_text")
         quality_score = float(result.get("quality_score", 0.0))

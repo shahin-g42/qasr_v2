@@ -9,7 +9,6 @@ from qasr import QASRConfig, QASRForConditionalGeneration, QASRMultiModalProject
 from qasr.configuration import CohereEncoderConfig
 from qasr.utils import get_subsampled_attention_mask, get_subsampling_output_lengths
 
-
 AUDIO_TOKEN_ID = 120
 
 

@@ -1,10 +1,8 @@
-import asyncio
 import unittest
-from unittest.mock import patch
 
 import numpy as np
 
-from qasr.server import _ConnectionState, _transcription_worker
+from qasr.server import SessionState, TranscriptionServer
 from qasr.streaming import PCM16Buffer, StreamingConfig, merge_windowed_transcript
 
 try:
@@ -76,119 +74,75 @@ class StreamingConfigTest(unittest.TestCase):
             StreamingConfig(min_audio_seconds=2, window_seconds=1)
 
 
-class _FakeWebSocket:
-    def __init__(self) -> None:
-        self.messages = []
-
-    async def send_json(self, message) -> None:
-        self.messages.append(message)
-
-
 class _FakeTranscriber:
     def transcribe(self, waveform, *, language, max_new_tokens) -> str:
         del language, max_new_tokens
         return f"heard {waveform.size}"
 
 
-class StreamingWorkerTest(unittest.TestCase):
-    def test_stop_emits_a_final_result(self) -> None:
-        async def call_inline(function, *args, **kwargs):
-            return function(*args, **kwargs)
+class TranscriptionServerTest(unittest.TestCase):
+    def test_transcribe_window_delegates_to_the_plain_transcriber(self) -> None:
+        server = TranscriptionServer(model_path="unused")
+        server._transcriber = _FakeTranscriber()
+        server.max_new_tokens = 4
 
-        async def scenario():
-            config = StreamingConfig(
-                sample_rate=10,
-                partial_interval_seconds=0.2,
-                min_audio_seconds=0.2,
-                window_seconds=1,
-                max_new_tokens=4,
-            )
-            state = _ConnectionState(config=config, language="en")
-            state.buffer.append(np.arange(4, dtype="<i2").tobytes())
-            state.finished = True
-            state.changed.set()
-            websocket = _FakeWebSocket()
+        result = server.transcribe_window(np.zeros(800, dtype=np.float32), language="en")
 
-            with patch("qasr.server._run_in_thread", side_effect=call_inline):
-                await _transcription_worker(
-                    websocket,
-                    state,
-                    _FakeTranscriber(),
-                    asyncio.Lock(),
-                )
-            return websocket.messages
+        self.assertEqual(result, "heard 800")
 
-        messages = asyncio.run(scenario())
-        self.assertEqual(len(messages), 1)
-        self.assertEqual(messages[0]["type"], "final")
-        self.assertEqual(messages[0]["text"], "heard 4")
-        self.assertEqual(messages[0]["audio_seconds"], 0.4)
-
-    def test_audio_received_during_inference_is_included_in_final(self) -> None:
-        async def scenario():
-            config = StreamingConfig(
-                sample_rate=10,
-                partial_interval_seconds=0.2,
-                min_audio_seconds=0.2,
-                window_seconds=1,
-                max_new_tokens=4,
-            )
-            state = _ConnectionState(config=config, language=None)
-            state.buffer.append(np.arange(2, dtype="<i2").tobytes())
-            state.changed.set()
-            websocket = _FakeWebSocket()
-            invocation = 0
-
-            async def receive_more_audio(function, *args, **kwargs):
-                nonlocal invocation
-                invocation += 1
-                if invocation == 1:
-                    state.buffer.append(np.arange(2, 4, dtype="<i2").tobytes())
-                    state.finished = True
-                    state.changed.set()
-                return function(*args, **kwargs)
-
-            with patch(
-                "qasr.server._run_in_thread",
-                side_effect=receive_more_audio,
-            ):
-                await _transcription_worker(
-                    websocket,
-                    state,
-                    _FakeTranscriber(),
-                    asyncio.Lock(),
-                )
-            return websocket.messages
-
-        messages = asyncio.run(scenario())
-        self.assertEqual(
-            [message["type"] for message in messages],
-            ["partial", "final"],
+    def test_session_state_tracks_a_bounded_pcm_window(self) -> None:
+        session = SessionState(
+            session_id="s1",
+            pcm_buffer=PCM16Buffer(max_samples=4),
+            language="ar",
         )
-        self.assertEqual(
-            [message["text"] for message in messages],
-            ["heard 2", "heard 4"],
-        )
+        session.pcm_buffer.append(np.arange(6, dtype="<i2").tobytes())
+
+        self.assertEqual(session.pcm_buffer.total_samples, 6)
+        self.assertEqual(session.pcm_buffer.buffered_samples, 4)
+        self.assertEqual(session.language, "ar")
+        self.assertEqual(session.merged_transcript, "")
 
 
 @unittest.skipIf(fastapi is None, "streaming server dependencies are not installed")
 class StreamingAppTest(unittest.TestCase):
-    def test_app_exposes_page_health_and_websocket_routes(self) -> None:
+    def test_app_exposes_health_and_websocket_routes(self) -> None:
         from qasr.server import create_app
 
-        config = StreamingConfig(
-            sample_rate=10,
-            partial_interval_seconds=0.2,
-            min_audio_seconds=0.2,
-            window_seconds=1,
-            max_new_tokens=4,
-        )
-        transcriber = _FakeTranscriber()
-        transcriber.sample_rate = 10
-
-        app = create_app(config=config, transcriber=transcriber)
+        app = create_app(TranscriptionServer(model_path="unused"))
         paths = {route.path for route in app.routes}
-        self.assertTrue({"/", "/health", "/ws/transcribe"}.issubset(paths))
+        self.assertTrue({"/health", "/ws/transcribe"}.issubset(paths))
+
+    def test_websocket_protocol_matches_the_browser_client(self) -> None:
+        from fastapi.testclient import TestClient
+
+        from qasr.server import create_app
+
+        server = TranscriptionServer(model_path="unused")
+        server.sample_rate = 16000
+        server._transcriber = _FakeTranscriber()
+        server.load = lambda: None  # bypass model loading in the lifespan
+
+        app = create_app(server)
+        pcm = np.zeros(8000, dtype="<i2").tobytes()  # 0.5s at 16 kHz
+
+        with TestClient(app) as client, client.websocket_connect("/ws/transcribe") as ws:
+            ready = ws.receive_json()
+            self.assertEqual(ready["type"], "ready")
+            self.assertEqual(ready["sample_rate"], 16000)
+
+            ws.send_json({"type": "start", "language": "ar"})
+            ws.send_bytes(pcm)
+
+            partial = ws.receive_json()
+            self.assertEqual(partial["type"], "partial")
+            self.assertEqual(partial["text"], "heard 8000")
+            self.assertIn("latency_ms", partial)
+
+            ws.send_json({"type": "stop"})
+            final = ws.receive_json()
+            self.assertEqual(final["type"], "final")
+            self.assertEqual(final["text"], "heard 8000")
 
 
 if __name__ == "__main__":

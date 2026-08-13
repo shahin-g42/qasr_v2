@@ -58,14 +58,14 @@ def validate_audio_duration(
 ) -> None:
     """Ensure decoded audio, rather than manifest metadata, is in range."""
     actual = waveform.shape[0] / sampling_rate
-    min_samples = int(round(min_audio_seconds * sampling_rate))
+    min_samples = round(min_audio_seconds * sampling_rate)
     if waveform.shape[0] < min_samples:
         raise AudioDurationError(
             f"{path} is {actual:.3f}s after decoding, shorter than the configured "
             f"{min_audio_seconds:.3f}s minimum"
         )
 
-    max_samples = int(round(max_audio_seconds * sampling_rate))
+    max_samples = round(max_audio_seconds * sampling_rate)
     if waveform.shape[0] > max_samples:
         raise AudioDurationError(
             f"{path} is {actual:.3f}s after decoding, longer than the configured "

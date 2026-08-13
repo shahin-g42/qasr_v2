@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from typing import Any
+from typing import Any, ClassVar
 
 import numpy as np
 import torch
@@ -8,7 +8,6 @@ from transformers.feature_extraction_sequence_utils import SequenceFeatureExtrac
 from transformers.feature_extraction_utils import BatchFeature
 from transformers.utils import TensorType, is_librosa_available, logging
 from transformers.utils.import_utils import requires
-
 
 if is_librosa_available():
     import librosa
@@ -23,7 +22,7 @@ LOGGER = logging.get_logger(__name__)
 class QASRFeatureExtractor(SequenceFeatureExtractor):
     """Extract normalized 128-bin log-Mel features for the QASR encoder."""
 
-    model_input_names = ["input_features", "attention_mask"]
+    model_input_names: ClassVar[list[str]] = ["input_features", "attention_mask"]
 
     def __init__(
         self,
@@ -86,10 +85,10 @@ class QASRFeatureExtractor(SequenceFeatureExtractor):
         return quietest_idx
 
     def _split_audio_chunks_energy(self, waveform: torch.Tensor) -> list[torch.Tensor]:
-        chunk_size = max(1, int(round(self.max_audio_clip_s * self.sampling_rate)))
+        chunk_size = max(1, round(self.max_audio_clip_s * self.sampling_rate))
         boundary_context_size = max(
             1,
-            int(round(self.overlap_chunk_second * self.sampling_rate)),
+            round(self.overlap_chunk_second * self.sampling_rate),
         )
         total_samples = waveform.shape[0]
         if total_samples <= chunk_size:
@@ -264,8 +263,12 @@ class QASRFeatureExtractor(SequenceFeatureExtractor):
 
         input_features = self._torch_extract_fbank_features(input_features, device)
         # input_features is (batch, 128, time) - frequency-major
+        # torch.stft runs with center=False, so the exact frame count for a
+        # waveform of T samples is floor((T - n_fft) / hop) + 1. Using
+        # floor(T / hop) here is a slightly conservative estimate for the
+        # attention mask: it never marks padding frames as valid.
         feature_lengths = torch.floor_divide(
-            padded_inputs.audio_lengths + self.n_fft - self.n_fft,
+            padded_inputs.audio_lengths,
             self.hop_length,
         )
         # attention_mask is (batch, time)
@@ -278,9 +281,11 @@ class QASRFeatureExtractor(SequenceFeatureExtractor):
         masked_features = input_features * mask
         mean = masked_features.sum(dim=2) / feature_lengths.unsqueeze(-1)  # (batch, 128)
         mean = mean.unsqueeze(2)  # (batch, 128, 1)
+        # Clamp the denominator: a single-frame utterance (feature_lengths==1)
+        # would otherwise divide by zero and poison the normalization.
         variance = ((masked_features - mean) ** 2 * mask).sum(dim=2) / (
             feature_lengths - 1
-        ).unsqueeze(-1)
+        ).clamp(min=1).unsqueeze(-1)
         std = torch.sqrt(variance).unsqueeze(2)  # (batch, 128, 1)
         input_features = (input_features - mean) / (std + EPSILON)
         input_features *= mask

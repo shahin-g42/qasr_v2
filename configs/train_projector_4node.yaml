@@ -101,3 +101,27 @@ data_seed: 42
 resume_from_checkpoint: null
 output_dir: /lustrefs/shared/shahin.konadath/workspace/expmt/qasr/projector
 attn_implementation: sdpa
+
+# Data augmentation (applied during training only) — identical to the
+# Phase 2 recipe so the projector learns the bridge on the same distorted
+# audio distribution it will serve during full fine-tune.
+augmentation:
+  spec_augment:
+    enabled: true
+    num_time_masks: 2
+    max_time_mask_ratio: 0.05
+    num_freq_masks: 2
+    max_freq_mask_ratio: 0.15
+    p: 0.37
+  speed_perturb:
+    enabled: true
+    rate_range: [0.85, 1.15]
+    p: 0.37
+  noise_injection:
+    enabled: true
+    noise_dir: /lustrefs/shared/shahin.konadath/workspace/train/stt/musan
+    snr_range: [5.0, 20.0]
+    p: 0.37
+  codec_augment:
+    enabled: true
+    p: 0.37

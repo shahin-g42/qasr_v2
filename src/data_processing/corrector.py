@@ -20,7 +20,6 @@ from .llm_client import VLLMClient
 from .manifest_io import CleanedRecord
 from .prompts import build_corrector_messages
 
-
 LOGGER = logging.getLogger("data_processing.corrector")
 
 

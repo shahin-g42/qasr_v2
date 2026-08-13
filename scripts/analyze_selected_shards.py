@@ -5,8 +5,6 @@ from __future__ import annotations
 
 import json
 import re
-import sys
-import unicodedata
 from collections import Counter
 from pathlib import Path
 
@@ -84,11 +82,16 @@ for sh in SHARDS:
         letters = len(AR_LETTER.findall(text))
         dcount = sum(1 for ch in text if ch in DIAC)
         ratio = dcount / letters if letters else 0
-        if ratio == 0: diac_buckets["0%"] += 1
-        elif ratio < 0.05: diac_buckets["<5%"] += 1
-        elif ratio < 0.15: diac_buckets["5-15%"] += 1
-        elif ratio < 0.4: diac_buckets["15-40%"] += 1
-        else: diac_buckets[">=40% (over-vocalized)"] += 1
+        if ratio == 0:
+            diac_buckets["0%"] += 1
+        elif ratio < 0.05:
+            diac_buckets["<5%"] += 1
+        elif ratio < 0.15:
+            diac_buckets["5-15%"] += 1
+        elif ratio < 0.4:
+            diac_buckets["15-40%"] += 1
+        else:
+            diac_buckets[">=40% (over-vocalized)"] += 1
 
         if text == orig:
             identical += 1
@@ -112,7 +115,7 @@ for sh in SHARDS:
             continue
         tw, ow = words(t_np), words(o_np)
         if len(tw) == len(ow):
-            diffs = [(a, b) for a, b in zip(ow, tw) if a != b]
+            diffs = [(a, b) for a, b in zip(ow, tw, strict=True) if a != b]
             # spelling-normalization? (same skeleton after hamza/ta-marbuta/ya folding)
             def fold(w):
                 return (w.replace("أ","ا").replace("إ","ا").replace("آ","ا")
@@ -162,5 +165,5 @@ for cat, exs in examples.items():
         print(f"  NEW : {t}")
 
 print("\n=== WORD SUBSTITUTION DIFF PAIRS (fidelity risk triage) ===")
-for diffs, o, t in word_sub_examples[:15]:
+for diffs, _orig, _new in word_sub_examples[:15]:
     print(f"  pairs={diffs}")

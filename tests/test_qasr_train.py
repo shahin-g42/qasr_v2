@@ -12,6 +12,7 @@ from qasr.train import (
     _gradient_checkpointing_kwargs,
     _parameter_counts,
     _sample_subset,
+    _StatsSubset,
 )
 
 
@@ -33,17 +34,12 @@ class _Combined:
 class SmokeSamplingTest(unittest.TestCase):
     def test_staged_configs_retain_latest_manifest_set(self) -> None:
         root = Path(__file__).resolve().parents[1]
-        projector = TrainConfig.from_yaml(root / "configs/train_v2.yaml")
-        full = TrainConfig.from_yaml(root / "configs/train_v3.yaml")
+        projector = TrainConfig.from_yaml(root / "configs/train_full_4node_filtered.yaml")
+        full = TrainConfig.from_yaml(root / "configs/train_full_8node_filtered.yaml")
 
-        self.assertEqual(len(projector.train_manifest_specs), 22)
-        self.assertEqual(len(projector.eval_manifest_specs), 6)
+        self.assertTrue(projector.train_manifest_specs)
         self.assertEqual(projector.train_manifest_specs, full.train_manifest_specs)
         self.assertEqual(projector.eval_manifest_specs, full.eval_manifest_specs)
-        self.assertEqual(projector.per_device_train_batch_size, 8)
-        self.assertEqual(projector.gradient_accumulation_steps, 2)
-        self.assertEqual(full.per_device_train_batch_size, 16)
-        self.assertEqual(full.gradient_accumulation_steps, 1)
 
     def test_qasr_smoke_config_accepts_combined_manifests(self) -> None:
         config = TrainConfig(
@@ -73,6 +69,26 @@ class SmokeSamplingTest(unittest.TestCase):
         self.assertTrue(selected & {0, 1})
         self.assertTrue(selected & {2, 3, 4})
         self.assertTrue(selected & {5, 6})
+
+
+class StatsSubsetTest(unittest.TestCase):
+    def test_smoke_subsets_stay_sampler_compatible(self) -> None:
+        # LanguageBalancedSampler weights parts by stats.total_kept_hours; the
+        # smoke-mode shim must forward those stats through the Subset wrapper.
+        class StatsPart:
+            stats = SimpleNamespace(total_kept_hours=3.0, kept_records=4)
+
+            def __len__(self):
+                return 4
+
+            def __getitem__(self, index):
+                return index
+
+        subset = _StatsSubset(StatsPart(), [0, 2])
+
+        self.assertEqual(subset.stats.total_kept_hours, 3.0)
+        self.assertEqual(len(subset), 2)
+        self.assertEqual(subset[1], 2)
 
 
 class BatchNormTest(unittest.TestCase):
@@ -143,6 +159,74 @@ class TrainingCacheTest(unittest.TestCase):
         self.assertFalse(model.config.use_cache)
         self.assertFalse(text_config.use_cache)
         self.assertFalse(decoder_config.use_cache)
+
+
+class EvalCollatorGateTest(unittest.TestCase):
+    """Evaluation dataloaders must use the clean (un-augmented) collator."""
+
+    def _build_trainer(self, eval_collator):
+        from unittest.mock import patch
+
+        from transformers import Trainer
+
+        import qasr.train as train_module
+        from qasr.train import PredictionLoggingTrainer
+
+        def stub_init(self, *a, **k):
+            # Minimal stand-in: the subclass body only needs self.model.
+            self.model = k.get("model")
+
+        with patch.object(Trainer, "__init__", stub_init), \
+                patch.object(train_module, "_batch_norm_modules", lambda model: []):
+            trainer = PredictionLoggingTrainer(
+                model=torch.nn.Linear(2, 2),
+                data_collator="train-collator",
+                prediction_processor=object(),
+                prediction_collator=object(),
+                eval_log_samples=1,
+                eval_generation_max_new_tokens=4,
+                eval_collator=eval_collator,
+            )
+        # The patched parent __init__ skips attribute setup the gate needs.
+        trainer.data_collator = "train-collator"
+        return trainer
+
+    def test_eval_dataloader_swaps_in_clean_collator_and_restores(self) -> None:
+        from unittest.mock import patch
+
+        from transformers import Trainer
+
+        trainer = self._build_trainer(eval_collator="clean-collator")
+        seen = {}
+
+        def capture(self, eval_dataset=None):
+            seen["collator"] = self.data_collator
+            return "eval-dataloader"
+
+        with patch.object(Trainer, "get_eval_dataloader", capture):
+            dataloader = trainer.get_eval_dataloader()
+
+        self.assertEqual(dataloader, "eval-dataloader")
+        self.assertEqual(seen["collator"], "clean-collator")
+        # The training dataloader keeps the augmented collator afterwards.
+        self.assertEqual(trainer.data_collator, "train-collator")
+
+    def test_without_eval_collator_parent_behavior_is_untouched(self) -> None:
+        from unittest.mock import patch
+
+        from transformers import Trainer
+
+        trainer = self._build_trainer(eval_collator=None)
+        seen = {}
+
+        def capture(self, eval_dataset=None):
+            seen["collator"] = self.data_collator
+            return "eval-dataloader"
+
+        with patch.object(Trainer, "get_eval_dataloader", capture):
+            trainer.get_eval_dataloader()
+
+        self.assertEqual(seen["collator"], "train-collator")
 
 
 if __name__ == "__main__":

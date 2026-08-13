@@ -1,24 +1,48 @@
 #!/usr/bin/env python3
 """Assemble cleaned + reprocessed manifests into a versioned training snapshot.
 
-Collects, per language, the accepted output of the cleaning pipeline and any
-reprocess recoveries, merges them with correct precedence, and writes a
+Collects, per language, the accepted output of the cleaning pipeline and ALL
+reprocess recoveries, folds them back into their parent corpus, and writes a
 self-contained, training-ready snapshot:
 
     <output-dir>/<version>/<lang>/<corpus>.jsonl
     <output-dir>/<version>/MANIFEST.json      (provenance + counts)
 
+Recovery folding (the important part):
+  Reprocess rounds produce <corpus>_recovered, <corpus>_still_recovered,
+  <corpus>_still_still_recovered, ... and <corpus>_suspect_recovered.
+  These are NOT separate corpora: every recovered record is folded back
+  into its parent corpus with replace-or-append semantics. Round N wins
+  over round N-1; suspect re-cleans win over everything. The snapshot
+  therefore contains exactly ONE file per corpus — no *_still_* junk.
+
+Distributed part files:
+  Reprocess writes part files like <corpus>_recovered_p0012.jsonl or
+  <corpus>_still_rejected_p0019.jsonl. The _PART_RE regex strips the
+  trailing _pNNNN for ALL role types before the ROLE_SUFFIXES check, so
+  *_rejected_pNNNN is excluded just like the whole-file *_rejected.
+
+Text sanitisation:
+  <<<...>>> fences (the cleaning-LLM's response delimiters) are stripped
+  from every record during ingest. A record whose text becomes empty after
+  stripping is counted as dropped_invalid.
+
 Merge rules (per corpus):
   1. Base = <corpus>_cleaned.jsonl when present, else <corpus>_shard_*.jsonl
      (never both — corpora exist in BOTH forms with identical content).
-  2. Overlay = <corpus>_recovered.jsonl and <corpus>_suspect_recovered.jsonl:
-     a record whose (audio_filepath, original_text) matches a base record
-     REPLACES it (audit-suspect re-clean); otherwise it is APPENDED
-     (rejected-record recovery).
+  2. Overlays = all recovered rounds, applied in ascending round order so
+     the latest cleaning verdict always wins; a record whose
+     (audio_filepath, original_text) matches an existing record REPLACES
+     it, otherwise it is APPENDED. Distributed-reprocess part files
+     (<corpus>_<role>_pNNNN.jsonl) are treated exactly like the
+     whole-file <corpus>_<role>.jsonl they slice.
   3. Excluded: *_rejected, *_still_rejected, *_suspect, *_selected samples,
-     reports, backups, tmp files.
+     reports, backups, tmp files — including their part-file variants.
   4. Corpora with a `_as_<lang>` stem suffix (e.g. eval_ml_inworld_as_hi)
-     are routed to the target language's output directory.
+     are routed to the target language's output directory — including
+     their recovery rounds.
+  5. Records with empty text or missing audio_filepath are dropped and
+     counted (defensive quality gate).
 
 Output records are stripped to training fields {audio_filepath, text,
 duration} (duration kept only when present) unless --keep-metadata.
@@ -57,8 +81,23 @@ ROLE_SUFFIXES = (
     ("_cleaned", "base_merged"),
 )
 
+# Suspect re-cleans are the final authority on a record, so they sort last.
+SUSPECT_PRIORITY = 10_000
+
 _SHARD_RE = re.compile(r"^(?P<corpus>.+)_shard_\d{4}$")
 _AS_LANG_RE = re.compile(r"^(?P<corpus>.+)_as_(?P<lang>[a-z]{2})$")
+# Distributed-reprocess part files: <corpus>_<role>_p0012.jsonl
+# Covers ALL roles: _recovered, _suspect_recovered, _rejected, _still_rejected,
+# _selected. Without this, *_rejected_p0019 escapes the ROLE_SUFFIXES check and
+# gets registered as its own training corpus.
+_PART_RE = re.compile(
+    r"^(?P<stem>.+?_(?:suspect_recovered|recovered|still_rejected|rejected|selected))_p\d{4}$"
+)
+
+# <<<...>>> fences are the cleaning-LLM's response delimiters. They should never
+# survive into a manifest but were observed in v7.0 at ~1% of records. Strip them
+# during assembly so training never sees them.
+_FENCE_RE = re.compile(r"<<<|>>>")
 
 
 def classify_file(path: Path) -> tuple[str, str] | None:
@@ -69,11 +108,42 @@ def classify_file(path: Path) -> tuple[str, str] | None:
     shard = _SHARD_RE.match(stem)
     if shard:
         return shard.group("corpus"), "base_shard"
+    part = _PART_RE.match(stem)
+    if part:  # slice of a recovered pile -> same overlay as the whole file
+        stem = part.group("stem")
     for suffix, role in ROLE_SUFFIXES:
         if stem.endswith(suffix):
             return stem[: -len(suffix)], role
     # Bare <corpus>.jsonl (no recognized suffix): treat as merged base
     return stem, "base_merged"
+
+
+def normalize_corpus(corpus: str) -> tuple[str, int, bool]:
+    """Fold reprocess-chain stems back to their parent corpus.
+
+    Returns (parent_corpus, recovery_round, is_suspect). Round N of the
+    reprocess chain names its output <corpus>_still*<N>_recovered; all
+    rounds belong to the SAME corpus.
+
+        X                    -> (X, 0, False)   plain base/cleaned
+        X_still              -> (X, 1, False)   round-2 recovered pile
+        X_still_still_still  -> (X, 3, False)   round-4 recovered pile
+        X_suspect            -> (X, 0, True)    suspect re-clean pile
+    """
+    suspect = corpus.endswith("_suspect")
+    if suspect:
+        corpus = corpus[: -len("_suspect")]
+    rounds = 0
+    while corpus.endswith("_still"):
+        corpus = corpus[: -len("_still")]
+        rounds += 1
+    return corpus, rounds, suspect
+
+
+def overlay_priority(corpus: str) -> int:
+    """Application order for recovered overlays (later wins on conflict)."""
+    _, rounds, suspect = normalize_corpus(corpus)
+    return SUSPECT_PRIORITY if suspect else rounds
 
 
 def record_key(rec: dict) -> tuple[str, str]:
@@ -96,40 +166,73 @@ def read_jsonl(path: Path):
 
 def strip_record(rec: dict) -> dict:
     out = {k: rec[k] for k in TRAINING_FIELDS if rec.get(k) is not None}
+    text = out.get("text")
+    if text and _FENCE_RE.search(text):
+        out["text"] = _FENCE_RE.sub("", text).strip()
     return out
 
 
 def assemble_corpus(
-    base_files: list[Path], overlay_files: list[Path]
+    base_files: list[Path], overlays: list[tuple[int, str, Path]]
 ) -> tuple[list[dict], dict]:
-    """Merge base + overlay records with replace-or-append semantics."""
+    """Merge base + folded recovery overlays with replace-or-append semantics.
+
+    Overlays are (priority, source_corpus, path); they are applied in
+    ascending priority order so the most recent cleaning verdict wins.
+    """
     records: dict[tuple[str, str], dict] = {}
-    stats = {"base": 0, "replaced": 0, "appended": 0,
-             "base_dupes": 0, "missing_duration": 0}
+    origin: dict[tuple[str, str], str] = {}   # key -> "base" | overlay label
+    stats = {
+        "base": 0, "base_dupes": 0, "replaced": 0, "appended": 0,
+        "overlay_dupes": 0, "dropped_invalid": 0, "missing_duration": 0,
+        "recovery_rounds": defaultdict(int),
+    }
+
+    def ingest(rec: dict, src: str) -> None:
+        text = str(rec.get("text", "")).strip()
+        # Strip <<<>>> fences early — they poison both training and dedup keys.
+        if _FENCE_RE.search(text):
+            text = _FENCE_RE.sub("", text).strip()
+            rec = {**rec, "text": text}
+        if not text or not rec.get("audio_filepath"):
+            stats["dropped_invalid"] += 1
+            return
+        key = record_key(rec)
+        prev = origin.get(key)
+        if prev is None:
+            stats["appended" if src != "base" else "base"] += 1
+        elif prev == src:
+            stats["overlay_dupes" if src != "base" else "base_dupes"] += 1
+            return                            # exact re-run: keep first copy
+        elif prev == "base":
+            stats["replaced" if src != "base" else "base_dupes"] += 1
+        elif src == "base":
+            stats["base_dupes"] += 1        # base never overrides recoveries
+            return
+        else:
+            stats["overlay_dupes"] += 1
+        records[key] = rec
+        origin[key] = src
 
     for path in sorted(base_files):
         for rec in read_jsonl(path):
-            key = record_key(rec)
-            if key in records:
-                stats["base_dupes"] += 1  # defensive: identical shard overlap
-                continue
-            records[key] = rec
-            stats["base"] += 1
+            ingest(rec, "base")
 
-    for path in sorted(overlay_files):
+    # Sorted by priority (first element), which only controls overlay ordering.
+    for _priority, source_corpus, path in sorted(overlays):
+        _, rounds, suspect = normalize_corpus(source_corpus)
+        label = "suspect_recovered" if suspect else f"round_{rounds + 1}"
+        before = len(records)
         for rec in read_jsonl(path):
-            key = record_key(rec)
-            if key in records:
-                stats["replaced"] += 1
-            else:
-                stats["appended"] += 1
-            records[key] = rec  # recovered version wins
+            ingest(rec, label)
+        stats["recovery_rounds"][label] += len(records) - before
 
     merged = list(records.values())
     stats["missing_duration"] = sum(
         1 for r in merged if not isinstance(r.get("duration"), (int, float))
     )
     stats["total"] = len(merged)
+    stats["recovery_rounds"] = dict(stats["recovery_rounds"])
     return merged, stats
 
 
@@ -143,6 +246,9 @@ def main() -> int:
                         help="Subset of language dirs (default: all present)")
     parser.add_argument("--keep-metadata", action="store_true",
                         help="Keep dialect/confidence/original_text fields")
+    parser.add_argument("--shard-size", type=int, default=0,
+                        help="Split outputs larger than N records into "
+                             "<corpus>_shard_NNNN.jsonl (default: single file)")
     parser.add_argument("--dry-run", action="store_true",
                         help="Report the plan and counts; write nothing")
     args = parser.parse_args()
@@ -157,12 +263,14 @@ def main() -> int:
     snapshot_dir = args.output_dir / args.version
 
     # ------------------------------------------------------------------ #
-    # Discover: (out_lang, corpus) -> {role: [files]}                     #
+    # Discover: (out_lang, corpus) -> {"base": [...], "overlay": [...]}   #
+    # Recovery chains are folded onto their parent corpus here.           #
     # ------------------------------------------------------------------ #
-    plan: dict[tuple[str, str], dict[str, list[Path]]] = defaultdict(
-        lambda: defaultdict(list)
+    plan: dict[tuple[str, str], dict[str, list]] = defaultdict(
+        lambda: {"base": [], "overlay": []}
     )
     excluded: list[str] = []
+    folded_chains: dict[str, set[int]] = defaultdict(set)
     for lang in languages:
         lang_dir = args.input_dir / lang
         if not lang_dir.is_dir():
@@ -173,15 +281,23 @@ def main() -> int:
             classified = classify_file(path)
             if classified is None:
                 continue
-            corpus, role = classified
+            raw_corpus, role = classified
             if role == "exclude":
                 excluded.append(path.name)
                 continue
+            corpus, rounds, suspect = normalize_corpus(raw_corpus)
+            if role == "overlay" and (rounds or suspect):
+                folded_chains[corpus].add(rounds + 1 if not suspect else 0)
             out_lang = lang
             as_lang = _AS_LANG_RE.match(corpus)
             if as_lang:  # cross-language recovery (e.g. eval_ml_inworld_as_hi)
                 out_lang = as_lang.group("lang")
-            plan[(out_lang, corpus)][role].append(path)
+            if role in ("base_merged", "base_shard"):
+                plan[(out_lang, corpus)]["base"].append((role, path))
+            else:
+                plan[(out_lang, corpus)]["overlay"].append(
+                    (overlay_priority(raw_corpus), raw_corpus, path)
+                )
 
     # ------------------------------------------------------------------ #
     # Assemble                                                            #
@@ -197,12 +313,13 @@ def main() -> int:
 
     for (out_lang, corpus), roles in sorted(plan.items()):
         # Prefer the merged file; fall back to shards (never both)
-        base_files = roles.get("base_merged") or roles.get("base_shard") or []
-        overlay_files = roles.get("overlay", [])
-        if not base_files and not overlay_files:
+        base_merged = [p for role, p in roles["base"] if role == "base_merged"]
+        base_shards = [p for role, p in roles["base"] if role == "base_shard"]
+        base_files = base_merged or base_shards
+        if not base_files and not roles["overlay"]:
             continue
 
-        merged, stats = assemble_corpus(base_files, overlay_files)
+        merged, stats = assemble_corpus(base_files, roles["overlay"])
         if not merged:
             continue
         grand_total += stats["total"]
@@ -210,31 +327,39 @@ def main() -> int:
         lang_meta = manifest_meta["languages"].setdefault(out_lang, {})
         lang_meta[corpus] = {
             **stats,
-            "sources": [p.name for p in base_files + overlay_files],
+            "sources": [p.name for p in base_files]
+                       + [p.name for _, _, p in sorted(roles["overlay"])],
         }
 
         flag = " [cross-lang]" if _AS_LANG_RE.match(corpus) else ""
-        print(f"{out_lang}/{corpus}.jsonl{flag}: total={stats['total']} "
+        folded = " [recovery folded]" if corpus in folded_chains else ""
+        print(f"{out_lang}/{corpus}.jsonl{flag}{folded}: total={stats['total']} "
               f"(base={stats['base']} +recovered={stats['appended']} "
               f"~replaced={stats['replaced']}"
+              + (f" ~overlay-dupes={stats['overlay_dupes']}"
+                 if stats["overlay_dupes"] else "")
+              + (f" !dropped={stats['dropped_invalid']}"
+                 if stats["dropped_invalid"] else "")
               + (f" missing_dur={stats['missing_duration']}"
                  if stats["missing_duration"] else "")
               + ")")
 
         if args.dry_run:
             continue
-        out_path = snapshot_dir / out_lang / f"{corpus}.jsonl"
-        out_path.parent.mkdir(parents=True, exist_ok=True)
-        tmp = out_path.with_suffix(".jsonl.tmp")
-        with tmp.open("w", encoding="utf-8") as fh:
-            for rec in merged:
-                out_rec = rec if args.keep_metadata else strip_record(rec)
-                fh.write(json.dumps(out_rec, ensure_ascii=False) + "\n")
-        os.replace(tmp, out_path)
+        out_dir = snapshot_dir / out_lang
+        out_dir.mkdir(parents=True, exist_ok=True)
+        if args.shard_size > 0 and len(merged) > args.shard_size:
+            written = _write_sharded(out_dir, corpus, merged,
+                                     args.shard_size, args.keep_metadata)
+        else:
+            written = [_write_single(out_dir / f"{corpus}.jsonl",
+                                     merged, args.keep_metadata)]
+        lang_meta[corpus]["files"] = [p.name for p in written]
 
     print(f"\nsnapshot total: {grand_total} records"
           f" | excluded piles: {len(excluded)} files"
-          f" (rejected/still_rejected/suspect/selected)")
+          f" (rejected/still_rejected/suspect/selected)"
+          f" | recovery chains folded: {len(folded_chains)} corpora")
 
     if args.dry_run:
         print("DRY RUN — nothing written.")
@@ -249,6 +374,28 @@ def main() -> int:
     os.replace(meta_tmp, meta_path)
     print(f"snapshot ready: {snapshot_dir}  (provenance: {meta_path})")
     return 0
+
+
+def _write_single(out_path: Path, records: list[dict],
+                  keep_metadata: bool) -> Path:
+    tmp = out_path.with_suffix(".jsonl.tmp")
+    with tmp.open("w", encoding="utf-8") as fh:
+        for rec in records:
+            out_rec = rec if keep_metadata else strip_record(rec)
+            fh.write(json.dumps(out_rec, ensure_ascii=False) + "\n")
+    os.replace(tmp, out_path)
+    return out_path
+
+
+def _write_sharded(out_dir: Path, corpus: str, records: list[dict],
+                   shard_size: int, keep_metadata: bool) -> list[Path]:
+    written = []
+    for idx in range(0, len(records), shard_size):
+        part = idx // shard_size
+        out_path = out_dir / f"{corpus}_shard_{part:04d}.jsonl"
+        written.append(_write_single(
+            out_path, records[idx:idx + shard_size], keep_metadata))
+    return written
 
 
 if __name__ == "__main__":

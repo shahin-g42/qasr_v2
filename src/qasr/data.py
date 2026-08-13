@@ -15,7 +15,6 @@ from tqdm.auto import tqdm
 
 from .audio import AudioDurationError, AudioLoadingError, load_mono_audio, validate_audio_duration
 
-
 _PROGRESS_MIN_BYTES = 1024 * 1024
 LOGGER = logging.getLogger("qasr")
 
@@ -67,6 +66,7 @@ def parse_record(
     line_number: int,
     audio_root: Path | None,
     language: str | None,
+    empty_target_ok: bool = False,
 ) -> dict[str, Any]:
     location = f"{manifest_path}:{line_number}"
     if not isinstance(record, dict):
@@ -74,9 +74,13 @@ def parse_record(
 
     text_value = _first_usable_text(record, ("text", "transcript"))
     if text_value is None:
-        raise _UnusableTranscript(
-            f"{location}: missing, blank, or punctuation-only text or transcript"
-        )
+        if not empty_target_ok:
+            raise _UnusableTranscript(
+                f"{location}: missing, blank, or punctuation-only text or transcript"
+            )
+        # Non-speech / silence data: the model must learn to emit nothing for
+        # this audio, so an empty target string is the correct label.
+        text_value = ""
 
     audio_value = _first_present(record, ("audio_filepath", "wav_path"))
     duration_value = record.get("duration")
@@ -123,6 +127,7 @@ class JsonlSpeechDataset:
         audio_root: str | Path | None = None,
         language: str | None = None,
         validate_audio_paths: bool = False,
+        empty_target_ok: bool = False,
     ) -> None:
         self.manifest_path = Path(manifest_path).expanduser().resolve()
         if not self.manifest_path.is_file():
@@ -132,6 +137,7 @@ class JsonlSpeechDataset:
         self.min_duration_seconds = min_duration_seconds
         self.max_duration_seconds = max_duration_seconds
         self.validate_audio_paths = validate_audio_paths
+        self.empty_target_ok = empty_target_ok
 
         self._offsets: array[int] = array("Q")
         self._line_numbers: array[int] = array("Q")
@@ -192,6 +198,7 @@ class JsonlSpeechDataset:
                         line_number=line_number,
                         audio_root=self.audio_root,
                         language=self.language,
+                        empty_target_ok=self.empty_target_ok,
                     )
                 except _UnusableTranscript:
                     skipped_by_text += 1
@@ -265,6 +272,7 @@ class JsonlSpeechDataset:
             line_number=line_number,
             audio_root=self.audio_root,
             language=self.language,
+            empty_target_ok=self.empty_target_ok,
         )
 
     def __getstate__(self) -> dict[str, Any]:

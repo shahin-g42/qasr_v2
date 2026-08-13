@@ -10,10 +10,11 @@ import json
 import logging
 import os
 import tempfile
-from dataclasses import dataclass
+from collections.abc import Iterator
+from contextlib import suppress
+from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Any, Iterator
-
+from typing import Any
 
 LOGGER = logging.getLogger("data_processing.manifest")
 
@@ -43,6 +44,10 @@ class CleanedRecord:
     confidence: float
     changes: list[str]
     processing_version: str = PROCESSING_VERSION
+    # Rejection provenance — only populated on records written to
+    # *_rejected.jsonl so reprocess can target failure reasons.
+    rejection_reasons: list[str] = field(default_factory=list)
+    quality_score: float | None = None
 
     def to_dict(self) -> dict[str, Any]:
         """Convert to output JSONL schema."""
@@ -57,31 +62,69 @@ class CleanedRecord:
         }
         if self.duration is not None:
             result["duration"] = self.duration
+        if self.rejection_reasons:
+            result["rejection_reasons"] = self.rejection_reasons
+        if self.quality_score is not None:
+            result["quality_score"] = self.quality_score
         return result
 
 
-def read_manifest(path: str | Path) -> Iterator[ManifestRecord]:
+def read_manifest(
+    path: str | Path, *, strict: bool = False, max_warnings: int = 10
+) -> Iterator[ManifestRecord]:
     """Stream records from a JSONL manifest.
 
-    Yields ManifestRecord for each valid line. Skips blank lines.
-    Raises ValueError for malformed JSON.
+    Yields ManifestRecord for each usable line. Blank lines and records
+    without usable text/audio are skipped silently.
+
+    Corrupt lines (invalid JSON, non-object, undecodable bytes) are SKIPPED
+    and counted rather than fatal: a shard is one worker's entire unit of
+    work, so aborting on a single truncated line would discard every
+    remaining record in that shard — and the orchestrator's retries would
+    hit the same line every time, failing the shard permanently. Pass
+    strict=True to make corruption raise instead (validation tooling).
+
+    Lines are decoded individually so a partially-copied file damages only
+    the line it truncates.
     """
     path = Path(path)
     if not path.is_file():
         raise FileNotFoundError(f"Manifest not found: {path}")
 
-    with path.open("r", encoding="utf-8") as handle:
-        for line_number, line in enumerate(handle, 1):
+    corrupt = 0
+
+    def _reject(line_number: int, reason: str) -> None:
+        nonlocal corrupt
+        corrupt += 1
+        if corrupt <= max_warnings:
+            LOGGER.warning("%s:%d: skipping line — %s", path.name, line_number, reason)
+
+    with path.open("rb") as handle:
+        for line_number, raw_line in enumerate(handle, 1):
+            try:
+                line = raw_line.decode("utf-8")
+            except UnicodeDecodeError as exc:
+                if strict:
+                    raise ValueError(f"{path}:{line_number}: invalid UTF-8: {exc}") from exc
+                _reject(line_number, f"invalid UTF-8: {exc}")
+                continue
+
             stripped = line.strip()
             if not stripped:
                 continue
             try:
                 record = json.loads(stripped)
             except json.JSONDecodeError as exc:
-                raise ValueError(f"{path}:{line_number}: invalid JSON: {exc}") from exc
+                if strict:
+                    raise ValueError(f"{path}:{line_number}: invalid JSON: {exc}") from exc
+                _reject(line_number, f"invalid JSON: {exc}")
+                continue
 
             if not isinstance(record, dict):
-                raise ValueError(f"{path}:{line_number}: expected JSON object")
+                if strict:
+                    raise ValueError(f"{path}:{line_number}: expected JSON object")
+                _reject(line_number, "expected JSON object")
+                continue
 
             # Extract text (support both 'text' and 'transcript' keys)
             text = record.get("text") or record.get("transcript")
@@ -108,6 +151,14 @@ def read_manifest(path: str | Path) -> Iterator[ManifestRecord]:
                 duration=duration,
                 raw=record,
             )
+
+    if corrupt:
+        LOGGER.warning(
+            "%s: skipped %d corrupt line(s) (%d warning(s) shown)",
+            path.name,
+            corrupt,
+            min(corrupt, max_warnings),
+        )
 
 
 def count_manifest_records(path: str | Path) -> int:
@@ -226,10 +277,8 @@ def write_shard_atomic(path: str | Path, records: list[CleanedRecord]) -> None:
         os.replace(tmp_path, path)  # Atomic rename
     except BaseException:
         # Clean up temp file on failure
-        try:
+        with suppress(OSError):
             os.unlink(tmp_path)
-        except OSError:
-            pass
         raise
 
 
@@ -273,10 +322,8 @@ def merge_shards(shard_paths: list[Path], output_path: str | Path) -> int:
                             total_records += 1
         os.replace(tmp_path, output_path)
     except BaseException:
-        try:
+        with suppress(OSError):
             os.unlink(tmp_path)
-        except OSError:
-            pass
         raise
 
     LOGGER.info("Merged %d shards into %s (%d records)", len(shard_paths), output_path, total_records)

@@ -1,0 +1,152 @@
+# Phase 1 — projector warm-up on 8 nodes x 8 GPUs (64 GPUs total).
+# One-time migration prerequisite: set "projector_depth": 2 in the converted
+# base model's config.json before launching. from_pretrained tolerates the
+# missing hidden-block keys (fresh init, logged warning); linear_1/linear_2
+# names are preserved so legacy weights still load.
+# Encoder + LLM frozen: only the (deep) projector + input LayerNorm train.
+# Global batch: 64 devices x 2 samples x 1 accumulation = 128.
+# Convergence gate: eval_loss plateau <= ~0.4 (historical run reached 0.34).
+model_name_or_path: /lustrefs/shared/mohammed.naseem/workspace/expmt/qasr/initial
+freeze_audio_tower: true
+freeze_language_model: true
+
+# Same validated manifests as the full fine-tune so the bridge learns every
+# language's alignment, not just ar/en. Phase 0 wires the cleaned v1 snapshot
+# paths here as well.
+train_manifest:
+  ar:
+    - /lustrefs/shared/shahin.konadath/workspace/train/stt/qasr/validated_manifests/train_ar_q3asr.json
+    - /lustrefs/shared/shahin.konadath/workspace/train/stt/qasr/validated_manifests/train_ar_ar_ae.json
+    - /lustrefs/shared/shahin.konadath/workspace/train/stt/qasr/validated_manifests/train_ar_camel_race.json
+    - /lustrefs/shared/shahin.konadath/workspace/train/stt/qasr/validated_manifests/train_ar_inworld_full.json
+    - /lustrefs/shared/shahin.konadath/workspace/train/stt/qasr/validated_manifests/train_ar_qudratech_batch2.json
+    - /lustrefs/shared/shahin.konadath/workspace/train/stt/qasr/validated_manifests/train_ar_qudratech_phase4.json
+    - /lustrefs/shared/shahin.konadath/workspace/train/stt/qasr/validated_manifests/train_ar_khalid_msa.json
+    - /lustrefs/shared/shahin.konadath/workspace/train/stt/qasr/validated_manifests/train_ar_el_gen_v5.json
+    - /lustrefs/shared/shahin.konadath/workspace/train/stt/qasr/validated_manifests/train_ar_el_ar_v1.json
+    - /lustrefs/shared/shahin.konadath/workspace/train/stt/qasr/validated_manifests/train_ar_se_v1.json
+    - /lustrefs/shared/shahin.konadath/workspace/train/stt/qasr/validated_manifests/train_ar_spotify_v1.json
+    - /lustrefs/shared/shahin.konadath/workspace/train/stt/qasr/validated_manifests/train_ar_dialect_gulf.json
+    - /lustrefs/shared/shahin.konadath/workspace/train/stt/qasr/validated_manifests/train_ar_ar_ae_train.json
+  en:
+    - /lustrefs/shared/shahin.konadath/workspace/train/stt/qasr/validated_manifests/train_en_q3asr.json
+    - /lustrefs/shared/shahin.konadath/workspace/train/stt/qasr/validated_manifests/train_en_commentary.json
+    - /lustrefs/shared/shahin.konadath/workspace/train/stt/qasr/validated_manifests/train_en_inworld.json
+    - /lustrefs/shared/shahin.konadath/workspace/train/stt/qasr/validated_manifests/train_en_expresso.json
+    - /lustrefs/shared/shahin.konadath/workspace/train/stt/qasr/validated_manifests/train_en_anispeech.json
+    - /lustrefs/shared/shahin.konadath/workspace/train/stt/qasr/validated_manifests/train_en_hifi_tts.json
+  zh:
+    - /lustrefs/shared/shahin.konadath/workspace/train/stt/qasr/validated_manifests/train_zh_q3asr.json
+  hi:
+    - /lustrefs/shared/shahin.konadath/workspace/train/stt/qasr/validated_manifests/train_hi_q3asr.json
+  ml:
+    - /lustrefs/shared/shahin.konadath/workspace/train/stt/qasr/validated_manifests/train_ml_itn_punct.json
+
+eval_manifest:
+  ar:
+    - /lustrefs/shared/shahin.konadath/workspace/train/stt/qasr/validated_manifests/eval_ar_inworld.json
+    - /lustrefs/shared/shahin.konadath/workspace/train/stt/qasr/validated_manifests/eval_ar_ar_ae.json
+  en:
+    - /lustrefs/shared/shahin.konadath/workspace/train/stt/qasr/validated_manifests/eval_en_inworld.json
+    - /lustrefs/shared/shahin.konadath/workspace/train/stt/qasr/validated_manifests/eval_en_expresso.json
+  ml:
+    - /lustrefs/shared/shahin.konadath/workspace/train/stt/qasr/validated_manifests/eval_ml_inworld.json
+  zh:
+    - /lustrefs/shared/shahin.konadath/workspace/train/stt/qasr/validated_manifests/eval_zh_inworld.json
+  hi:
+    - /lustrefs/shared/shahin.konadath/workspace/train/stt/qasr/validated_manifests/eval_hi_inworld.json
+
+audio_root: null
+
+language: ar
+punctuation: true
+min_duration_seconds: 0.1
+max_duration_seconds: 35.0
+max_target_length: 512
+truncate_long_transcripts: false
+validate_audio_paths: false
+eval_log_samples: 10
+eval_generation_max_new_tokens: 256
+
+num_train_epochs: 1.0
+max_steps: 5000
+# 64 devices x 2 samples x 1 accumulation = global batch size 128 (matches
+# the historical 4-node projector run so step count/loss stay comparable).
+per_device_train_batch_size: 2
+per_device_eval_batch_size: 4
+gradient_accumulation_steps: 1
+learning_rate: 1.0e-4
+weight_decay: 0.01
+warmup_steps: 500
+# Short warm-up run: cosine is fine here (WSD pays off over 250k steps).
+lr_scheduler_type: cosine
+max_grad_norm: 1.0
+
+# Balanced sampling so the bridge aligns all languages, not just ar/en.
+balanced_sampling: true
+sampling_temperature: 0.5
+# Only the projector trains; LR factors are inert but kept explicit.
+llm_lr_factor: 1.0
+embed_lr_factor: 1.0
+label_smoothing: 0.1
+non_speech_manifest: null
+ctc_loss_weight: 0.0
+eval_wer_samples_per_language: 100
+
+logging_steps: 10
+eval_steps: 1000
+save_steps: 2500
+save_total_limit: 5
+
+smoke_test: false
+smoke_test_max_steps: 2
+smoke_test_train_samples: 256
+smoke_test_eval_samples: 16
+
+dataloader_num_workers: 8
+dataloader_pin_memory: true
+dataloader_persistent_workers: true
+
+gradient_checkpointing: true
+bf16: true
+fp16: false
+tf32: true
+torch_compile: false
+optim: adamw_torch
+
+# Eight-node ZeRO-2: only the ~7.5M projector params train; no ZeRO-3 needed.
+deepspeed: configs/deepspeed_zero2.json
+ddp_find_unused_parameters: false
+report_to: wandb
+wandb_project: qasr
+run_name: qasr-projector-8node-deep
+seed: 42
+data_seed: 42
+
+resume_from_checkpoint: null
+output_dir: /lustrefs/shared/shahin.konadath/workspace/train/stt/qasr/output/projector_v2
+attn_implementation: sdpa
+
+# Data augmentation (applied during training only) — identical to the
+# Phase 2 recipe so the projector learns the bridge on the same distorted
+# audio distribution it will serve during full fine-tune.
+augmentation:
+  spec_augment:
+    enabled: true
+    num_time_masks: 2
+    max_time_mask_ratio: 0.05
+    num_freq_masks: 2
+    max_freq_mask_ratio: 0.15
+    p: 0.37
+  speed_perturb:
+    enabled: true
+    rate_range: [0.85, 1.15]
+    p: 0.37
+  noise_injection:
+    enabled: true
+    noise_dir: /lustrefs/shared/shahin.konadath/workspace/train/stt/musan
+    snr_range: [5.0, 20.0]
+    p: 0.37
+  codec_augment:
+    enabled: true
+    p: 0.37

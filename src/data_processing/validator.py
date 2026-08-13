@@ -20,9 +20,11 @@ from .arabic_utils import (
     has_diacritics,
 )
 from .config import PipelineConfig
+from .itn import enforce_digit_charset, itn_soft_flags
 from .llm_client import VLLMClient
 from .manifest_io import CleanedRecord
 from .prompts import build_validator_messages
+from .text_utils import check_codeswitch_preservation
 
 if TYPE_CHECKING:
     from .corrector import CorrectorAgent
@@ -42,6 +44,16 @@ _DIALECT_MARKER_WORDS = {
 # Over-vocalization threshold: if diacritics/letters ratio exceeds this,
 # the text is likely fully vocalized (undesirable for ASR targets)
 OVER_VOCALIZATION_THRESHOLD = 0.4
+
+# How far the Arabic ratio may fall below the original's before we flag it.
+# Promoting an ad-hoc transliteration to Latin ("ماركتينج" → "marketing")
+# is an allowed edit that legitimately moves the ratio a few points; a drop
+# this large is not explained by one or two words.
+ARABIC_RATIO_DROP_TOLERANCE = 0.15
+
+# Below this in BOTH original and output, the record is so script-mixed that
+# it is worth asking whether it is Arabic speech at all.
+MIXED_SCRIPT_RATIO = 0.5
 
 # Max validator correction rounds before settling (prevents correction
 # ping-pong: reject → correct → re-reject → correct → ... loops)
@@ -81,6 +93,7 @@ class ValidatorAgent:
         self.corrector = corrector
         self.preserve_dialects = config.preserve_dialects if config else True
         self.restore_diacritics = config.restore_diacritics if config else True
+        self.itn_enabled = config.itn_enabled if config else True
         self.thinking = config.validator_thinking if config else False
 
     async def validate(self, record: CleanedRecord) -> ValidationResult:
@@ -151,10 +164,33 @@ class ValidatorAgent:
         """
         flags = []
 
-        # Arabic ratio (soft: code-switched speech can legitimately dip)
+        # Arabic ratio is judged as a DROP against the original, never as an
+        # absolute floor. A code-switched utterance ("عندنا meeting بعد الـ
+        # lunch break") sits near 0.5 legitimately, and handing the LLM a flag
+        # that reads "expected > 0.80" invites it to raise the number the only
+        # way it can — transliterating the Latin words, the single edit rule 0
+        # forbids outright.
         ratio = arabic_ratio(record.text)
-        if ratio < 0.8:
-            flags.append(f"Arabic ratio is {ratio:.2f} (expected > 0.80)")
+        original_ratio = arabic_ratio(record.original_text)
+        if ratio < original_ratio - ARABIC_RATIO_DROP_TOLERANCE:
+            flags.append(
+                f"Arabic ratio fell {original_ratio:.2f} -> {ratio:.2f}: the "
+                f"cleaner added Latin script (legitimate only if it promoted "
+                f"a transliteration back to its original spelling)"
+            )
+        elif ratio < MIXED_SCRIPT_RATIO and original_ratio < MIXED_SCRIPT_RATIO:
+            flags.append(
+                f"Heavily mixed script in both original and output "
+                f"({original_ratio:.2f} -> {ratio:.2f}): confirm this is "
+                f"Arabic speech with code-switching, not a wrong-language record"
+            )
+
+        # The opposite direction is the code-switching failure mode, and no
+        # ratio test can see it: transliterating Latin words into Arabic
+        # pushes the ratio UP, so it looks like an improvement.
+        flags.extend(
+            check_codeswitch_preservation(record.text, record.original_text)
+        )
 
         # Cleaner's own confidence
         if record.confidence < 0.3:
@@ -167,7 +203,23 @@ class ValidatorAgent:
         # Diacritics heuristics
         flags.extend(self._check_diacritics(record))
 
+        # ITN consistency: mis-assembled digit readouts, skipped conversions,
+        # and numbers dropped from the source. Correction-safe subset only —
+        # number-noun agreement is excluded on purpose (see itn.py).
+        if self.itn_enabled:
+            flags.extend(itn_soft_flags(record.text, record.original_text))
+
         return flags
+
+    def _normalize_corrected(self, text: str) -> str:
+        """Re-apply the cleaner's deterministic post-processing to LLM output.
+
+        The correction paths below rebuild records straight from validator/
+        corrector text, which never passes through CleanerAgent — so without
+        this, corrected records ship a charset the cleaned records never have.
+        Overridden per language family.
+        """
+        return enforce_digit_charset(text)
 
     def _check_dialect_preservation(self, record: CleanedRecord) -> list[str]:
         """Advisory heuristic: detect potentially lost dialect markers.
@@ -276,7 +328,10 @@ class ValidatorAgent:
             messages, thinking=self.thinking
         )
 
-        is_valid = result.get("valid", True)
+        # Fail CLOSED: a parseable-but-schema-broken verdict (missing
+        # "valid" key) must never auto-accept — it goes through the
+        # retry/correction loop and is rejected if it cannot settle.
+        is_valid = result.get("valid", False)
         issues = result.get("issues", [])
         corrected_text = result.get("corrected_text")
         quality_score = float(result.get("quality_score", 0.0))
@@ -312,17 +367,22 @@ class ValidatorAgent:
         while (
             not result.is_valid
             and result.corrected_text
-            and result.corrected_text != record.text
             and rounds < MAX_CORRECTION_ROUNDS
         ):
+            # Normalize BEFORE the no-progress comparison: a correction whose
+            # only change is charset (٢٠١٩ for 2019) normalizes back to the
+            # current text, and re-validating it would burn a round for nothing.
+            corrected = self._normalize_corrected(result.corrected_text)
+            if corrected == record.text:
+                break
             record = CleanedRecord(
                 audio_filepath=record.audio_filepath,
-                text=result.corrected_text,
+                text=corrected,
                 duration=record.duration,
                 original_text=record.original_text,
                 dialect=record.dialect,
                 confidence=record.confidence * 0.9,  # Reduce confidence
-                changes=record.changes + ["corrected"],
+                changes=[*record.changes, "corrected"],
             )
             rounds += 1
             result = await self.validate(record)
@@ -347,6 +407,7 @@ class ValidatorAgent:
                     "Corrector failed for %s: %s", record.audio_filepath, exc
                 )
                 repaired = None
+            repaired = self._normalize_corrected(repaired) if repaired else None
             if repaired and repaired != record.text:
                 record = CleanedRecord(
                     audio_filepath=record.audio_filepath,
@@ -355,7 +416,7 @@ class ValidatorAgent:
                     original_text=record.original_text,
                     dialect=record.dialect,
                     confidence=record.confidence * 0.9,  # Reduce confidence
-                    changes=record.changes + ["issue_corrected"],
+                    changes=[*record.changes, "issue_corrected"],
                 )
                 corrected_once = True
                 result = await self.validate(record)
@@ -382,7 +443,7 @@ class ValidatorAgent:
                 original_text=record.original_text,
                 dialect=record.dialect,
                 confidence=record.confidence,
-                changes=record.changes + ["borderline"],
+                changes=[*record.changes, "borderline"],
             )
             return record, True
 
@@ -392,6 +453,14 @@ class ValidatorAgent:
             " + issue-correction" if corrected_once else "",
             result.issues,
         )
+        # Persist WHY it failed: reprocess targets failure reasons, and
+        # audits/reports read these directly from *_rejected.jsonl.
+        record.rejection_reasons = list(result.issues) or ["no_issues_listed"]
+        if not result.llm_validated:
+            record.rejection_reasons.append("hard_check_rejection")
+        if corrected_once:
+            record.rejection_reasons.append("issue_correction_attempted")
+        record.quality_score = result.quality_score
         return record, False
 
 

@@ -9,7 +9,6 @@ from __future__ import annotations
 
 from .text_utils import LANGUAGE_NAMES
 
-
 # Per-language conventions injected into the system prompt.
 # Falls back to _DEFAULT_CONVENTIONS for unlisted languages.
 _LANGUAGE_CONVENTIONS: dict[str, str] = {
@@ -19,7 +18,8 @@ Language conventions (English):
 capitalization; capitalize proper nouns and "I".
 - ITN: spelled-out numbers to digits ("twenty five" -> "25", \
 "three thousand" -> "3000"). Keep idiomatic ordinals in words when natural \
-("first of all"). Format times ("three thirty pm" -> "3:30 PM"), \
+("first of all"). Format times ("three thirty pm" -> "3:30 PM"), dates \
+("March twenty first twenty twenty four" -> "March 21, 2024"), \
 currencies ("fifty dollars" -> "$50"), and percentages ("ten percent" -> "10%").
 - Keep contractions as spoken ("don't", "it's") — do not expand them.""",
     "zh": """\
@@ -29,6 +29,8 @@ Language conventions (Chinese, Mandarin):
 - ITN: spoken numbers to Arabic numerals ("\u4e09\u5343" -> "3000", \
 "\u767e\u5206\u4e4b\u4e94\u5341" -> "50%"), but keep idiomatic/lexicalized number words \
 ("\u4e00\u4e9b", "\u4e00\u8d77", "\u5341\u5206") untouched.
+- Times and dates in numerals, keeping the 年/月/日 markers \
+("三点半" -> "3:30", "二〇二四年三月二十一日" -> "2024年3月21日").
 - No spaces between Chinese characters; keep a single space around \
 embedded Latin words or numbers where standard.
 - Preserve erhua (\u513f\u5316) and regional colloquialisms as spoken.""",
@@ -38,6 +40,8 @@ Language conventions (Hindi):
 standard commas. Keep Devanagari script.
 - ITN: spelled-out numbers to Western digits ("\u092a\u091a\u093e\u0938" -> "50", \
 "\u0924\u0940\u0928 \u0939\u091c\u093c\u093e\u0930" -> "3000"). Convert Devanagari digits (\u0967\u0968\u0969) to Western (123).
+- Times and dates in digits, month name as spoken \
+("साढ़े तीन बजे" -> "3:30 बजे", "इक्कीस मार्च" -> "21 मार्च").
 - Preserve Hinglish code-switching exactly as spoken — keep English \
 words in Latin script, do not translate or transliterate them.""",
     "ml": """\
@@ -45,6 +49,8 @@ Language conventions (Malayalam):
 - Punctuation: standard (. , ? !). Keep Malayalam script.
 - ITN: spelled-out numbers to Western digits ("\u0d05\u0d3e\u0d2f\u0d3f\u0d30\u0d02" -> "1000", \
 "\u0d05\u0d2e\u0d4d\u0d2a\u0d24\u0d4d" -> "50").
+- Times and dates in digits, month name as spoken \
+("3:30", "2024 മാർച്ച് 21").
 - Preserve Manglish code-switching exactly as spoken — keep English \
 words in Latin script, do not translate or transliterate them.""",
 }
@@ -55,6 +61,22 @@ Language conventions:
 - Convert spelled-out numbers to digits where natural; keep idiomatic \
 number expressions in words.
 - Preserve code-switching exactly as spoken."""
+
+# Date/time ITN carries the same hazard in every language: the spoken form is
+# the only source of truth, so whatever the speaker left out cannot be filled
+# in from context. Appended to every conventions block rather than restated
+# per language.
+_DATETIME_GUARDRAIL = """\
+- Dates and times: digits for the fields actually spoken, month name and \
+clock reading kept as spoken. Never infer an absent year, century, or \
+AM/PM, never reorder date fields, and never convert between calendar \
+systems."""
+
+
+def _conventions_for(language: str) -> str:
+    """Per-language conventions plus the shared date/time guardrail."""
+    base = _LANGUAGE_CONVENTIONS.get(language, _DEFAULT_CONVENTIONS)
+    return f"{base}\n{_DATETIME_GUARDRAIL}"
 
 
 GENERIC_CLEANER_USER_TEMPLATE = """\
@@ -88,7 +110,7 @@ positives — adjudicate each one with your linguistic expertise):
 def build_generic_cleaner_system_prompt(language: str) -> str:
     """Build the cleaner system prompt for a non-Arabic language."""
     language_name = LANGUAGE_NAMES.get(language, language)
-    conventions = _LANGUAGE_CONVENTIONS.get(language, _DEFAULT_CONVENTIONS)
+    conventions = _conventions_for(language)
 
     return (
         f"You are a world-class {language_name} computational linguist "
@@ -139,7 +161,7 @@ def build_generic_cleaner_system_prompt(language: str) -> str:
 def build_generic_validator_system_prompt(language: str) -> str:
     """Build the validator system prompt for a non-Arabic language."""
     language_name = LANGUAGE_NAMES.get(language, language)
-    conventions = _LANGUAGE_CONVENTIONS.get(language, _DEFAULT_CONVENTIONS)
+    conventions = _conventions_for(language)
 
     return (
         f"You are a senior {language_name} linguistics QA reviewer "
@@ -150,7 +172,9 @@ def build_generic_validator_system_prompt(language: str) -> str:
         "hallucinated. The processed text conveys exactly what the speaker "
         "said. Nothing was translated.\n"
         "2. ITN CORRECTNESS: All number/time/currency conversions are "
-        "accurate and follow the language conventions below.\n"
+        "accurate and follow the language conventions below. An impossible "
+        "date or time field (hour above 23, month above 12) is mis-assembled "
+        "ITN — correct it.\n"
         "3. PUNCTUATION QUALITY: Punctuation is syntactically valid, uses "
         "the correct character set for the language, and reflects natural "
         "prosodic boundaries.\n"

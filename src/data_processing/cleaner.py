@@ -12,11 +12,10 @@ import logging
 
 from .arabic_utils import contains_arabic, preprocess_text
 from .config import PipelineConfig
-from .itn import normalize_digits_to_western
+from .itn import enforce_digit_charset
 from .llm_client import VLLMClient
 from .manifest_io import CleanedRecord, ManifestRecord
 from .prompts import build_cleaner_messages
-
 
 LOGGER = logging.getLogger("data_processing.cleaner")
 
@@ -73,9 +72,9 @@ class CleanerAgent:
         changes = result.get("changes", [])
 
         # Post-process: enforce digit/punctuation charset deterministically.
-        # Western digits are the target convention — normalize ALL Arabic-Indic
-        # digits (not just mixed cases) and the Urdu full stop (۔ → .)
-        normalized = normalize_digits_to_western(cleaned_text).replace("۔", ".")
+        # Shared with the validator's correction paths so every stored text
+        # — cleaned, corrected, or rejected — carries the same charset.
+        normalized = enforce_digit_charset(cleaned_text)
         if normalized != cleaned_text:
             cleaned_text = normalized
             if "itn" not in changes:
@@ -112,7 +111,7 @@ class CleanerAgent:
         )
 
         cleaned_records: list[CleanedRecord] = []
-        for record, result in zip(records, results):
+        for record, result in zip(records, results, strict=True):
             if isinstance(result, BaseException):
                 LOGGER.error(
                     "Failed to process record at line %d: %s",

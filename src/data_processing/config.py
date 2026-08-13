@@ -40,9 +40,27 @@ class PipelineConfig:
     language_filter: str = "ar"
     preserve_dialects: bool = True
     restore_diacritics: bool = True
+    # itn_enabled gates ITN verification of the cleaner's output: date/time
+    # field sanity, mis-assembled digit readouts, and numbers dropped from
+    # the source in every language, plus Arabic spoken-number-word checks.
+    # The cleaner prompt always asks for ITN; this only controls whether we
+    # verify the result.
     itn_enabled: bool = True
+    # NOTE: there is deliberately no preserve_code_switching flag. Keeping
+    # code-switched words in the script they were spoken in is part of
+    # verbatim fidelity (cleaner prompt rule 0), which nothing may turn off,
+    # so its check runs unconditionally in both validators.
+    # NOTE: punctuate is not wired — the cleaner prompt always requests
+    # punctuation restoration. Kept for config compatibility.
     punctuate: bool = True
     validation_sample_rate: float = 0.05
+    # Read missing durations from the audio header during cleaning.
+    # Records that already carry a duration cost zero I/O (they are
+    # filtered out before any filesystem access), so this only pays for
+    # manifests that actually lack the field — and it keeps us from
+    # needing a separate full backfill pass over the audio afterwards.
+    probe_missing_durations: bool = True
+    duration_probe_workers: int = 32
     # After a record is rejected, run one issue-driven correction pass that
     # repairs the SPECIFIC issues the validator flagged, then re-validate.
     # Rescues the "invalid but no correction offered" rejects at the cost of
@@ -94,6 +112,8 @@ class PipelineConfig:
             raise ValueError("request_timeout must be positive")
         if not 0 <= self.validation_sample_rate <= 1:
             raise ValueError("validation_sample_rate must be in [0, 1]")
+        if self.duration_probe_workers < 1:
+            raise ValueError("duration_probe_workers must be positive")
         if self.vllm_port < 1 or self.vllm_port > 65535:
             raise ValueError("vllm_port must be a valid port number")
         if self.node_rank < 0 or self.node_rank >= self.num_nodes:

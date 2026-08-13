@@ -1,9 +1,9 @@
 from __future__ import annotations
 
 import logging
-from typing import Any, Sequence
+from collections.abc import Sequence
+from typing import Any
 
-import numpy as np
 import torch
 from transformers.audio_utils import AudioInput, make_list_of_audio_chat_template
 from transformers.feature_extraction_utils import BatchFeature
@@ -13,8 +13,7 @@ from transformers.models.qwen3_asr.processing_qwen3_asr import (
 )
 
 from .feature_extraction import QASRFeatureExtractor
-from .utils import get_subsampling_output_lengths
-
+from .utils import get_projector_pool_output_lengths, get_subsampling_output_lengths
 
 LOGGER = logging.getLogger("qasr.processing")
 
@@ -57,6 +56,7 @@ class QASRProcessor(Qwen3ASRProcessor):
         subsampling_factor: int = 8,
         subsampling_conv_kernel_size: int = 3,
         subsampling_conv_stride: int = 2,
+        projector_pool_stride: int = 1,
     ) -> None:
         super().__init__(
             feature_extractor=feature_extractor,
@@ -67,6 +67,11 @@ class QASRProcessor(Qwen3ASRProcessor):
         self.subsampling_factor = int(subsampling_factor)
         self.subsampling_conv_kernel_size = int(subsampling_conv_kernel_size)
         self.subsampling_conv_stride = int(subsampling_conv_stride)
+        # Mirror of QASRConfig.projector_pool_stride: when the projector
+        # downsamples encoder frames with a strided pooling conv, the number
+        # of audio placeholders inserted into the prompt must shrink by the
+        # same factor. Must stay in sync with the model config.
+        self.projector_pool_stride = int(projector_pool_stride)
         if feature_extractor is not None and not isinstance(feature_extractor, QASRFeatureExtractor):
             LOGGER.warning(
                 "QASRProcessor loaded with %s instead of QASRFeatureExtractor. "
@@ -165,6 +170,10 @@ class QASRProcessor(Qwen3ASRProcessor):
             kernel_size=self.subsampling_conv_kernel_size,
             stride=self.subsampling_conv_stride,
         )
+        if self.projector_pool_stride > 1:
+            lengths = get_projector_pool_output_lengths(
+                lengths, pool_stride=self.projector_pool_stride
+            )
         return lengths.cpu().numpy()
 
     def apply_transcription_request(
@@ -181,7 +190,7 @@ class QASRProcessor(Qwen3ASRProcessor):
             languages = [resolve_qasr_language(item) for item in language_rows]
 
         conversations = []
-        for language_name, audio_item in zip(languages, audio_items):
+        for language_name, audio_item in zip(languages, audio_items, strict=True):
             messages = []
             if language_name is not None:
                 messages.append(
@@ -213,7 +222,7 @@ class QASRProcessor(Qwen3ASRProcessor):
         language_rows = _normalize_rows(language, len(audio_items), "language")
         conversations = []
         language_names = []
-        for audio_item, transcript, language_code in zip(audio_items, texts, language_rows):
+        for audio_item, transcript, language_code in zip(audio_items, texts, language_rows, strict=True):
             language_name = resolve_qasr_language(language_code)
             language_names.append(language_name)
             conversations.append(
@@ -244,9 +253,9 @@ class QASRProcessor(Qwen3ASRProcessor):
         eos = self.tokenizer.eos_token or ""
         targets = [
             f"language {language_name}<asr_text>{transcript}{eos}"
-            for language_name, transcript in zip(language_names, texts)
+            for language_name, transcript in zip(language_names, texts, strict=True)
         ]
-        full_texts = [prefix + target for prefix, target in zip(prefix_texts, targets)]
+        full_texts = [prefix + target for prefix, target in zip(prefix_texts, targets, strict=True)]
         inputs = self(
             text=full_texts,
             audio=audio_items,

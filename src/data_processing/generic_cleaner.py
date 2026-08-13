@@ -23,7 +23,6 @@ from .text_utils import (
     preprocess_text_generic,
 )
 
-
 LOGGER = logging.getLogger("data_processing.generic_cleaner")
 
 

@@ -40,7 +40,7 @@ class JsonlSpeechDatasetTest(unittest.TestCase):
             self.assertEqual(len(dataset), 2)
             self.assertEqual(dataset[0]["text"], "مرحبا")
             self.assertEqual(dataset[1]["text"], "أهلا")
-            self.assertEqual(Path(dataset[0]["audio_path"]), root / "a.wav")
+            self.assertEqual(Path(dataset[0]["audio_path"]), (root / "a.wav").resolve())
             self.assertEqual(dataset.stats.skipped_by_duration, 1)
             self.assertEqual(dataset.stats.skipped_by_text, 0)
 
@@ -167,7 +167,7 @@ class JsonlSpeechDatasetTest(unittest.TestCase):
                 sample = dataset[1]
 
             self.assertEqual(sample["text"], "second")
-            load_audio.assert_called_once_with(str(root / "b.wav"), 1_000)
+            load_audio.assert_called_once_with(str((root / "b.wav").resolve()), 1_000)
 
     def test_manifest_file_handle_is_reopened_after_process_change(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
@@ -223,8 +223,8 @@ class JsonlSpeechDatasetTest(unittest.TestCase):
             self.assertEqual(len(dataset), 2)
             self.assertEqual(dataset[0]["text"], "أ")
             self.assertEqual(dataset[1]["text"], "ب")
-            self.assertEqual(Path(dataset[0]["audio_path"]), first_dir / "a.wav")
-            self.assertEqual(Path(dataset[1]["audio_path"]), second_dir / "b.wav")
+            self.assertEqual(Path(dataset[0]["audio_path"]), (first_dir / "a.wav").resolve())
+            self.assertEqual(Path(dataset[1]["audio_path"]), (second_dir / "b.wav").resolve())
             self.assertAlmostEqual(dataset.stats.total_kept_hours, 3.0 / 3600.0)
 
 
@@ -277,9 +277,8 @@ class ResilientAudioDatasetTest(unittest.TestCase):
         with patch(
             "qasr.data.load_mono_audio",
             return_value=np.zeros(10, dtype=np.float32),
-        ):
-            with self.assertRaisesRegex(RuntimeError, "checking every sample"):
-                self._dataset()[0]
+        ), self.assertRaisesRegex(RuntimeError, "checking every sample"):
+            self._dataset()[0]
 
 
 if __name__ == "__main__":

@@ -13,7 +13,6 @@ from typing import Any
 
 from .manifest_io import read_cleaned_manifest
 
-
 LOGGER = logging.getLogger("data_processing.reporting")
 
 

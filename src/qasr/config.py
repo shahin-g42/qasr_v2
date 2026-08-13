@@ -7,7 +7,6 @@ from typing import Any
 
 import yaml
 
-
 ManifestPaths = str | list[str]
 ManifestConfig = ManifestPaths | dict[str, ManifestPaths]
 
@@ -112,12 +111,39 @@ class TrainConfig:
     freeze_audio_tower: bool = True
     freeze_language_model: bool = True
 
+    # --- Phase A accuracy recipe (accuracy-focused defaults) ---
+    # Language-balanced sampling: per-language draw weight proportional to
+    # hours^sampling_temperature (Canary alpha/beta recipe). Keeps small
+    # corpora (ml/hi) from being starved by naive concatenation.
+    balanced_sampling: bool = True
+    sampling_temperature: float = 0.5
+    # Per-group learning rates: encoder+projector at `learning_rate`, the
+    # pretrained LLM body at `learning_rate * llm_lr_factor`, and the tied
+    # token embeddings at `learning_rate * embed_lr_factor` (drift control).
+    llm_lr_factor: float = 0.5
+    embed_lr_factor: float = 0.25
+    # Label smoothing for the causal LM loss (implemented via a custom
+    # loss_function; transformers 5.14 does not smooth ForCausalLMLoss).
+    label_smoothing: float = 0.1
+    # Extra scheduler kwargs forwarded to TrainingArguments (e.g. WSD:
+    # {"num_decay_steps": 20000, "min_lr_ratio": 0.1}).
+    lr_scheduler_kwargs: dict[str, Any] | None = None
+    # Non-speech / silence manifests for anti-hallucination training. Records
+    # may carry blank transcripts (empty_target_ok); they are mixed into the
+    # balanced sampler under their configured language tags.
+    non_speech_manifest: ManifestConfig | None = None
+    # CTC auxiliary loss weight on the encoder output (0 disables the head).
+    # Training-time scaffold only; the head is discarded for inference.
+    ctc_loss_weight: float = 0.0
+    # Per-language WER/CER eval callback.
+    eval_wer_samples_per_language: int = 100
+
     # Augmentation configuration. Each sub-key maps to an augmentation type.
     # All augmentations are disabled by default; enable them in the YAML config.
     augmentation: dict[str, Any] | None = None
 
     @classmethod
-    def from_yaml(cls, path: str | Path) -> "TrainConfig":
+    def from_yaml(cls, path: str | Path) -> TrainConfig:
         config_path = Path(path)
         with config_path.open("r", encoding="utf-8") as handle:
             values = yaml.safe_load(handle) or {}
@@ -177,6 +203,26 @@ class TrainConfig:
             raise ValueError("smoke_test_eval_samples must be non-negative")
         if self.warmup_steps < 0:
             raise ValueError("warmup_steps must be non-negative")
+        if not 0 < self.sampling_temperature <= 1:
+            raise ValueError("sampling_temperature must be in the range (0, 1]")
+        if not 0 < self.llm_lr_factor <= 1:
+            raise ValueError("llm_lr_factor must be in the range (0, 1]")
+        if not 0 < self.embed_lr_factor <= 1:
+            raise ValueError("embed_lr_factor must be in the range (0, 1]")
+        if not 0 <= self.label_smoothing < 0.2:
+            raise ValueError("label_smoothing must be in the range [0, 0.2)")
+        if self.lr_scheduler_kwargs is not None and not isinstance(self.lr_scheduler_kwargs, dict):
+            raise ValueError("lr_scheduler_kwargs must be a mapping or null")
+        if self.ctc_loss_weight < 0:
+            raise ValueError("ctc_loss_weight must be non-negative")
+        if self.eval_wer_samples_per_language < 0:
+            raise ValueError("eval_wer_samples_per_language must be non-negative")
+        _expand_manifest_config(
+            self.non_speech_manifest,
+            default_language=self.language,
+            field_name="non_speech_manifest",
+            required=False,
+        )
 
     def to_dict(self) -> dict[str, Any]:
         return asdict(self)
@@ -204,6 +250,15 @@ class TrainConfig:
             self.eval_manifest,
             default_language=self.language,
             field_name="eval_manifest",
+            required=False,
+        )
+
+    @property
+    def non_speech_manifest_specs(self) -> list[tuple[str, str]]:
+        return _expand_manifest_config(
+            self.non_speech_manifest,
+            default_language=self.language,
+            field_name="non_speech_manifest",
             required=False,
         )
 

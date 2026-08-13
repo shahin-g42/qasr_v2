@@ -44,7 +44,6 @@ from torch import nn
 
 from .modeling import QASRForConditionalGeneration
 
-
 LOGGER = logging.getLogger("qasr.eagle")
 
 
@@ -59,6 +58,12 @@ class EagleConfig:
     top_k: int = 0
     acceptance_threshold: float = 0.0
     max_tree_width: int = 1
+    # EAGLE-3 style multi-layer fusion: indices into the model's
+    # ``outputs.hidden_states`` tuple (0 = embedding output, -1 = last layer).
+    # The default (-1,) reproduces single-layer EAGLE-2 exactly; with two or
+    # more indices the head learns softmax layer weights (EAGLE-3 recipe).
+    # Old checkpoints saved before this field existed load with the default.
+    fusion_layer_indices: tuple[int, ...] = (-1,)
 
 
 @dataclass
@@ -70,6 +75,9 @@ class EagleGenerationStats:
     accepted_tokens: int = 0
     emitted_tokens: int = 0
     target_forwards: int = 0
+    # accepted_by_position[i] counts rounds in which draft i was accepted
+    # (i.e. >= i+1 drafts survived). The list has K+1 entries; entry K is
+    # the count of rounds where every draft was accepted.
     accepted_by_position: list[int] = field(default_factory=list)
 
     @property
@@ -102,6 +110,40 @@ class EagleHead(nn.Module):
         self.norm = nn.LayerNorm(config.hidden_size)
         self.act = nn.SiLU()
         self.lm_head = nn.Linear(config.hidden_size, config.vocab_size, bias=False)
+        self.fusion_layer_indices = tuple(config.fusion_layer_indices)
+        if not self.fusion_layer_indices:
+            raise ValueError("fusion_layer_indices must contain at least one index")
+        # Learnable layer-mix weights for EAGLE-3 fusion (only when fusing
+        # more than one layer; zero-init => uniform mix at start).
+        self.layer_weights = (
+            nn.Parameter(torch.zeros(len(self.fusion_layer_indices)))
+            if len(self.fusion_layer_indices) > 1
+            else None
+        )
+
+    @property
+    def fuses_multiple_layers(self) -> bool:
+        return self.layer_weights is not None
+
+    def fuse_hidden_states(self, all_hidden_states: tuple[torch.Tensor, ...]) -> torch.Tensor:
+        """Reduce the model's per-layer hidden states to the head's input.
+
+        Args:
+            all_hidden_states: ``outputs.hidden_states`` from the target model
+                (embedding output followed by one tensor per decoder layer).
+
+        Returns:
+            (B, T, H) fused hidden states; for a single configured index this
+            is exactly ``all_hidden_states[index]`` (legacy behavior).
+        """
+        if self.layer_weights is None:
+            return all_hidden_states[self.fusion_layer_indices[0]]
+        weights = F.softmax(self.layer_weights, dim=0)
+        fused: torch.Tensor | None = None
+        for weight, index in zip(weights, self.fusion_layer_indices, strict=True):
+            layer = all_hidden_states[index]
+            fused = weight * layer if fused is None else fused + weight * layer
+        return fused
 
     def features(self, hidden_states: torch.Tensor, token_embeds: torch.Tensor) -> torch.Tensor:
         """Predict the next-position feature h_{t+1} from (h_t, embed(x_{t+1})).
@@ -146,7 +188,7 @@ class EagleHead(nn.Module):
         LOGGER.info("Saved EAGLE head (%d params) to %s", self.num_parameters, path)
 
     @classmethod
-    def from_pretrained(cls, path: str | Path, device: str = "cpu") -> "EagleHead":
+    def from_pretrained(cls, path: str | Path, device: str = "cpu") -> EagleHead:
         path = Path(path)
         checkpoint = torch.load(path / "eagle_head.pt", map_location=device, weights_only=True)
         config = EagleConfig(**checkpoint["config"])
@@ -191,9 +233,7 @@ class EagleSpeculativeDecoder:
         *,
         dtype: torch.dtype = torch.bfloat16,
         device: str = "auto",
-    ) -> "EagleSpeculativeDecoder":
-        from transformers import AutoConfig
-
+    ) -> EagleSpeculativeDecoder:
         model_kwargs: dict[str, Any] = {
             "dtype": dtype,
             "attn_implementation": "sdpa",
@@ -243,7 +283,7 @@ class EagleSpeculativeDecoder:
         if isinstance(eos_token_id, list):
             eos_token_id = eos_token_id[0]
         embed_tokens = self.model.get_input_embeddings()
-        stats = EagleGenerationStats(accepted_by_position=[0] * k)
+        stats = EagleGenerationStats(accepted_by_position=[0] * (k + 1))
         self.last_stats = stats
 
         # Prefill: build the KV cache, take the first token from the target, and
@@ -258,7 +298,8 @@ class EagleSpeculativeDecoder:
         )
         past_key_values = outputs.past_key_values
         cache_length = past_key_values.get_seq_length()
-        source_hidden = outputs.hidden_states[-1][:, -1:, :]  # (1, 1, H) h_t
+        fused_hidden = self.eagle_head.fuse_hidden_states(outputs.hidden_states)
+        source_hidden = fused_hidden[:, -1:, :]  # (1, 1, H) h_t
         next_token = self._select_token(outputs.logits[:, -1, :], temp)  # (1, 1) x_{t+1}
         stats.target_forwards += 1
         stats.emitted_tokens += 1
@@ -290,7 +331,9 @@ class EagleSpeculativeDecoder:
                 output_hidden_states=True,
             )
             past_key_values = verify_outputs.past_key_values
-            verify_hidden = verify_outputs.hidden_states[-1]  # (1, K+1, H)
+            verify_hidden = self.eagle_head.fuse_hidden_states(
+                verify_outputs.hidden_states
+            )  # (1, K+1, H)
             stats.target_forwards += 1
             # target_tokens[i] is the target's choice after consuming
             # verify_input[:, i]; position i therefore judges draft i.
@@ -300,6 +343,9 @@ class EagleSpeculativeDecoder:
             while accepted < k and target_tokens[accepted, 0] == draft_ids[0, accepted]:
                 stats.accepted_by_position[accepted] += 1
                 accepted += 1
+            if accepted == k:
+                # Full acceptance: all K drafts survived this round.
+                stats.accepted_by_position[k] += 1
 
             # Emit accepted drafts plus the target's own next token for free
             # (the correction on rejection, the bonus token on full acceptance).
@@ -325,7 +371,7 @@ class EagleSpeculativeDecoder:
             source_hidden = verify_hidden[:, accepted : accepted + 1, :]
 
         generated = generated[:max_new_tokens]
-        return torch.cat([input_ids] + generated, dim=-1)
+        return torch.cat([input_ids, *generated], dim=-1)
 
     @staticmethod
     def _select_token(logits: torch.Tensor, temperature: float) -> torch.Tensor:

@@ -1,8 +1,11 @@
 """WebSocket streaming server for QASR real-time transcription.
 
-Clients connect to /ws/transcribe and send binary PCM16 audio chunks at 16 kHz.
+Clients connect to /ws/transcribe and send binary PCM16 audio chunks at 16 kHz,
+bracketed by JSON control messages ({"type": "start"} / {"type": "stop"}).
 The server accumulates audio, runs rolling-window inference, and streams partial
-transcriptions back as JSON messages.
+transcriptions back as JSON messages, finishing with a "final" message.
+
+Serves the bundled browser demo UI from src/qasr/static at "/".
 
 Supports optional EAGLE-2 speculative decoding for 2-3x faster partial transcripts.
 
@@ -14,10 +17,12 @@ Usage:
 from __future__ import annotations
 
 import argparse
-import asyncio
+import json
 import logging
 import time
+from contextlib import asynccontextmanager
 from dataclasses import dataclass, field
+from pathlib import Path
 from typing import Any
 
 import numpy as np
@@ -25,6 +30,15 @@ import torch
 
 from .streaming import PCM16Buffer, QASRTranscriber, merge_windowed_transcript
 
+# FastAPI is an optional dependency, but WebSocket/WebSocketDisconnect must be
+# module-globals: FastAPI resolves the endpoint's parameter annotations against
+# the module's globals, and a function-local import makes it misread the
+# ``websocket`` parameter as a query field (rejecting every handshake).
+try:
+    from fastapi import WebSocket, WebSocketDisconnect
+except ImportError:
+    WebSocket = None  # type: ignore[assignment,misc]
+    WebSocketDisconnect = None  # type: ignore[assignment,misc]
 
 LOGGER = logging.getLogger("qasr.server")
 
@@ -42,6 +56,9 @@ class SessionState:
     total_audio_seconds: float = 0.0
     total_inference_time: float = 0.0
     inference_count: int = 0
+    # Cumulative sample count at the last inference — used to throttle
+    # inference to at most once per ``step_seconds`` of new audio.
+    last_infer_samples: int = 0
     created_at: float = field(default_factory=time.time)
 
 
@@ -76,8 +93,8 @@ class TranscriptionServer:
 
     def load(self) -> None:
         """Load model and processor (call once at startup)."""
-        from .processing import QASRProcessor
         from .modeling import QASRForConditionalGeneration
+        from .processing import QASRProcessor
 
         LOGGER.info("Loading QASR model from %s", self.model_path)
         self.processor = QASRProcessor.from_pretrained(self.model_path)
@@ -136,21 +153,43 @@ class TranscriptionServer:
 
 
 def create_app(server: TranscriptionServer):
-    """Create the FastAPI application with WebSocket endpoint."""
+    """Create the FastAPI application with WebSocket endpoint and demo UI.
+
+    Wire protocol (matches src/qasr/static/app.js):
+      server -> client on connect : {"type": "ready", "sample_rate": int}
+      client -> server            : binary PCM16 audio chunks
+      client -> server            : {"type": "start", "language": str | null}
+      client -> server            : {"type": "stop"}
+      server -> client            : {"type": "partial", "text", "audio_seconds",
+                                     "latency_ms", "session_id"}
+      server -> client            : {"type": "final", ...} after a stop request
+    """
     try:
-        from fastapi import FastAPI, WebSocket, WebSocketDisconnect
-    except ImportError:
+        from fastapi import FastAPI
+        from fastapi.responses import FileResponse
+        from fastapi.staticfiles import StaticFiles
+    except ImportError as exc:
         raise ImportError(
             "FastAPI is required for the streaming server. "
             "Install with: pip install 'qasr[streaming]'"
-        )
+        ) from exc
 
-    app = FastAPI(title="QASR Streaming ASR", version="0.2.0")
     sessions: dict[str, SessionState] = {}
 
-    @app.on_event("startup")
-    async def startup():
+    @asynccontextmanager
+    async def lifespan(_: Any):
         server.load()
+        yield
+
+    static_dir = Path(__file__).resolve().parent / "static"
+
+    app = FastAPI(title="QASR Streaming ASR", version="0.2.0", lifespan=lifespan)
+
+    @app.get("/", include_in_schema=False)
+    async def index() -> FileResponse:
+        return FileResponse(static_dir / "index.html")
+
+    app.mount("/static", StaticFiles(directory=static_dir), name="static")
 
     @app.get("/health")
     async def health():
@@ -168,49 +207,115 @@ def create_app(server: TranscriptionServer):
         )
         sessions[session_id] = session
         LOGGER.info("Client connected: %s", session_id)
+        await websocket.send_json({"type": "ready", "sample_rate": server.sample_rate})
+
+        # Inference cadence: at most one pass per step_seconds of new audio
+        step_samples = max(1, int(server.step_seconds * server.sample_rate))
 
         try:
             while True:
-                data = await websocket.receive_bytes()
-                session.pcm_buffer.append(data)
-                available = session.pcm_buffer.total_samples / server.sample_rate
-                session.total_audio_seconds = available
+                message = await websocket.receive()
+                if message["type"] == "websocket.disconnect":
+                    raise WebSocketDisconnect(message.get("code", 1000))
 
-                # Check if we have enough audio for a window
-                if available < server.min_audio_seconds:
+                raw = message.get("bytes")
+                if raw is not None:
+                    session.pcm_buffer.append(raw)
+                    available = session.pcm_buffer.total_samples / server.sample_rate
+                    session.total_audio_seconds = available
+
+                    # Check if we have enough audio for a window
+                    if available < server.min_audio_seconds:
+                        continue
+
+                    # Throttle: wait for a full step of new audio before the
+                    # next inference pass (the first pass runs immediately).
+                    if (
+                        session.inference_count > 0
+                        and session.pcm_buffer.total_samples - session.last_infer_samples
+                        < step_samples
+                    ):
+                        continue
+
+                    # The bounded buffer already holds only the newest window
+                    audio = session.pcm_buffer.waveform()
+                    if audio.size < 800:  # < 50ms
+                        continue
+
+                    # Run inference
+                    session.last_infer_samples = session.pcm_buffer.total_samples
+                    t0 = time.time()
+                    try:
+                        partial = server.transcribe_window(audio, language=session.language)
+                    except Exception as e:
+                        LOGGER.error("Inference error: %s", e)
+                        continue
+                    inference_time = time.time() - t0
+                    session.total_inference_time += inference_time
+                    session.inference_count += 1
+
+                    # Send partial result, merging across the rolling window so
+                    # text that fell out of the audio buffer is not lost.
+                    if partial and partial != session.last_partial:
+                        session.last_partial = partial
+                        session.last_partial_time = time.time()
+                        session.merged_transcript = merge_windowed_transcript(
+                            session.merged_transcript, partial
+                        )
+                        await websocket.send_json({
+                            "type": "partial",
+                            "text": session.merged_transcript,
+                            "audio_seconds": round(available, 2),
+                            "latency_ms": round(inference_time * 1000, 1),
+                            "session_id": session_id,
+                        })
                     continue
 
-                # The bounded buffer already holds only the newest window
-                audio = session.pcm_buffer.waveform()
-                if audio.size < 800:  # < 50ms
+                text = message.get("text")
+                if not text:
                     continue
-
-                # Run inference
-                t0 = time.time()
                 try:
-                    partial = server.transcribe_window(audio, language=session.language)
-                except Exception as e:
-                    LOGGER.error("Inference error: %s", e)
+                    control = json.loads(text)
+                except json.JSONDecodeError:
+                    LOGGER.warning("Ignoring non-JSON control message from %s", session_id)
                     continue
-                inference_time = time.time() - t0
-                session.total_inference_time += inference_time
-                session.inference_count += 1
 
-                # Send partial result, merging across the rolling window so
-                # text that fell out of the audio buffer is not lost.
-                if partial and partial != session.last_partial:
-                    session.last_partial = partial
-                    session.last_partial_time = time.time()
-                    session.merged_transcript = merge_windowed_transcript(
-                        session.merged_transcript, partial
-                    )
+                kind = control.get("type")
+                if kind == "start":
+                    language = control.get("language")
+                    if language:
+                        session.language = language
+                elif kind == "stop":
+                    # One last pass over the buffered window, then finalize.
+                    latency_ms = 0.0
+                    audio = session.pcm_buffer.waveform()
+                    if audio.size >= 800:
+                        t0 = time.time()
+                        try:
+                            partial = server.transcribe_window(
+                                audio, language=session.language
+                            )
+                        except Exception as e:
+                            LOGGER.error("Final inference error: %s", e)
+                        else:
+                            latency_ms = (time.time() - t0) * 1000
+                            session.total_inference_time += latency_ms / 1000
+                            session.inference_count += 1
+                            if partial:
+                                session.last_partial = partial
+                                session.merged_transcript = merge_windowed_transcript(
+                                    session.merged_transcript, partial
+                                )
                     await websocket.send_json({
-                        "type": "partial",
+                        "type": "final",
                         "text": session.merged_transcript,
-                        "audio_seconds": round(available, 2),
-                        "inference_ms": round(inference_time * 1000, 1),
+                        "audio_seconds": round(
+                            session.pcm_buffer.total_samples / server.sample_rate, 2
+                        ),
+                        "latency_ms": round(latency_ms, 1),
                         "session_id": session_id,
                     })
+                    break
 
         except WebSocketDisconnect:
             LOGGER.info(

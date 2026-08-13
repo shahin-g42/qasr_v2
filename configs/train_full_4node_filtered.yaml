@@ -1,7 +1,8 @@
 # Full fine-tuning stage for 4 nodes x 8 GPUs per node (32 GPUs total).
 # Uses VALIDATED and FILTERED manifests for clean training data.
 # Global batch: 32 devices x 4 samples x 1 accumulation = 128.
-model_name_or_path: /lustrefs/shared/shahin.konadath/workspace/train/stt/qasr/output/projector
+# Input = Phase 1 output (deep-projector warm-up, output/projector_v2).
+model_name_or_path: /lustrefs/shared/shahin.konadath/workspace/train/stt/qasr/output/projector_v2
 freeze_audio_tower: false
 freeze_language_model: false
 
@@ -47,6 +48,8 @@ eval_manifest:
     - /lustrefs/shared/shahin.konadath/workspace/train/stt/qasr/validated_manifests/eval_ml_inworld.json
   zh:
     - /lustrefs/shared/shahin.konadath/workspace/train/stt/qasr/validated_manifests/eval_zh_inworld.json
+  hi:
+    - /lustrefs/shared/shahin.konadath/workspace/train/stt/qasr/validated_manifests/eval_hi_inworld.json
 
 audio_root: null
 
@@ -69,13 +72,28 @@ gradient_accumulation_steps: 1
 learning_rate: 2.0e-5
 weight_decay: 0.01
 warmup_steps: 3000
-lr_scheduler_type: cosine
+# Warmup-Stable-Decay mirrors the 8-node recipe (scaled to 500k steps).
+lr_scheduler_type: warmup_stable_decay
+lr_scheduler_kwargs:
+  num_decay_steps: 40000
+  min_lr_ratio: 0.1
 max_grad_norm: 1.0
+
+# --- Phase A accuracy recipe (mirror of train_full_8node_filtered.yaml) ---
+balanced_sampling: true
+sampling_temperature: 0.5
+llm_lr_factor: 0.5
+embed_lr_factor: 0.25
+label_smoothing: 0.1
+non_speech_manifest: null
+ctc_loss_weight: 0.0
+eval_wer_samples_per_language: 100
 
 logging_steps: 10
 eval_steps: 5000
-save_steps: 5000
-save_total_limit: 5
+# Step-budget discipline: keep every 25k-step checkpoint until selection.
+save_steps: 25000
+save_total_limit: 6
 
 smoke_test: false
 smoke_test_max_steps: 2
@@ -103,7 +121,7 @@ seed: 42
 data_seed: 42
 
 resume_from_checkpoint: null
-output_dir: /lustrefs/shared/shahin.konadath/workspace/train/stt/qasr/output/full
+output_dir: /lustrefs/shared/shahin.konadath/workspace/train/stt/qasr/output/full_v2
 attn_implementation: sdpa
 
 # Data augmentation (applied during training only).

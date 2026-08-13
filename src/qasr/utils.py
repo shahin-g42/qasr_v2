@@ -29,6 +29,26 @@ def get_subsampling_output_lengths(
     return lengths
 
 
+def get_projector_pool_output_lengths(
+    input_lengths: torch.Tensor,
+    *,
+    pool_stride: int,
+    kernel_size: int = 3,
+) -> torch.Tensor:
+    """Return encoder-frame counts after the projector's strided pooling conv.
+
+    The pooling convolution uses ``same`` padding, so a stride of ``s`` maps a
+    length ``L`` to ``ceil(L / s) = (L - 1) // s + 1``. With ``pool_stride=1``
+    lengths are unchanged.
+    """
+    if pool_stride < 1:
+        raise ValueError("pool_stride must be positive")
+    if kernel_size < 1:
+        raise ValueError("kernel_size must be positive")
+    lengths = input_lengths.to(dtype=torch.long)
+    return torch.div(lengths - 1, pool_stride, rounding_mode="floor") + 1
+
+
 def get_subsampled_attention_mask(
     attention_mask: torch.Tensor,
     *,
@@ -50,4 +70,8 @@ def get_subsampled_attention_mask(
     return torch.arange(width, device=attention_mask.device).unsqueeze(0) < lengths.unsqueeze(1)
 
 
-__all__ = ["get_subsampled_attention_mask", "get_subsampling_output_lengths"]
+__all__ = [
+    "get_projector_pool_output_lengths",
+    "get_subsampled_attention_mask",
+    "get_subsampling_output_lengths",
+]

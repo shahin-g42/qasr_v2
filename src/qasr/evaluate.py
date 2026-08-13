@@ -27,10 +27,12 @@ import argparse
 import json
 import logging
 import random
+import re
 import statistics
 import time
+from collections.abc import Callable
 from pathlib import Path
-from typing import Any, Callable
+from typing import Any
 
 import numpy as np
 import torch
@@ -38,8 +40,7 @@ import torch
 from .audio import load_mono_audio
 from .modeling import QASRForConditionalGeneration
 from .processing import QASRProcessor
-from .streaming import PCM16Buffer, QASRTranscriber, merge_windowed_transcript
-
+from .streaming import PCM16Buffer, merge_windowed_transcript
 
 LOGGER = logging.getLogger("qasr.evaluate")
 
@@ -76,6 +77,8 @@ def load_manifest_samples(
             duration = record.get("duration")
             if duration is not None and not (min_duration <= float(duration) <= max_duration):
                 continue
+            # Same cluster path rewrite the training data loader applies.
+            audio_path = re.sub(r"^/vast", "/lustrefs/taiga/vast40", audio_path)
             if audio_root and not Path(audio_path).is_absolute():
                 audio_path = str(Path(audio_root) / audio_path)
             records.append(
@@ -255,8 +258,8 @@ def run_streaming_eval(
     are merged with :func:`merge_windowed_transcript` exactly like the
     WebSocket server does. Runs unpaced: real-time viability is judged by RTF.
     """
-    chunk_samples = max(1, int(round(chunk_ms / 1000 * sample_rate)))
-    interval_samples = max(1, int(round(partial_interval_seconds * sample_rate)))
+    chunk_samples = max(1, round(chunk_ms / 1000 * sample_rate))
+    interval_samples = max(1, round(partial_interval_seconds * sample_rate))
     results = []
     for index, sample in enumerate(samples, start=1):
         audio = load_mono_audio(sample["audio_filepath"], target_sampling_rate=sample_rate)
@@ -270,9 +273,9 @@ def run_streaming_eval(
         first_partial: dict[str, float] | None = None
         last_decode_total = 0
 
-        def decode_window() -> None:
+        def decode_window(active_buffer: PCM16Buffer, latencies: list[float]) -> None:
             nonlocal merged, last_partial, first_partial
-            waveform = buffer.waveform()
+            waveform = active_buffer.waveform()
             if waveform.size < sample_rate // 20:  # < 50 ms, matches the server
                 return
             _sync_if_cuda(device)
@@ -280,13 +283,13 @@ def run_streaming_eval(
             partial, _ = decode_fn(waveform)
             _sync_if_cuda(device)
             elapsed = time.perf_counter() - started
-            decode_latencies.append(elapsed)
+            latencies.append(elapsed)
             if partial and partial != last_partial:
                 last_partial = partial
                 merged = merge_windowed_transcript(merged, partial)
                 if first_partial is None:
                     first_partial = {
-                        "audio_seconds": buffer.total_samples / sample_rate,
+                        "audio_seconds": active_buffer.total_samples / sample_rate,
                         "latency_seconds": elapsed,
                     }
 
@@ -294,9 +297,9 @@ def run_streaming_eval(
             buffer.append(pcm[offset:offset + chunk_samples * 2])
             if buffer.total_samples - last_decode_total >= interval_samples:
                 last_decode_total = buffer.total_samples
-                decode_window()
+                decode_window(buffer, decode_latencies)
         if buffer.total_samples != last_decode_total:
-            decode_window()  # flush the tail
+            decode_window(buffer, decode_latencies)  # flush the tail
 
         inference_seconds = sum(decode_latencies)
         record = {
@@ -540,6 +543,26 @@ def main() -> None:
                 for count in positions
             ],
         }
+        # A healthy head trained on the matching checkpoint accepts >= 50% of
+        # drafts. Near-zero acceptance is the signature of pairing an EAGLE
+        # head with the wrong base checkpoint (or an architecture change such
+        # as a new projector/token rate), which silently turns speculative
+        # decoding into pure overhead.
+        acceptance = report["eagle_stats"]["acceptance_rate"]
+        if acceptance is not None and acceptance < 0.3:
+            print(
+                "\n"
+                "=" * 78 + "\n"
+                f"WARNING: EAGLE acceptance rate is {acceptance:.3f} (< 0.30).\n"
+                "This almost always means the EAGLE head was trained against a\n"
+                "different base checkpoint than the one being evaluated, or the\n"
+                "head architecture does not match the checkpoint (e.g. v1 head\n"
+                "loaded onto a v2 fc1 4096x2048 layout). Retrain the head on\n"
+                "the exact checkpoint you intend to serve, or pass the matching\n"
+                "--eagle path. Speculative decoding at this acceptance rate is\n"
+                "slower than plain greedy decoding.\n"
+                + "=" * 78
+            )
 
     # Offline vs EAGLE: greedy speculative decoding must be lossless, so any
     # transcript mismatch indicates a decoder bug rather than model quality.
@@ -548,7 +571,7 @@ def main() -> None:
         eagle_results = report["modes"]["eagle"]["results"]
         matches = sum(
             base["hypothesis"] == spec["hypothesis"]
-            for base, spec in zip(offline_results, eagle_results)
+            for base, spec in zip(offline_results, eagle_results, strict=True)
         )
         base_latency = report["modes"]["offline"]["summary"]["latency_mean_s"]
         spec_latency = report["modes"]["eagle"]["summary"]["latency_mean_s"]

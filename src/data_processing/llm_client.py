@@ -14,7 +14,6 @@ import httpx
 
 from .config import PipelineConfig
 
-
 LOGGER = logging.getLogger("data_processing.llm")
 
 # Regex to extract JSON from markdown code fences

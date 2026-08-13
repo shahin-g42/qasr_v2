@@ -30,6 +30,7 @@ checkpoints/
 
 # Data pipeline outputs (large JSONL manifests, regenerated on cluster)
 cleaned_manifests/
+training_manifests/
 
 # Model weights (too large for git)
 *.safetensors
@@ -41,6 +42,8 @@ cleaned_manifests/
 .cache/
 *.cache
 .pytest_cache/
+.ruff_cache/
+.benchmarks/
 
 # OS
 .DS_Store

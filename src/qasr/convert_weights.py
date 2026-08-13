@@ -8,7 +8,7 @@ import re
 from pathlib import Path
 
 import torch
-from huggingface_hub import hf_hub_download, snapshot_download
+from huggingface_hub import hf_hub_download
 from safetensors import safe_open
 from transformers import (
     AutoConfig,
@@ -20,7 +20,6 @@ from .configuration import QASRConfig
 from .feature_extraction import QASRFeatureExtractor
 from .modeling import QASRForConditionalGeneration
 from .processing import QASRProcessor
-
 
 LOGGER = logging.getLogger("qasr.convert")
 DEFAULT_ENCODER = "CohereLabs/cohere-transcribe-03-2026"
@@ -90,7 +89,8 @@ def _load_prefixed_state(weights_path: Path | list[Path], prefix: str) -> dict[s
     paths = weights_path if isinstance(weights_path, list) else [weights_path]
     for path in paths:
         with safe_open(path, framework="pt", device="cpu") as checkpoint:
-            for key in checkpoint.keys():
+            # safe_open is not iterable in this safetensors version; keys() is.
+            for key in checkpoint.keys():  # noqa: SIM118
                 if key.startswith(prefix):
                     state[key.removeprefix(prefix)] = checkpoint.get_tensor(key)
 
@@ -164,7 +164,7 @@ def _load_encoder_weights(encoder_name_or_path: str) -> dict[str, torch.Tensor]:
     top_keys: set[str] = set()
     for path in paths:
         with safe_open(path, framework="pt", device="cpu") as checkpoint:
-            for key in checkpoint.keys():
+            for key in checkpoint.keys():  # noqa: SIM118
                 top_keys.add(key.split(".")[0] + "." + (key.split(".")[1] if "." in key else ""))
     raise KeyError(
         f"Could not find encoder tensors in {encoder_name_or_path}. "
@@ -245,7 +245,7 @@ def convert_components(
     # --- Load decoder weights (Audar-ASR-V1.2-Turbo) ---
     LOGGER.info("Loading language model from %s", qwen_name_or_path)
     qwen_weights = _resolve_safetensors(qwen_name_or_path)
-    
+
     # Try multiple prefix conventions for decoder weights
     _DECODER_PREFIXES = (
         "thinker.model.",         # Audar-ASR-V1.2-Turbo format
@@ -290,7 +290,7 @@ def convert_components(
     # --- Build processor ---
     LOGGER.info("Combining QASR features with the decoder tokenizer and chat template")
     qwen_processor = AutoProcessor.from_pretrained(qwen_name_or_path)
-    
+
     # Create QASRFeatureExtractor explicitly (not from_pretrained which loads the native one)
     feature_extractor = QASRFeatureExtractor(
         feature_size=config.audio_config.feature_size,
@@ -304,11 +304,11 @@ def convert_components(
         max_audio_clip_s=35.0,
         overlap_chunk_second=5.0,
     )
-    
+
     # Extract processor attributes with fallbacks
     timestamp_segment_time = getattr(qwen_processor, "timestamp_segment_time", 0.04)
     chat_template = getattr(qwen_processor, "chat_template", None)
-    
+
     processor = QASRProcessor(
         feature_extractor=feature_extractor,
         tokenizer=qwen_processor.tokenizer,

@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+from .accent import preservation_block
+
 # --- Rule fragments (conditionally composed) ---
 
 _RULE_CLEANING = """\
@@ -311,11 +313,15 @@ def build_batch_cleaner_messages(
     *,
     preserve_dialects: bool = True,
     restore_diacritics: bool = True,
+    accent_label: str | None = None,
 ) -> list[dict[str, str]]:
     """Build chat messages for a batch cleaning request.
 
     Each transcript is numbered starting from 1.
-    Adapts the system prompt based on processing flags.
+    Adapts the system prompt based on processing flags. ``accent_label``
+    appends the dialect-specific preservation block
+    (:func:`data_processing.accent.preservation_block`) so a (lang, accent)-
+    grouped batch gets instructions that name the variety it must protect.
     """
     numbered = "\n".join(
         f"{i}. <<<{t}>>>" for i, t in enumerate(transcripts, 1)
@@ -324,6 +330,9 @@ def build_batch_cleaner_messages(
         preserve_dialects=preserve_dialects,
         restore_diacritics=restore_diacritics,
     )
+    block = preservation_block("ar", accent_label)
+    if block:
+        system = system.rstrip() + "\n\n" + block
     return [
         {"role": "system", "content": system},
         {"role": "user", "content": CLEANER_BATCH_USER_TEMPLATE.format(numbered_transcripts=numbered)},

@@ -62,8 +62,11 @@ def _get_executor(max_workers: int) -> ThreadPoolExecutor:
 
 async def fill_missing_durations(
     records: list[ManifestRecord], max_workers: int = 32
-) -> int:
-    """Set ``duration`` on records that have none. Returns how many were filled.
+) -> tuple[int, int]:
+    """Set ``duration`` on records that have none.
+
+    Returns ``(filled, failed)`` — how many durations were read and how many
+    probes found no usable header — so callers can surface the shortfall.
 
     Mutates the records in place, so it must run BEFORE the cleaner copies
     them into CleanedRecords — that way accepted and rejected records alike
@@ -71,7 +74,7 @@ async def fill_missing_durations(
     """
     targets = [r for r in records if r.duration is None and r.audio_filepath]
     if not targets:
-        return 0
+        return 0, 0
 
     if sf is None:
         global _MISSING_SOUNDFILE_WARNED
@@ -81,7 +84,7 @@ async def fill_missing_durations(
                 "run scripts/backfill_durations.py on the cleaned output instead"
             )
             _MISSING_SOUNDFILE_WARNED = True
-        return 0
+        return 0, len(targets)
 
     loop = asyncio.get_running_loop()
     executor = _get_executor(max_workers)
@@ -98,14 +101,18 @@ async def fill_missing_durations(
             record.duration = duration
             filled += 1
 
-    if filled < len(targets):
-        LOGGER.debug(
+    failed = len(targets) - filled
+    if failed:
+        # WARNING, not DEBUG: probe_duration swallows every per-file
+        # exception, so this summary is the only sign records are shipping
+        # without durations — 92% of zh and 100% of hi once did, unseen.
+        LOGGER.warning(
             "Probed %d/%d missing durations (%d audio headers unreadable)",
             filled,
             len(targets),
-            len(targets) - filled,
+            failed,
         )
-    return filled
+    return filled, failed
 
 
 __all__ = ["fill_missing_durations", "probe_duration"]

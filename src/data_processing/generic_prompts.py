@@ -7,6 +7,7 @@ script) are injected as guidance blocks.
 
 from __future__ import annotations
 
+from .accent import preservation_block
 from .text_utils import LANGUAGE_NAMES
 
 # Per-language conventions injected into the system prompt.
@@ -83,6 +84,15 @@ GENERIC_CLEANER_USER_TEMPLATE = """\
 Process this {language_name} ASR transcript with the highest linguistic \
 quality. Preserve the speaker's natural voice:
 <<<{transcript}>>>
+"""
+
+GENERIC_CLEANER_BATCH_USER_TEMPLATE = """\
+Process each {language_name} ASR transcript below with the highest linguistic \nquality. Preserve each speaker's accent, dialect, and natural voice. Return \na JSON array with one result object per transcript, in the same order, using \neach transcript's number (0-based) as "i".
+
+{numbered_transcripts}
+
+Output STRICT JSON array (no markdown fences, no commentary, no thinking):
+[{{"i": 0, "text": "...", "dialect": "...", "confidence": 0.0}}, ...]
 """
 
 GENERIC_VALIDATOR_USER_TEMPLATE = """\
@@ -238,6 +248,39 @@ def build_generic_cleaner_messages(
     ]
 
 
+def build_generic_batch_cleaner_messages(
+    transcripts: list[str],
+    language: str,
+    accent_label: str | None = None,
+) -> list[dict[str, str]]:
+    """Build chat messages for a batch cleaning request.
+
+    Mirrors the Arabic ``build_batch_cleaner_messages``: a numbered ``<<<t>>>``
+    list whose 0-based numbers are the ``i`` the batch corrector's parser
+    reads back, so the rich-prompt path and the result contract cannot drift
+    apart. ``accent_label`` appends the dialect-specific preservation block so
+    a (language, accent)-grouped batch gets instructions that fit it.
+    """
+    language_name = LANGUAGE_NAMES.get(language, language)
+    numbered = "\n".join(f"{i}. <<<{t}>>>" for i, t in enumerate(transcripts))
+    system = build_generic_cleaner_system_prompt(language)
+    block = preservation_block(language, accent_label)
+    if block:
+        system = system.rstrip() + "\n\n" + block
+    return [
+        {
+            "role": "system",
+            "content": system,
+        },
+        {
+            "role": "user",
+            "content": GENERIC_CLEANER_BATCH_USER_TEMPLATE.format(
+                language_name=language_name, numbered_transcripts=numbered
+            ),
+        },
+    ]
+
+
 def build_generic_validator_messages(
     original: str,
     processed: str,
@@ -276,8 +319,10 @@ def build_generic_validator_messages(
 
 
 __all__ = [
+    "GENERIC_CLEANER_BATCH_USER_TEMPLATE",
     "GENERIC_CLEANER_USER_TEMPLATE",
     "GENERIC_VALIDATOR_USER_TEMPLATE",
+    "build_generic_batch_cleaner_messages",
     "build_generic_cleaner_messages",
     "build_generic_cleaner_system_prompt",
     "build_generic_validator_messages",

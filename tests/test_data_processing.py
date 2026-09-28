@@ -825,6 +825,7 @@ class TestWorkerResumeAndSampling(unittest.TestCase):
     def _run(self, paths: dict, changes: list[str], **overrides):
         from data_processing import worker as worker_mod
 
+        probe_result = overrides.pop("probe_result", (0, 0))
         config = PipelineConfig(
             batch_size=overrides.pop("batch_size", 8),
             validation_sample_rate=overrides.pop("validation_sample_rate", 0.0),
@@ -832,7 +833,7 @@ class TestWorkerResumeAndSampling(unittest.TestCase):
         )
         cleaner = _TaggingCleaner(changes)
         validator = _CountingValidator()
-        probe = mock.AsyncMock(return_value=0)
+        probe = mock.AsyncMock(return_value=probe_result)
         with mock.patch.object(worker_mod, "VLLMClient", _FakeClient), mock.patch.object(
             worker_mod, "build_agents", return_value=(cleaner, validator)
         ), mock.patch.object(worker_mod, "fill_missing_durations", probe):
@@ -969,6 +970,22 @@ class TestWorkerResumeAndSampling(unittest.TestCase):
             )
             probe.assert_not_awaited()
 
+    def test_probe_shortfall_reaches_worker_stats(self) -> None:
+        """Per-shard probe totals must land in the final report.
+
+        Incident: probe failures were only visible at DEBUG, so 92% of zh
+        and 100% of hi records shipped without durations and no report or
+        log line ever said so.
+        """
+        with tempfile.TemporaryDirectory() as tmpdir:
+            paths = self._shard(Path(tmpdir))
+            stats, _validator, _probe = self._run(
+                paths, ["clean"], probe_result=(1, 1)
+            )
+            self.assertEqual(stats.durations_probed, 1)
+            self.assertEqual(stats.durations_missing, 1)
+            self.assertEqual(stats.to_dict()["durations_missing"], 1)
+
 
 class TestDurationProbe(unittest.TestCase):
     """Header-only duration probing for records the manifest never carried."""
@@ -989,8 +1006,10 @@ class TestDurationProbe(unittest.TestCase):
 
         records = [self._record("/nonexistent/a.wav", 3.5)]
         with mock.patch.object(duration_probe, "probe_duration") as probe:
-            filled = asyncio.run(duration_probe.fill_missing_durations(records))
-        self.assertEqual(filled, 0)
+            filled, failed = asyncio.run(
+                duration_probe.fill_missing_durations(records)
+            )
+        self.assertEqual((filled, failed), (0, 0))
         probe.assert_not_called()
         self.assertEqual(records[0].duration, 3.5)
 
@@ -1004,17 +1023,36 @@ class TestDurationProbe(unittest.TestCase):
             audio = Path(tmpdir) / "a.wav"
             sf.write(audio, np.zeros(16000, dtype="float32"), 16000)
             records = [self._record(str(audio), None)]
-            filled = asyncio.run(duration_probe.fill_missing_durations(records))
-            self.assertEqual(filled, 1)
+            filled, failed = asyncio.run(
+                duration_probe.fill_missing_durations(records)
+            )
+            self.assertEqual((filled, failed), (1, 0))
             self.assertAlmostEqual(records[0].duration, 1.0, places=3)
 
     def test_unreadable_audio_leaves_duration_unset(self) -> None:
         from data_processing import duration_probe
 
         records = [self._record("/nonexistent/a.wav", None)]
-        filled = asyncio.run(duration_probe.fill_missing_durations(records))
-        self.assertEqual(filled, 0)
+        filled, failed = asyncio.run(duration_probe.fill_missing_durations(records))
+        self.assertEqual((filled, failed), (0, 1))
         self.assertIsNone(records[0].duration)
+
+    def test_probe_failures_are_logged_at_warning(self) -> None:
+        """Probe failures must be visible per batch, not buried at DEBUG.
+
+        Incident: probe_duration swallows every exception and the shortfall
+        was reported at DEBUG while the pipeline logs at INFO — 92% of zh
+        and 100% of hi records shipped without durations, unseen.
+        """
+        from data_processing import duration_probe
+
+        records = [self._record("/nonexistent/a.wav", None)]
+        with self.assertLogs("data_processing.duration", level="WARNING") as logs:
+            asyncio.run(duration_probe.fill_missing_durations(records))
+        self.assertTrue(
+            any("1 audio headers unreadable" in line for line in logs.output),
+            logs.output,
+        )
 
 
 class TestOrchestratorJobIdentity(unittest.TestCase):
@@ -1046,7 +1084,7 @@ class TestOrchestratorJobIdentity(unittest.TestCase):
 
         class _NoWorkers(Orchestrator):
             async def _launch_workers(self, **kwargs):
-                return []
+                return [], []
 
         job = ManifestJob(path=manifest, language="ar")
         asyncio.run(_NoWorkers(config).process_manifest(job))
@@ -1077,6 +1115,232 @@ class TestOrchestratorJobIdentity(unittest.TestCase):
         from data_processing.orchestrator import OrchestratorReport
 
         self.assertEqual(OrchestratorReport().jobs, [])
+
+
+class TestOrchestratorShardMerge(unittest.TestCase):
+    """Merging must fold in output shards from EARLIER runs, not just this one.
+
+    Incident: resuming a slice with a smaller --workers value derived the
+    merge list from the current run's num_shards, and merge_shards' full
+    overwrite of <name>_cleaned.jsonl dropped every record in the previous
+    higher-worker run's higher-index shards — which --skip-processed's glob
+    then excluded from re-cleaning, permanently.
+    """
+
+    def test_merge_picks_up_orphans_from_a_higher_worker_run(self) -> None:
+        from data_processing.orchestrator import ManifestJob, Orchestrator
+
+        with tempfile.TemporaryDirectory() as tmpdir:
+            tmp = Path(tmpdir)
+            manifest = tmp / "train_ar.jsonl"
+            with manifest.open("w", encoding="utf-8") as handle:
+                for i in range(4):
+                    handle.write(
+                        json.dumps(
+                            {"audio_filepath": f"a{i}.wav", "text": f"نص {i}"},
+                            ensure_ascii=False,
+                        )
+                        + "\n"
+                    )
+
+            config = PipelineConfig(
+                output_dir=str(tmp / "out"),
+                shard_dir=str(tmp / "shards"),
+                checkpoint_dir=str(tmp / "ckpt"),
+                workers_per_node=2,  # the resumed, smaller-worker run
+                num_nodes=1,
+            )
+
+            # Output shards 2..3 left behind by a previous 4-worker run
+            out_dir = tmp / "out" / "ar"
+            out_dir.mkdir(parents=True)
+            for idx in (2, 3):
+                (out_dir / f"train_ar_shard_{idx:04d}.jsonl").write_text(
+                    json.dumps({"audio_filepath": f"old{idx}.wav", "text": "x"}) + "\n",
+                    encoding="utf-8",
+                )
+
+            class _CopyingWorkers(Orchestrator):
+                """Each 'worker' writes its input shard straight to output."""
+
+                async def _launch_workers(self, job, manifest_name, output_base, **kwargs):
+                    for idx, shard in enumerate(job.shard_paths):
+                        out = output_base / f"{manifest_name}_shard_{idx:04d}.jsonl"
+                        out.write_text(shard.read_text(encoding="utf-8"), encoding="utf-8")
+                    return [], []
+
+            job = ManifestJob(path=manifest, language="ar")
+            asyncio.run(_CopyingWorkers(config).process_manifest(job))
+
+            merged = [
+                json.loads(line)["audio_filepath"]
+                for line in job.output_path.read_text(encoding="utf-8").splitlines()
+            ]
+            self.assertEqual(
+                sorted(merged),
+                ["a0.wav", "a1.wav", "a2.wav", "a3.wav", "old2.wav", "old3.wav"],
+            )
+
+    def test_slice_namespaces_do_not_cross_merge(self) -> None:
+        """The glob must not sweep another slice's shards into this output."""
+        from data_processing.orchestrator import ManifestJob, Orchestrator
+
+        with tempfile.TemporaryDirectory() as tmpdir:
+            tmp = Path(tmpdir)
+            manifest = tmp / "train_ar.jsonl"
+            with manifest.open("w", encoding="utf-8") as handle:
+                for i in range(2):
+                    handle.write(
+                        json.dumps(
+                            {"audio_filepath": f"a{i}.wav", "text": f"نص {i}"},
+                            ensure_ascii=False,
+                        )
+                        + "\n"
+                    )
+
+            config = PipelineConfig(
+                output_dir=str(tmp / "out"),
+                shard_dir=str(tmp / "shards"),
+                checkpoint_dir=str(tmp / "ckpt"),
+                workers_per_node=1,
+                num_nodes=1,
+            )
+
+            # A shard from a DIFFERENT slice run of the same manifest
+            out_dir = tmp / "out" / "ar"
+            out_dir.mkdir(parents=True)
+            (out_dir / "train_ar_r5_end_shard_0000.jsonl").write_text(
+                json.dumps({"audio_filepath": "slice.wav", "text": "x"}) + "\n",
+                encoding="utf-8",
+            )
+
+            class _CopyingWorkers(Orchestrator):
+                async def _launch_workers(self, job, manifest_name, output_base, **kwargs):
+                    for idx, shard in enumerate(job.shard_paths):
+                        out = output_base / f"{manifest_name}_shard_{idx:04d}.jsonl"
+                        out.write_text(shard.read_text(encoding="utf-8"), encoding="utf-8")
+                    return [], []
+
+            job = ManifestJob(path=manifest, language="ar")
+            asyncio.run(_CopyingWorkers(config).process_manifest(job))
+
+            merged = [
+                json.loads(line)["audio_filepath"]
+                for line in job.output_path.read_text(encoding="utf-8").splitlines()
+            ]
+            self.assertEqual(sorted(merged), ["a0.wav", "a1.wav"])
+
+
+class TestFailureVisibility(unittest.TestCase):
+    """A permanently failed shard or a lost record must fail the run loudly.
+
+    Incident: failed_shards was appended, logged, and discarded in
+    _launch_workers; OrchestratorReport.errors stayed empty unless
+    process_manifest itself raised; and pipeline.main() returned None — so
+    a shard that exhausted its retries lost its whole record slice with
+    exit code 0.
+    """
+
+    def _config(self, tmp: Path) -> PipelineConfig:
+        manifest = tmp / "train_ar.jsonl"
+        with manifest.open("w", encoding="utf-8") as handle:
+            for i in range(6):
+                handle.write(
+                    json.dumps(
+                        {"audio_filepath": f"a{i}.wav", "text": f"نص {i}"},
+                        ensure_ascii=False,
+                    )
+                    + "\n"
+                )
+        manifests_yaml = tmp / "manifests.yaml"
+        manifests_yaml.write_text(
+            json.dumps({"train_manifest": {"ar": [str(manifest)]}}),  # JSON is YAML
+            encoding="utf-8",
+        )
+        return PipelineConfig(
+            manifests_config=str(manifests_yaml),
+            output_dir=str(tmp / "out"),
+            shard_dir=str(tmp / "shards"),
+            checkpoint_dir=str(tmp / "ckpt"),
+            workers_per_node=2,
+            num_nodes=1,
+        )
+
+    def test_failed_shards_reach_the_report(self) -> None:
+        from data_processing.orchestrator import Orchestrator
+
+        class _FailingWorkers(Orchestrator):
+            async def _launch_workers(self, **kwargs):
+                return [], [1]  # shard 1 exhausted its retries
+
+        with tempfile.TemporaryDirectory() as tmpdir:
+            orchestrator = _FailingWorkers(self._config(Path(tmpdir)))
+            with self.assertLogs("data_processing.orchestrator", level="ERROR"):
+                report = asyncio.run(orchestrator.run())
+        self.assertEqual(report.jobs[0].failed_shards, [1])
+        self.assertEqual(report.failed_shards, ["train_ar: shards [1]"])
+        self.assertTrue(report.has_failures)
+
+    def test_reconciliation_mismatch_logs_error(self) -> None:
+        """Sharded records that come back neither accepted nor rejected."""
+        from data_processing.orchestrator import ManifestJob, Orchestrator
+        from data_processing.worker import WorkerStats
+
+        class _LossyWorkers(Orchestrator):
+            async def _launch_workers(self, job, **kwargs):
+                stats = WorkerStats(worker_id=0, shard_path="s")
+                stats.accepted_records = job.record_count - 2
+                return [stats], []
+
+        with tempfile.TemporaryDirectory() as tmpdir:
+            tmp = Path(tmpdir)
+            config = self._config(tmp)
+            job = ManifestJob(path=tmp / "train_ar.jsonl", language="ar")
+            with self.assertLogs(
+                "data_processing.orchestrator", level="ERROR"
+            ) as logs:
+                asyncio.run(_LossyWorkers(config).process_manifest(job))
+        self.assertEqual(job.missing_records, 2)
+        self.assertTrue(any("delta +2" in line for line in logs.output), logs.output)
+
+    def _run_main(self, report) -> int:
+        """Drive pipeline.main() with the orchestrator and vLLM faked out."""
+        from data_processing import pipeline
+
+        class _FakeOrchestrator:
+            def __init__(self, config) -> None:
+                self.config = config
+
+            async def run(self):
+                return report
+
+        class _HealthyClient(_FakeClient):
+            async def wait_for_health(self, max_wait_seconds: int = 300) -> bool:
+                return True
+
+        with tempfile.TemporaryDirectory() as tmpdir:
+            config_path = Path(tmpdir) / "config.yaml"
+            config_path.write_text(f"output_dir: {tmpdir}/out\n", encoding="utf-8")
+            with mock.patch.object(
+                pipeline, "Orchestrator", _FakeOrchestrator
+            ), mock.patch.object(pipeline, "VLLMClient", _HealthyClient):
+                return pipeline.main(["--config", str(config_path)])
+
+    def test_main_returns_nonzero_when_a_shard_failed(self) -> None:
+        from data_processing.orchestrator import OrchestratorReport
+
+        report = OrchestratorReport(failed_shards=["train_ar: shards [1]"])
+        self.assertNotEqual(self._run_main(report), 0)
+
+    def test_main_returns_nonzero_when_records_went_missing(self) -> None:
+        from data_processing.orchestrator import OrchestratorReport
+
+        self.assertNotEqual(self._run_main(OrchestratorReport(missing_records=2)), 0)
+
+    def test_main_returns_zero_on_a_clean_run(self) -> None:
+        from data_processing.orchestrator import OrchestratorReport
+
+        self.assertEqual(self._run_main(OrchestratorReport()), 0)
 
 
 class TestDateTimeITN(unittest.TestCase):

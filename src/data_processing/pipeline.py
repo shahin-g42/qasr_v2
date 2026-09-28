@@ -153,8 +153,8 @@ async def dry_run(config: PipelineConfig) -> None:
     LOGGER.info("Estimated processing time: %.1f hours", est_hours)
 
 
-async def run_pipeline(config: PipelineConfig) -> None:
-    """Run the full processing pipeline."""
+async def run_pipeline(config: PipelineConfig) -> int:
+    """Run the full processing pipeline. Returns the process exit code."""
     start_time = time.time()
 
     LOGGER.info("Starting Arabic transcript processing pipeline")
@@ -211,10 +211,23 @@ async def run_pipeline(config: PipelineConfig) -> None:
         LOGGER.warning("  Errors: %d", len(report.errors))
         for error in report.errors[:5]:
             LOGGER.warning("    %s", error)
+    if report.failed_shards:
+        LOGGER.error("  Permanently failed shards: %s", report.failed_shards)
+    if report.missing_records:
+        LOGGER.error(
+            "  Records unaccounted for (sharded but neither accepted nor "
+            "rejected): %d",
+            report.missing_records,
+        )
+
+    # Nonzero when anything was lost: a failed manifest, a shard that
+    # exhausted its retries, or a reconciliation gap. Exit 0 here used to
+    # hide all three from schedulers and wrapper scripts.
+    return 1 if report.has_failures else 0
 
 
-def main(argv: list[str] | None = None) -> None:
-    """Main entry point."""
+def main(argv: list[str] | None = None) -> int:
+    """Main entry point. Returns the process exit code."""
     args = parse_args(argv)
     setup_logging(args.verbose)
 
@@ -240,15 +253,16 @@ def main(argv: list[str] | None = None) -> None:
 
     config.validate()
 
-    # Run
+    # Run. The console script (pyproject: qasr-process) and __main__.py both
+    # sys.exit() this return value, so a lossy run fails loudly.
     if args.dry_run:
         asyncio.run(dry_run(config))
-    else:
-        asyncio.run(run_pipeline(config))
+        return 0
+    return asyncio.run(run_pipeline(config))
 
 
 if __name__ == "__main__":
-    main()
+    raise SystemExit(main())
 
 
 __all__ = ["main"]

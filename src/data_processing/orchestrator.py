@@ -42,6 +42,12 @@ class ManifestJob:
     # do not exist.
     manifest_name: str = ""
     rejected_path: Path | None = None
+    # Fault accounting, filled in by process_manifest(): shard indices that
+    # exhausted their retries, and the sharded-vs-accounted reconciliation
+    # delta (positive = records missing from the outputs). Nonzero either
+    # way means the cleaned/rejected files do not cover the shards.
+    failed_shards: list[int] = field(default_factory=list)
+    missing_records: int = 0
 
 
 @dataclass
@@ -54,9 +60,20 @@ class OrchestratorReport:
     total_rejected: int = 0
     worker_stats: list[dict[str, Any]] = field(default_factory=list)
     errors: list[str] = field(default_factory=list)
+    # Shards that exhausted their retries ("<manifest>: shards [i, ...]")
+    # and the total reconciliation gap across manifests. Both used to be
+    # logged and discarded, so a failed shard exited 0 with its whole
+    # record slice silently missing from the outputs.
+    failed_shards: list[str] = field(default_factory=list)
+    missing_records: int = 0
     # The jobs this node actually ran, carrying their resolved output paths
     # so downstream reporting does not have to re-discover them.
     jobs: list[ManifestJob] = field(default_factory=list)
+
+    @property
+    def has_failures(self) -> bool:
+        """True when any manifest, shard, or record went missing."""
+        return bool(self.errors or self.failed_shards or self.missing_records)
 
 
 class Orchestrator:
@@ -215,7 +232,7 @@ class Orchestrator:
         rejected_path = job.rejected_path
 
         # Launch workers
-        worker_stats = await self._launch_workers(
+        worker_stats, failed_shards = await self._launch_workers(
             job=job,
             manifest_name=manifest_name,
             shard_base=shard_base,
@@ -223,17 +240,37 @@ class Orchestrator:
             checkpoint_base=checkpoint_base,
             rejected_path=rejected_path,
         )
+        job.failed_shards = failed_shards
 
-        # Merge output shards
-        num_shards = len(job.shard_paths)
-        output_shards = [
-            output_base / f"{manifest_name}_shard_{i:04d}.jsonl"
-            for i in range(num_shards)
-        ]
-        existing_shards = [s for s in output_shards if s.is_file()]
-        if existing_shards:
-            merge_shards(existing_shards, job.output_path)
-            LOGGER.info("  Merged %d shards into %s", len(existing_shards), job.output_path)
+        # Merge output shards. Glob the output directory rather than deriving
+        # names from the CURRENT run's shard count: resuming with a smaller
+        # --workers value used to orphan the higher-index shards an earlier
+        # run produced, and merge_shards' full overwrite of
+        # <name>_cleaned.jsonl dropped those records for good
+        # (--skip-processed then hid them from re-cleaning). Rejected records
+        # have no shard equivalent — every worker appends to the single
+        # shared <name>_rejected.jsonl, which is never merged or overwritten.
+        output_shards = sorted(output_base.glob(f"{manifest_name}_shard_*.jsonl"))
+        if output_shards:
+            merge_shards(output_shards, job.output_path)
+            LOGGER.info("  Merged %d shards into %s", len(output_shards), job.output_path)
+
+        # Reconcile: every record sharded must come back accepted or
+        # rejected. A permanently failed shard (or a dropped batch)
+        # otherwise vanishes without a trace in the outputs.
+        accounted = sum(
+            stats.accepted_records + stats.rejected_records for stats in worker_stats
+        )
+        if accounted != job.record_count:
+            job.missing_records = job.record_count - accounted
+            LOGGER.error(
+                "Manifest %s: sharded %d records but workers accounted for %d "
+                "(accepted+rejected) — delta %+d (positive = records missing)",
+                manifest_name,
+                job.record_count,
+                accounted,
+                job.missing_records,
+            )
 
         return worker_stats
 
@@ -246,13 +283,18 @@ class Orchestrator:
         checkpoint_base: Path,
         rejected_path: Path,
         max_worker_retries: int = 2,
-    ) -> list[WorkerStats]:
+    ) -> tuple[list[WorkerStats], list[int]]:
         """Launch and monitor worker tasks with fault tolerance.
 
         If a worker dies (raises an exception), its shard is re-assigned
         up to max_worker_retries times before being marked as failed.
         ``manifest_name`` carries any slice suffix so outputs from
         different nodes working the same manifest never collide.
+
+        Returns (worker stats, permanently failed shard indices). The
+        failed indices must reach the caller — they used to be logged and
+        discarded here, so a shard that exhausted its retries lost its
+        whole record slice with a clean exit.
         """
         num_shards = len(job.shard_paths)
 
@@ -350,7 +392,7 @@ class Orchestrator:
                 failed_shards,
             )
 
-        return all_stats
+        return all_stats, failed_shards
 
     async def run(self) -> OrchestratorReport:
         """Run the full orchestration pipeline."""
@@ -376,6 +418,14 @@ class Orchestrator:
                     report.total_accepted += stats.accepted_records
                     report.total_rejected += stats.rejected_records
                     report.worker_stats.append(stats.to_dict())
+
+                if job.failed_shards:
+                    report.failed_shards.append(
+                        f"{job.manifest_name}: shards {job.failed_shards}"
+                    )
+                # abs(): a duplicate-records delta on one manifest must not
+                # cancel a missing-records delta on another in has_failures.
+                report.missing_records += abs(job.missing_records)
 
             except Exception as exc:
                 error_msg = f"Failed to process {job.path}: {exc}"

@@ -112,6 +112,11 @@ class WorkerStats:
     processed_records: int = 0
     accepted_records: int = 0
     rejected_records: int = 0
+    # Duration-probe outcomes for this shard. probe_duration swallows every
+    # per-file exception, so without these totals in the final report a
+    # shard could ship most of its records duration-less and nobody saw it.
+    durations_probed: int = 0
+    durations_missing: int = 0
     start_time: float = field(default_factory=time.time)
     end_time: float | None = None
 
@@ -133,6 +138,8 @@ class WorkerStats:
             "processed_records": self.processed_records,
             "accepted_records": self.accepted_records,
             "rejected_records": self.rejected_records,
+            "durations_probed": self.durations_probed,
+            "durations_missing": self.durations_missing,
             "elapsed_seconds": round(self.elapsed_seconds, 2),
             "records_per_second": round(self.records_per_second, 2),
         }
@@ -326,8 +333,14 @@ class Worker:
         """Process a batch of records through cleaner and validator."""
         # Fill in durations the source manifest never carried. Must happen
         # before cleaning, which copies duration into every CleanedRecord.
+        # Per-shard probe totals go into stats so the final report shows
+        # how many records shipped without a duration.
         if self.config.probe_missing_durations:
-            await fill_missing_durations(batch, self.config.duration_probe_workers)
+            filled, failed = await fill_missing_durations(
+                batch, self.config.duration_probe_workers
+            )
+            stats.durations_probed += filled
+            stats.durations_missing += failed
 
         # Clean the batch
         cleaned_records = await cleaner.process_batch(batch)

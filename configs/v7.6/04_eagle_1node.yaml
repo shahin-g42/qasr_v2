@@ -1,0 +1,253 @@
+# =============================================================================
+# QASR v7.6 — PHASE 4 (ADHOC): EAGLE draft head on 1 node x 8 GPUs
+# =============================================================================
+# Derived from 04_eagle_8node.yaml for an opportunistic run on a single spare
+# H100 node. Uses the FULL Phase-2 training pool (both manifest trees), matching
+# the distribution the target checkpoint was actually trained on.
+#
+# -----------------------------------------------------------------------------
+# TARGET CHECKPOINT — READ THIS FIRST
+# -----------------------------------------------------------------------------
+# Training on a Phase-2 MID-checkpoint (step 150,000 of 451,609, ~33% through
+# the full fine-tune). The EAGLE head is bound to exact target weights: any
+# later change to the target invalidates the head and acceptance collapses
+# toward 0. Treat this head as THROWAWAY/EXPERIMENTAL — retrain on whatever
+# final target you ship.
+#
+# -----------------------------------------------------------------------------
+# DATA POOL — FULL Phase-2 pool, NOT the curated Phase-3/4 subset
+# -----------------------------------------------------------------------------
+# 04_eagle_8node.yaml used a curated "deployed distribution" subset (78.9M
+# records, ar=39.6M) and omitted the q3asr_sft_manifests tree. That made sense
+# for a Phase-3-final target polished on cleaned text. It does NOT make sense
+# here: the target is a Phase-2 mid-checkpoint trained on the FULL pool
+# (176.5M records, ar=115.6M, both training_manifests/v7.6/ and
+# q3asr_sft_manifests/). The head must be distilled on the same distribution
+# the target saw, or it learns to draft for a model that doesn't exist yet.
+#
+# Pool: 44 manifest files, 5 languages, ~176.5M records.
+#   ar  115.6M  (30 files: v7.6 cleaned named corpora + q3asr sharded +
+#                        q3asr range-sliced + q3asr_sft raw)
+#   en   47.7M  ( 7 files: v7.6 cleaned + q3asr_sft raw)
+#   hi   11.4M  ( 2 files: v7.6 cleaned + q3asr_sft raw)
+#   ml    1.23M ( 3 files: v7.6 cleaned + range-sliced + q3asr_sft raw)
+#   zh    0.54M ( 2 files: v7.6 cleaned + q3asr_sft raw)
+#
+# -----------------------------------------------------------------------------
+# EPOCH MATH — 1 node vs 8 nodes, FULL pool
+# -----------------------------------------------------------------------------
+# Stratified sampler layout (src/qasr/sampling.py):
+#   N              = max language record count = 115,611,904 (ar)
+#   per_language   = per_device_batch // num_languages = 30 // 5 = 6
+#   per_rank       = ceil(N / world_size)
+#   draws_per_rank = ceil(per_rank / per_language) * per_language
+#   num_batches    = draws_per_rank // per_language   <-- one full epoch
+#
+#   8 nodes (world_size=64): num_batches =   301,073   global batch = 1,920
+#   1 node  (world_size= 8): num_batches = 2,408,582   global batch =   240
+#
+# At a realistic 0.5-2 s/step (frozen 3.62B teacher forward dominates), a full
+# 1-node epoch on the full pool is ~2-8 WEEKS. If that is too long for an adhoc
+# run, flip to the partial-epoch preset below — it is a two-line change.
+#
+#   FULL EPOCH (default, honors "1 epoch on full data" literally):
+#     max_steps: 2408582
+#     allow_partial_epoch: false      # guard passes: 2,408,582 >= num_batches
+#     wall-clock: ~2-8 weeks
+#     coverage:  every record of every language seen at least once
+#
+#   PARTIAL EPOCH (adhoc preset, matches 8-node full-pool wall-clock):
+#     max_steps: 301073
+#     allow_partial_epoch: true       # REQUIRED: 301,073 < 2,408,582
+#     wall-clock: ~2-7 days
+#     coverage:  12.5% of each language
+#
+#   SMOKE PRESET (sanity-check the launch, ~4-10 hours):
+#     max_steps: 30000
+#     allow_partial_epoch: true
+#     coverage:  1.25% of each language
+#
+# If the live manifest counts differ slightly from the README's 115.6M, the
+# full-coverage guard will report the exact num_batches in its error message —
+# bump max_steps to match. Recompute on the cluster with:
+#   PYTHONPATH=src python -c "
+#   from qasr.data import JsonlSpeechDataset
+#   from qasr.sampling import StratifiedLanguageSampler
+#   import yaml, math
+#   d = yaml.safe_load(open('configs/v7.6/04_eagle_1node.yaml'))
+#   parts = [JsonlSpeechDataset(p, language=l)
+#            for l, ps in d['train_manifest'].items() for p in ps]
+#   s = StratifiedLanguageSampler(parts, batch_size=30, seed=42,
+#                                 num_replicas=8, rank=0)
+#   print('num_batches (1 epoch at world_size=8):', s.num_batches)
+#   print('repeat_factors:', s.repeat_factors)"
+#
+# NOTE: gradient_accumulation_steps is NOT exposed on EagleTrainConfig, so the
+# 8-node global batch of 1,920 cannot be reproduced at world_size=8 without a
+# code change. The LR schedule below is shaped for global batch 240.
+#
+# -----------------------------------------------------------------------------
+# Launch (see scripts/run_v76_eagle_1node.sh):
+#   bash scripts/run_v76_eagle_1node.sh
+#
+# CLI overrides train_eagle.py actually accepts (argparse rejects anything else
+# -- there is NO --smoke-test flag; that belongs to train.py, Phases 1-3):
+#   --model --output-dir --train-manifest --max-steps --batch-size --lr
+#   --num-draft-tokens --kl-temperature
+#
+# SMOKE RUN: --max-steps alone is not enough. allow_partial_epoch has no CLI
+# flag, so a small --max-steps against `allow_partial_epoch: false` below trips
+# the full-coverage guard and raises. Edit this file instead:
+#   max_steps: 200
+#   allow_partial_epoch: true
+# then launch with no extra arguments.
+#
+# Input model:  models/v7.6/full/checkpoint-150000  (Phase 2 mid-checkpoint)
+# Output:       output/v76/eagle_v2_1node_ckpt150k/eagle_head.pt
+# =============================================================================
+
+model_name_or_path: /lustrefs/shared/shahin.konadath/workspace/train/stt/qasr/models/v7.6/full/checkpoint-150000
+eagle_output_dir: /lustrefs/shared/shahin.konadath/workspace/train/stt/qasr/output/v76/eagle_v2_1node_ckpt150k
+
+# --- EAGLE architecture (identical to 8-node config) ---
+hidden_size: 2048
+vocab_size: 151936
+num_draft_tokens: 5
+# EAGLE-3 multi-layer fusion over the last three decoder layers. Set to [-1]
+# for a legacy single-layer EAGLE-2 head.
+fusion_layer_indices: [-3, -2, -1]
+
+# --- Training ---
+# FULL EPOCH on the FULL Phase-2 pool at world_size=8. See the epoch-math block
+# at the top for the partial-epoch and smoke presets.
+max_steps: 2408582
+per_device_train_batch_size: 30
+# LR held at the 8-node value (3.0e-4). Global batch dropped 1,920 -> 240 (8x),
+# so sqrt-scaling would suggest ~1.06e-4. The head is only ~8.4M trainable
+# params and KL distillation is well-conditioned, so we keep 3.0e-4 and watch
+# the first 500 steps. If the loss diverges, drop to 1.5e-4.
+learning_rate: 3.0e-4
+weight_decay: 0.01
+# Warmup 500 steps (~0.02% of the run). Enough to stabilize the freshly-
+# initialized fusion layer; short enough to not waste adhoc time.
+warmup_steps: 500
+lr_scheduler_type: cosine
+max_grad_norm: 1.0
+kl_temperature: 1.0
+
+# Full-coverage guard: false means the trainer REFUSES to launch if max_steps
+# cannot fit one stratified epoch at the live world size. Keep false for the
+# full-epoch preset; flip to true for the partial/smoke presets.
+allow_partial_epoch: false
+
+# --- Data: FULL Phase-2 pool (identical to 02_full_8node.yaml) ---
+# Both manifest trees, all 44 files. The head drafts on the same distribution
+# the Phase-2 target was trained on.
+train_manifest:
+  ar:
+    # -- v7.6 cleaned: named corpora --
+    - /lustrefs/shared/shahin.konadath/workspace/train/stt/qasr/training_manifests/v7.6/ar/train_ar_inworld_full.jsonl
+    - /lustrefs/shared/shahin.konadath/workspace/train/stt/qasr/training_manifests/v7.6/ar/train_ar_dialect_gulf.jsonl
+    - /lustrefs/shared/shahin.konadath/workspace/train/stt/qasr/training_manifests/v7.6/ar/train_ar_ar_ae_train.jsonl
+    - /lustrefs/shared/shahin.konadath/workspace/train/stt/qasr/training_manifests/v7.6/ar/train_ar_ar_ae.jsonl
+    - /lustrefs/shared/shahin.konadath/workspace/train/stt/qasr/training_manifests/v7.6/ar/train_ar_el_gen_v5.jsonl
+    - /lustrefs/shared/shahin.konadath/workspace/train/stt/qasr/training_manifests/v7.6/ar/train_ar_spotify_v1.jsonl
+    - /lustrefs/shared/shahin.konadath/workspace/train/stt/qasr/training_manifests/v7.6/ar/train_ar_se_v1.jsonl
+    - /lustrefs/shared/shahin.konadath/workspace/train/stt/qasr/training_manifests/v7.6/ar/train_ar_qudratech_batch2.jsonl
+    - /lustrefs/shared/shahin.konadath/workspace/train/stt/qasr/training_manifests/v7.6/ar/train_ar_qudratech_phase4.jsonl
+    - /lustrefs/shared/shahin.konadath/workspace/train/stt/qasr/training_manifests/v7.6/ar/train_ar_camel_race.jsonl
+    - /lustrefs/shared/shahin.konadath/workspace/train/stt/qasr/training_manifests/v7.6/ar/train_ar_khalid_msa.jsonl
+    # -- v7.6 cleaned: q3asr, sharded pass --
+    - /lustrefs/shared/shahin.konadath/workspace/train/stt/qasr/training_manifests/v7.6/ar/train_ar_q3asr.jsonl
+    # -- v7.6 cleaned: q3asr, range-sliced pass --
+    - /lustrefs/shared/shahin.konadath/workspace/train/stt/qasr/training_manifests/v7.6/ar/train_ar_q3asr_r2181854_4363709.jsonl
+    - /lustrefs/shared/shahin.konadath/workspace/train/stt/qasr/training_manifests/v7.6/ar/train_ar_q3asr_r4363709_6545564.jsonl
+    - /lustrefs/shared/shahin.konadath/workspace/train/stt/qasr/training_manifests/v7.6/ar/train_ar_q3asr_r6545564_8727419.jsonl
+    - /lustrefs/shared/shahin.konadath/workspace/train/stt/qasr/training_manifests/v7.6/ar/train_ar_q3asr_r8727419_10909274.jsonl
+    - /lustrefs/shared/shahin.konadath/workspace/train/stt/qasr/training_manifests/v7.6/ar/train_ar_q3asr_r10909274_13091129.jsonl
+    - /lustrefs/shared/shahin.konadath/workspace/train/stt/qasr/training_manifests/v7.6/ar/train_ar_q3asr_r13091129_15272984.jsonl
+    - /lustrefs/shared/shahin.konadath/workspace/train/stt/qasr/training_manifests/v7.6/ar/train_ar_q3asr_r15272984_17454839.jsonl
+    - /lustrefs/shared/shahin.konadath/workspace/train/stt/qasr/training_manifests/v7.6/ar/train_ar_q3asr_r17454839_19636694.jsonl
+    - /lustrefs/shared/shahin.konadath/workspace/train/stt/qasr/training_manifests/v7.6/ar/train_ar_q3asr_r19636694_21818548.jsonl
+    - /lustrefs/shared/shahin.konadath/workspace/train/stt/qasr/training_manifests/v7.6/ar/train_ar_q3asr_r21818548_24000403.jsonl
+    - /lustrefs/shared/shahin.konadath/workspace/train/stt/qasr/training_manifests/v7.6/ar/train_ar_q3asr_r24000403_26182258.jsonl
+    - /lustrefs/shared/shahin.konadath/workspace/train/stt/qasr/training_manifests/v7.6/ar/train_ar_q3asr_r26182258_28364113.jsonl
+    - /lustrefs/shared/shahin.konadath/workspace/train/stt/qasr/training_manifests/v7.6/ar/train_ar_q3asr_r28364113_30545968.jsonl
+    - /lustrefs/shared/shahin.konadath/workspace/train/stt/qasr/training_manifests/v7.6/ar/train_ar_q3asr_r30545968_32727823.jsonl
+    - /lustrefs/shared/shahin.konadath/workspace/train/stt/qasr/training_manifests/v7.6/ar/train_ar_q3asr_r32727823_34909678.jsonl
+    - /lustrefs/shared/shahin.konadath/workspace/train/stt/qasr/training_manifests/v7.6/ar/train_ar_q3asr_r34909678_37091533.jsonl
+    - /lustrefs/shared/shahin.konadath/workspace/train/stt/qasr/training_manifests/v7.6/ar/train_ar_q3asr_r37091533_end.jsonl
+    # -- q3asr SFT (raw, verbatim targets, duration-complete) --
+    - /lustrefs/shared/shahin.konadath/workspace/train/stt/qasr/q3asr_sft_manifests/ar/train_ar_q3asr.jsonl
+  en:
+    - /lustrefs/shared/shahin.konadath/workspace/train/stt/qasr/training_manifests/v7.6/en/train_en_inworld.jsonl
+    - /lustrefs/shared/shahin.konadath/workspace/train/stt/qasr/training_manifests/v7.6/en/train_en_q3asr.jsonl
+    - /lustrefs/shared/shahin.konadath/workspace/train/stt/qasr/training_manifests/v7.6/en/train_en_hifi_tts.jsonl
+    - /lustrefs/shared/shahin.konadath/workspace/train/stt/qasr/training_manifests/v7.6/en/train_en_expresso.jsonl
+    - /lustrefs/shared/shahin.konadath/workspace/train/stt/qasr/training_manifests/v7.6/en/train_en_anispeech.jsonl
+    - /lustrefs/shared/shahin.konadath/workspace/train/stt/qasr/training_manifests/v7.6/en/train_en_commentary.jsonl
+    - /lustrefs/shared/shahin.konadath/workspace/train/stt/qasr/q3asr_sft_manifests/en/train_en_q3asr.jsonl
+  hi:
+    - /lustrefs/shared/shahin.konadath/workspace/train/stt/qasr/training_manifests/v7.6/hi/train_hi_q3asr.jsonl
+    - /lustrefs/shared/shahin.konadath/workspace/train/stt/qasr/q3asr_sft_manifests/hi/train_hi_q3asr.jsonl
+  ml:
+    - /lustrefs/shared/shahin.konadath/workspace/train/stt/qasr/training_manifests/v7.6/ml/train_ml_itn_punct.jsonl
+    - /lustrefs/shared/shahin.konadath/workspace/train/stt/qasr/training_manifests/v7.6/ml/train_ml_itn_punct_r0_end.jsonl
+    - /lustrefs/shared/shahin.konadath/workspace/train/stt/qasr/q3asr_sft_manifests/ml/train_ml_q3asr.jsonl
+  zh:
+    - /lustrefs/shared/shahin.konadath/workspace/train/stt/qasr/training_manifests/v7.6/zh/train_zh_q3asr.jsonl
+    - /lustrefs/shared/shahin.konadath/workspace/train/stt/qasr/q3asr_sft_manifests/zh/train_zh_q3asr.jsonl
+
+language: ar
+# Equal languages per mini-batch (6 per language at batch 30) and full coverage
+# of every corpus per epoch under the stratified sampler.
+sampling_strategy: stratified
+min_duration_seconds: 0.1
+max_duration_seconds: 35.0
+max_target_length: 512
+
+# Full recipe, uniform with Phase 2, so the head learns to draft on the same
+# augmented spectrogram distribution the target was trained on.
+augmentation:
+  spec_augment:
+    enabled: true
+    num_time_masks: 2
+    max_time_mask_ratio: 0.05
+    num_freq_masks: 2
+    max_freq_mask_ratio: 0.15
+    p: 0.37
+  speed_perturb:
+    enabled: true
+    rate_range: [0.85, 1.15]
+    p: 0.37
+  noise_injection:
+    enabled: true
+    noise_dir: /lustrefs/shared/shahin.konadath/workspace/train/stt/musan
+    snr_range: [5.0, 20.0]
+    p: 0.37
+  codec_augment:
+    enabled: true
+    p: 0.37
+
+# --- Infrastructure ---
+deepspeed: configs/deepspeed_zero2.json
+bf16: true
+tf32: true
+# Teacher runs under no_grad, so activation checkpointing has nothing to save.
+gradient_checkpointing: false
+dataloader_num_workers: 8
+logging_steps: 10
+# Head saves are ~34 MB. At ~1 s/step, 2,000 steps = ~33 min between saves.
+save_steps: 2000
+save_total_limit: 8
+# Experiment tracking. This was `none`, which left a 2.4M-step run with no graph
+# whatsoever -- and EagleTrainConfig had no wandb_project/run_name fields, so
+# even flipping it in YAML gave an unnamed run in wandb's default project. Both
+# fields now exist and default the way TrainConfig (Phases 1-3) does.
+# wandb>=0.19.0 is already a project dependency. WANDB_DIR is pinned node-local
+# by the launcher; do not point it at Lustre.
+report_to: wandb
+wandb_project: qasr-eagle-v76
+run_name: eagle_v2_1node_ckpt150k_fullpool
+seed: 42
+attn_implementation: sdpa

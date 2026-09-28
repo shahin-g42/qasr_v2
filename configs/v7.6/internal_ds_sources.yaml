@@ -1,0 +1,226 @@
+# =============================================================================
+# QASR v7.6 — PHASE 2: full fine-tune (all 3.62B params trainable)
+# 8 nodes x 8 GPUs = 64 GPUs. Global batch: 64 x 20 x 1 = 1,280.
+# =============================================================================
+# The main run. Everything unfrozen, full augmentation, both data sources.
+#
+# DATA — two sources are deliberately stacked:
+#   1. training_manifests/v7.6/  — LLM-cleaned (ITN, punctuation, Arabic
+#      dialect + diacritic restoration). 46 corpora, ~115.4M records.
+#   2. q3asr_sft_manifests/      — raw q3asr envelopes filtered by
+#      prepare_q3asr_filter (LID, duration probe, 512-token gate).
+#      ~61.1M train records, and fully duration-complete.
+# These overlap on the q3asr audio. That is intentional and accepted: the
+# augmentation stack (speed 0.85-1.15x, MUSAN noise 5-20 dB, codec, SpecAugment,
+# each p=0.37) makes repeat views of the same utterance distinct, and the
+# cleaned/raw pair gives the model both a normalized and a verbatim target for
+# the same audio. Combined pool ~176.5M records.
+#
+# STEP BUDGET — 451,609 x 1,280 = 578.1M samples = ONE full stratified epoch:
+# each of the 5 languages contributes 115.6M draws (the size of Arabic, the
+# largest). Every record of every language is seen at least once — Arabic
+# exactly once; en x2.4, hi x10.2, ml x94, zh x213 (augmentation makes the
+# repeat views distinct). This is a guarantee from the sampler's bijective
+# per-rank partition, not a statistical estimate.
+#
+# Input model: .../output/v76/projector (Phase 1)
+# Output: .../output/v76/full  ->  consumed by 03_hq_8node.yaml
+# -----------------------------------------------------------------------------
+model_name_or_path: /lustrefs/shared/shahin.konadath/workspace/train/stt/qasr/output/v76/projector
+output_dir: /lustrefs/shared/shahin.konadath/workspace/train/stt/qasr/output/v76/full
+
+freeze_audio_tower: false
+freeze_language_model: false
+
+train_manifest:
+  ar:
+    # -- v7.6 cleaned: named corpora --
+    - /lustrefs/shared/shahin.konadath/workspace/train/stt/qasr/training_manifests/v7.6/ar/train_ar_inworld_full.jsonl
+    - /lustrefs/shared/shahin.konadath/workspace/train/stt/qasr/training_manifests/v7.6/ar/train_ar_dialect_gulf.jsonl
+    - /lustrefs/shared/shahin.konadath/workspace/train/stt/qasr/training_manifests/v7.6/ar/train_ar_ar_ae_train.jsonl
+    - /lustrefs/shared/shahin.konadath/workspace/train/stt/qasr/training_manifests/v7.6/ar/train_ar_ar_ae.jsonl
+    - /lustrefs/shared/shahin.konadath/workspace/train/stt/qasr/training_manifests/v7.6/ar/train_ar_el_gen_v5.jsonl
+    - /lustrefs/shared/shahin.konadath/workspace/train/stt/qasr/training_manifests/v7.6/ar/train_ar_spotify_v1.jsonl
+    - /lustrefs/shared/shahin.konadath/workspace/train/stt/qasr/training_manifests/v7.6/ar/train_ar_se_v1.jsonl
+    - /lustrefs/shared/shahin.konadath/workspace/train/stt/qasr/training_manifests/v7.6/ar/train_ar_qudratech_batch2.jsonl
+    - /lustrefs/shared/shahin.konadath/workspace/train/stt/qasr/training_manifests/v7.6/ar/train_ar_qudratech_phase4.jsonl
+    - /lustrefs/shared/shahin.konadath/workspace/train/stt/qasr/training_manifests/v7.6/ar/train_ar_camel_race.jsonl
+    - /lustrefs/shared/shahin.konadath/workspace/train/stt/qasr/training_manifests/v7.6/ar/train_ar_khalid_msa.jsonl
+    # -- v7.6 cleaned: q3asr, sharded pass (source indices 0..end, partial) --
+    - /lustrefs/shared/shahin.konadath/workspace/train/stt/qasr/training_manifests/v7.6/ar/train_ar_q3asr.jsonl
+    # -- v7.6 cleaned: q3asr, range-sliced pass (source indices 2181854..end) --
+    - /lustrefs/shared/shahin.konadath/workspace/train/stt/qasr/training_manifests/v7.6/ar/train_ar_q3asr_r2181854_4363709.jsonl
+    - /lustrefs/shared/shahin.konadath/workspace/train/stt/qasr/training_manifests/v7.6/ar/train_ar_q3asr_r4363709_6545564.jsonl
+    - /lustrefs/shared/shahin.konadath/workspace/train/stt/qasr/training_manifests/v7.6/ar/train_ar_q3asr_r6545564_8727419.jsonl
+    - /lustrefs/shared/shahin.konadath/workspace/train/stt/qasr/training_manifests/v7.6/ar/train_ar_q3asr_r8727419_10909274.jsonl
+    - /lustrefs/shared/shahin.konadath/workspace/train/stt/qasr/training_manifests/v7.6/ar/train_ar_q3asr_r10909274_13091129.jsonl
+    - /lustrefs/shared/shahin.konadath/workspace/train/stt/qasr/training_manifests/v7.6/ar/train_ar_q3asr_r13091129_15272984.jsonl
+    - /lustrefs/shared/shahin.konadath/workspace/train/stt/qasr/training_manifests/v7.6/ar/train_ar_q3asr_r15272984_17454839.jsonl
+    - /lustrefs/shared/shahin.konadath/workspace/train/stt/qasr/training_manifests/v7.6/ar/train_ar_q3asr_r17454839_19636694.jsonl
+    - /lustrefs/shared/shahin.konadath/workspace/train/stt/qasr/training_manifests/v7.6/ar/train_ar_q3asr_r19636694_21818548.jsonl
+    - /lustrefs/shared/shahin.konadath/workspace/train/stt/qasr/training_manifests/v7.6/ar/train_ar_q3asr_r21818548_24000403.jsonl
+    - /lustrefs/shared/shahin.konadath/workspace/train/stt/qasr/training_manifests/v7.6/ar/train_ar_q3asr_r24000403_26182258.jsonl
+    - /lustrefs/shared/shahin.konadath/workspace/train/stt/qasr/training_manifests/v7.6/ar/train_ar_q3asr_r26182258_28364113.jsonl
+    - /lustrefs/shared/shahin.konadath/workspace/train/stt/qasr/training_manifests/v7.6/ar/train_ar_q3asr_r28364113_30545968.jsonl
+    - /lustrefs/shared/shahin.konadath/workspace/train/stt/qasr/training_manifests/v7.6/ar/train_ar_q3asr_r30545968_32727823.jsonl
+    - /lustrefs/shared/shahin.konadath/workspace/train/stt/qasr/training_manifests/v7.6/ar/train_ar_q3asr_r32727823_34909678.jsonl
+    - /lustrefs/shared/shahin.konadath/workspace/train/stt/qasr/training_manifests/v7.6/ar/train_ar_q3asr_r34909678_37091533.jsonl
+    - /lustrefs/shared/shahin.konadath/workspace/train/stt/qasr/training_manifests/v7.6/ar/train_ar_q3asr_r37091533_end.jsonl
+    # -- q3asr SFT (raw, verbatim targets, duration-complete) --
+    - /lustrefs/shared/shahin.konadath/workspace/train/stt/qasr/q3asr_sft_manifests/ar/train_ar_q3asr.jsonl
+  en:
+    - /lustrefs/shared/shahin.konadath/workspace/train/stt/qasr/training_manifests/v7.6/en/train_en_inworld.jsonl
+    - /lustrefs/shared/shahin.konadath/workspace/train/stt/qasr/training_manifests/v7.6/en/train_en_q3asr.jsonl
+    - /lustrefs/shared/shahin.konadath/workspace/train/stt/qasr/training_manifests/v7.6/en/train_en_hifi_tts.jsonl
+    - /lustrefs/shared/shahin.konadath/workspace/train/stt/qasr/training_manifests/v7.6/en/train_en_expresso.jsonl
+    - /lustrefs/shared/shahin.konadath/workspace/train/stt/qasr/training_manifests/v7.6/en/train_en_anispeech.jsonl
+    - /lustrefs/shared/shahin.konadath/workspace/train/stt/qasr/training_manifests/v7.6/en/train_en_commentary.jsonl
+    - /lustrefs/shared/shahin.konadath/workspace/train/stt/qasr/q3asr_sft_manifests/en/train_en_q3asr.jsonl
+  hi:
+    - /lustrefs/shared/shahin.konadath/workspace/train/stt/qasr/training_manifests/v7.6/hi/train_hi_q3asr.jsonl
+    - /lustrefs/shared/shahin.konadath/workspace/train/stt/qasr/q3asr_sft_manifests/hi/train_hi_q3asr.jsonl
+  ml:
+    - /lustrefs/shared/shahin.konadath/workspace/train/stt/qasr/training_manifests/v7.6/ml/train_ml_itn_punct.jsonl
+    - /lustrefs/shared/shahin.konadath/workspace/train/stt/qasr/training_manifests/v7.6/ml/train_ml_itn_punct_r0_end.jsonl
+    - /lustrefs/shared/shahin.konadath/workspace/train/stt/qasr/q3asr_sft_manifests/ml/train_ml_q3asr.jsonl
+  zh:
+    - /lustrefs/shared/shahin.konadath/workspace/train/stt/qasr/training_manifests/v7.6/zh/train_zh_q3asr.jsonl
+    - /lustrefs/shared/shahin.konadath/workspace/train/stt/qasr/q3asr_sft_manifests/zh/train_zh_q3asr.jsonl
+
+# --- Eval sets ---
+# ar/en/zh use the v7.6 CLEANED eval sets, so the reference style matches the
+# dominant training target (ITN'd + punctuated) and eval loss stays meaningful.
+# hi/ml use the q3asr SFT eval sets because v7.6 has nothing usable for them:
+# eval_ml_inworld.jsonl is 46 records, and eval_ml_inworld_as_hi.jsonl (98
+# records) is Malayalam audio filed under Hindi. Those two languages therefore
+# score against RAW references — track them over time, but do not compare their
+# absolute WER against ar/en/zh.
+# v7.6's eval_en_expresso.jsonl (16 records) is omitted as statistical noise.
+eval_manifest:
+  ar:
+    - /lustrefs/shared/shahin.konadath/workspace/train/stt/qasr/training_manifests/v7.6/ar/eval_ar_inworld.jsonl
+    - /lustrefs/shared/shahin.konadath/workspace/train/stt/qasr/training_manifests/v7.6/ar/eval_ar_ar_ae.jsonl
+    - /lustrefs/shared/shahin.konadath/workspace/train/stt/qasr/q3asr_sft_manifests/ar/eval_ar_q3asr.jsonl
+  en:
+    - /lustrefs/shared/shahin.konadath/workspace/train/stt/qasr/training_manifests/v7.6/en/eval_en_inworld.jsonl
+    - /lustrefs/shared/shahin.konadath/workspace/train/stt/qasr/training_manifests/v7.6/en/eval_en_expresso.jsonl
+    - /lustrefs/shared/shahin.konadath/workspace/train/stt/qasr/q3asr_sft_manifests/en/eval_en_q3asr.jsonl
+  hi:
+    - /lustrefs/shared/shahin.konadath/workspace/train/stt/qasr/q3asr_sft_manifests/hi/eval_hi_q3asr.jsonl
+  ml:
+    - /lustrefs/shared/shahin.konadath/workspace/train/stt/qasr/training_manifests/v7.6/ml/eval_ml_inworld.jsonl
+    - /lustrefs/shared/shahin.konadath/workspace/train/stt/qasr/q3asr_sft_manifests/ml/eval_ml_q3asr.jsonl
+  zh:
+    - /lustrefs/shared/shahin.konadath/workspace/train/stt/qasr/training_manifests/v7.6/zh/eval_zh_inworld.jsonl
+    - /lustrefs/shared/shahin.konadath/workspace/train/stt/qasr/q3asr_sft_manifests/zh/eval_zh_q3asr.jsonl
+
+audio_root: null
+
+language: ar
+punctuation: true
+min_duration_seconds: 0.1
+max_duration_seconds: 35.0
+max_target_length: 512
+truncate_long_transcripts: false
+validate_audio_paths: false
+eval_log_samples: 37
+eval_generation_max_new_tokens: 256
+
+num_train_epochs: 1.0
+max_steps: 451609
+# 64 devices x 20 samples x 1 accumulation = global batch 1,280
+# (20 = 4 samples per language x 5 languages, per device).
+# MEMORY GATE — rehearse on ONE node before the 64-GPU launch:
+#   CONFIG=configs/v7.6/02_full_8node.yaml NNODES=1 \
+#     bash scripts/run_v76_phase1_node.sh 0 localhost --smoke-test
+# then watch nvidia-smi peak. Estimated 55-65 GB/GPU (fp32 loss logits alone
+# are ~12 GB at this batch). If it OOMs or peaks >70 GB, fall back:
+#   15/device -> max_steps 602,145 (gb 960),  lr 5.0e-5, warmup 6000
+#   10/device -> max_steps 903,217 (gb 640),  lr 4.0e-5, warmup 9000
+per_device_train_batch_size: 20
+per_device_eval_batch_size: 4
+gradient_accumulation_steps: 1
+# sqrt-scaled for global batch 1,280: 4.0e-5 x sqrt(1280/640) ~= 5.7e-5,
+# held to 4.5e-5 on the conservative side (WSD keeps it at peak for most of
+# the run). Per-group split (see llm_lr_factor / embed_lr_factor):
+#   encoder + projector 4.5e-5 | LLM body 2.25e-5 | token embeddings 1.125e-5.
+learning_rate: 4.5e-5
+weight_decay: 0.01
+# Warmup-Stable-Decay: 4.5k warmup (~1%), 45k decay tail (~10%), stable plateau between.
+# Steering rule: if per-language WER flattens for 2 consecutive evals in the
+# stable region, stop and fire the decay branch from the best checkpoint.
+lr_scheduler_type: warmup_stable_decay
+lr_scheduler_kwargs:
+  num_decay_steps: 45000
+  min_lr_ratio: 0.1
+warmup_steps: 4500
+max_grad_norm: 1.0
+
+# --- Phase A accuracy recipe ---
+balanced_sampling: true
+# Unused under stratified sampling (kept for config-diff hygiene).
+sampling_temperature: 0.5
+# Equal languages in every mini-batch AND every record of every language
+# seen at least once per epoch (ar exactly once; smaller languages repeat).
+sampling_strategy: stratified
+llm_lr_factor: 0.5
+embed_lr_factor: 0.25
+label_smoothing: 0.1
+non_speech_manifest: null
+ctc_loss_weight: 0.0
+eval_wer_samples_per_language: 100
+
+logging_steps: 10
+eval_steps: 10000
+save_steps: 30000
+save_total_limit: 8
+
+smoke_test: false
+smoke_test_max_steps: 2
+smoke_test_train_samples: 256
+smoke_test_eval_samples: 16
+
+dataloader_num_workers: 12
+dataloader_pin_memory: true
+dataloader_persistent_workers: true
+
+gradient_checkpointing: true
+bf16: true
+fp16: false
+tf32: true
+torch_compile: false
+optim: adamw_torch
+
+# ZeRO-2: params stay resident per GPU (7.2 GB BF16), avoiding the per-layer
+# all-gather overhead of ZeRO-3.
+deepspeed: configs/deepspeed_zero2.json
+ddp_find_unused_parameters: false
+report_to: wandb
+wandb_project: qasr
+run_name: qasr-v76-p2-full
+seed: 42
+data_seed: 42
+
+resume_from_checkpoint: null
+attn_implementation: sdpa
+
+augmentation:
+  spec_augment:
+    enabled: true
+    num_time_masks: 2
+    max_time_mask_ratio: 0.05
+    num_freq_masks: 2
+    max_freq_mask_ratio: 0.15
+    p: 0.37
+  speed_perturb:
+    enabled: true
+    rate_range: [0.85, 1.15]
+    p: 0.37
+  noise_injection:
+    enabled: true
+    noise_dir: /lustrefs/shared/shahin.konadath/workspace/train/stt/musan
+    snr_range: [5.0, 20.0]
+    p: 0.37
+  codec_augment:
+    enabled: true
+    p: 0.37

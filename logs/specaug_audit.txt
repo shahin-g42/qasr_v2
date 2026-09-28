@@ -1,0 +1,69 @@
+SpecAugment audit - recipe: {'num_time_masks': 2, 'max_time_mask_ratio': 0.05, 'num_freq_masks': 2, 'max_freq_mask_ratio': 0.15, 'p': 0.37}
+duration sample: n=40000  mean=4.52s  p50=3.48s  p99=22.83s
+
+=== 1. Masking strength (single sample, p gate included) ===
+samples drawn: 40000   real durations: 40000
+time-frame share masked : mean=0.0085 p50=0.0000 p95=0.0415 max=0.0948
+freq-bin share masked   : mean=0.0256 p50=0.0000 p95=0.1250 max=0.2891
+spectrogram cells zeroed: mean=0.0334 p95=0.1499 max=0.3123
+speech zeroed per FIRED sample (s): mean=0.12 p95=0.38 p99=0.71 max=2.28
+P(no time mask at all)  = 0.6587
+P(no freq mask at all)  = 0.6473
+P(batch gate fired)     = 0.3678  (config p=0.37)
+time masks applied (of 2): mean=0.479   freq masks applied: mean=0.491
+
+--- time-mask share by utterance length ---
+    <1s: n=  3221  mean=0.0074  mean|fired=0.0268  P(zero time mask)=0.725
+   1-3s: n= 13902  mean=0.0081  mean|fired=0.0245  P(zero time mask)=0.671
+  3-10s: n= 19957  mean=0.0088  mean|fired=0.0247  P(zero time mask)=0.643
+ 10-20s: n=  2352  mean=0.0090  mean|fired=0.0245  P(zero time mask)=0.634
+   >20s: n=   568  mean=0.0094  mean|fired=0.0262  P(zero time mask)=0.639
+
+=== 4. intensity coupling (masked samples only, n=13045) ===
+Pearson corr(time share, freq share) = 0.218  (1.0 = one draw drives both axes, 0.0 = independent)
+
+=== 2. Gate granularity: share of the GLOBAL batch masked per step ===
+per_device_bs= 2 (global  128): std  shared-batch-gate=0.4840  indep-batch-gate=0.0615  per-sample-gate=0.0434
+per_device_bs= 4 (global  256): std  shared-batch-gate=0.4836  indep-batch-gate=0.0600  per-sample-gate=0.0298
+per_device_bs= 8 (global  512): std  shared-batch-gate=0.4831  indep-batch-gate=0.0599  per-sample-gate=0.0214
+per_device_bs=32 (global 2048): std  shared-batch-gate=0.4869  indep-batch-gate=0.0602  per-sample-gate=0.0105
+All three average to p=0.37; only the step-to-step variance differs.
+
+=== 3a. Analytic: base_seed / worker streams per rank ===
+base_seed per rank: [6909045637428952499, 6909045637428952499, 6909045637428952499, 6909045637428952499, 6909045637428952499, 6909045637428952499, 6909045637428952499, 6909045637428952499]
+all ranks identical: True
+worker-0 gate draws, rank 0: [0.765798211, 0.529055738, 0.958994866, 0.470175763, 0.894182065, 0.641147564]
+worker-0 streams identical across ranks: True
+
+=== 3b. End-to-end: two 'ranks' with real DataLoader workers ===
+persistent_workers=True:
+  gate fired on 10/40 batches (0.25, config p=0.37)
+  rank0 vs rank1, epoch 1: 40/40 batches share the mask layout
+  rank0 gate decisions identical to rank1: True
+  rank0 epoch1 vs epoch2 identical: False
+  distinct mask layouts among the 10 augmented batches: 10
+persistent_workers=False:
+  gate fired on 10/40 batches (0.25, config p=0.37)
+  rank0 vs rank1, epoch 1: 40/40 batches share the mask layout
+  rank0 gate decisions identical to rank1: True
+  rank0 epoch1 vs epoch2 identical: False
+  distinct mask layouts among the 10 augmented batches: 10
+
+=== 5. Waveform augmentations across ranks (real classes) ===
+noise_dir=/lustrefs/shared/shahin.konadath/workspace/train/stt/musan
+distinct augmented waveforms over 8 ranks, today's seeding : 1
+distinct augmented waveforms over 8 ranks, rank-offset seed  : 6 (3 rank(s) had all three gates off, so they equal the clean input)
+=> every rank applies byte-identical speed/noise/codec parameters to its
+   own (different) audio at a given step.
+
+=== 6. Where the masking budget goes (closed form vs measured) ===
+P(gate)=0.37  E[#time masks]=1.50  E[#freq masks]=1.50  E[intensity]=0.65
+time share: predicted=0.0090  measured=0.0085  (gap = mask overlaps + int() truncation)
+freq share: predicted=0.0271  measured=0.0256
+multiplicative discount: gate x0.37, randint(0, m) x0.50, intensity x0.65, E[#masks]/max x0.75
+=> 8.5% of the nominal 2 x 5% time budget reaches the model.
+
+--- nominal ceilings for reference ---
+time: 2 masks x 5% = 10% of the valid frames; freq: 2 masks x 15% = 30% of 128 bins
+randint(0, m) has E[width] = m/2, so the expected share is half the ceiling
+before overlaps and the intensity draw are taken into account.

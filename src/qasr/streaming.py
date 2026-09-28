@@ -147,6 +147,16 @@ class QASRTranscriber:
         self.sample_rate = int(processor.feature_extractor.sampling_rate)
         self._lock = Lock()
 
+    @property
+    def lock(self) -> Lock:
+        """Lock serializing inference on the shared model.
+
+        Exposed so callers that run the same model through another decoding
+        path (e.g. EAGLE speculative decoding) can serialize with
+        :meth:`transcribe` instead of racing it.
+        """
+        return self._lock
+
     @classmethod
     def from_pretrained(
         cls,

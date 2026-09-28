@@ -280,6 +280,145 @@ class ResilientAudioDatasetTest(unittest.TestCase):
         ), self.assertRaisesRegex(RuntimeError, "checking every sample"):
             self._dataset()[0]
 
+    def test_skip_stats_counts_each_failure_category(self) -> None:
+        """Regression test for the unobservable-sample-drop incident: skips were
+        logged one WARNING per index with no aggregate, so the training drop
+        rate could only be recovered by grepping every rank log."""
+
+        class FakeTokenizer:
+            def __call__(self, text: str, **_: object) -> dict[str, list[int]]:
+                return {"input_ids": list(range(len(text.split())))}
+
+        records = [
+            {"audio_path": "corrupt.wav", "text": "bad"},
+            {"audio_path": "too-short.wav", "text": "bad"},
+            {"audio_path": "long-text.wav", "text": "one two three four"},
+            {"audio_path": "good.wav", "text": "ok"},
+        ]
+        dataset = ResilientAudioDataset(
+            records,
+            sampling_rate=1_000,
+            min_audio_seconds=0.1,
+            max_audio_seconds=1.0,
+            tokenizer=FakeTokenizer(),
+            max_target_length=2,
+        )
+
+        def load(path: str, _: int) -> np.ndarray:
+            if path == "corrupt.wav":
+                raise AudioLoadingError("broken file")
+            if path == "too-short.wav":
+                return np.zeros(10, dtype=np.float32)
+            return np.zeros(200, dtype=np.float32)
+
+        with patch("qasr.data.load_mono_audio", side_effect=load):
+            sample = dataset[0]
+
+        self.assertEqual(sample["audio_path"], "good.wav")
+        self.assertEqual(
+            dataset.skip_stats,
+            {
+                "audio_load_errors": 1,
+                "duration_errors": 1,
+                "transcript_errors": 1,
+                "substitutions": 1,
+                "invalid_indices": 3,
+            },
+        )
+
+    def test_skip_stats_reflects_corrupt_and_out_of_duration_files(self) -> None:
+        """Regression test for the unobservable-sample-drop incident: skip_stats
+        must expose a corrupt file and an out-of-duration file as separate
+        per-category counts."""
+        records = [
+            {"audio_path": "corrupt.wav", "text": "bad"},
+            {"audio_path": "too-long.wav", "text": "bad"},
+            {"audio_path": "good.wav", "text": "ok"},
+        ]
+        dataset = ResilientAudioDataset(
+            records,
+            sampling_rate=1_000,
+            min_audio_seconds=0.1,
+            max_audio_seconds=1.0,
+        )
+
+        def load(path: str, _: int) -> np.ndarray:
+            if path == "corrupt.wav":
+                raise AudioLoadingError("broken file")
+            if path == "too-long.wav":
+                return np.zeros(5_000, dtype=np.float32)
+            return np.zeros(200, dtype=np.float32)
+
+        with patch("qasr.data.load_mono_audio", side_effect=load):
+            sample = dataset[0]
+
+        self.assertEqual(sample["audio_path"], "good.wav")
+        self.assertEqual(
+            dataset.skip_stats,
+            {
+                "audio_load_errors": 1,
+                "duration_errors": 1,
+                "transcript_errors": 0,
+                "substitutions": 1,
+                "invalid_indices": 2,
+            },
+        )
+
+    def test_summary_warning_is_emitted_at_first_failure_only(self) -> None:
+        """Regression test for the unobservable-sample-drop incident: a WARNING
+        summary with running counts and the dataset size must appear at the
+        first failure, and further failures below the next power of ten must
+        not each add a summary line."""
+        records = [
+            {"audio_path": "corrupt-a.wav", "text": "bad"},
+            {"audio_path": "corrupt-b.wav", "text": "bad"},
+            {"audio_path": "good.wav", "text": "ok"},
+        ]
+        dataset = ResilientAudioDataset(
+            records,
+            sampling_rate=1_000,
+            min_audio_seconds=0.1,
+            max_audio_seconds=1.0,
+        )
+
+        def load(path: str, _: int) -> np.ndarray:
+            if path.startswith("corrupt"):
+                raise AudioLoadingError("broken file")
+            return np.zeros(200, dtype=np.float32)
+
+        with patch("qasr.data.load_mono_audio", side_effect=load), self.assertLogs(
+            "qasr", level="WARNING"
+        ) as logs:
+            dataset[0]
+
+        summaries = [line for line in logs.output if "unusable samples so far" in line]
+        self.assertEqual(len(summaries), 1)
+        self.assertIn("Dropped 1 unusable samples so far", summaries[0])
+        self.assertIn("(dataset size 3)", summaries[0])
+        self.assertIn("audio_load_errors=1", summaries[0])
+
+    def test_clean_dataset_reports_zero_skip_stats(self) -> None:
+        """Regression test for the unobservable-sample-drop incident: a dataset
+        with no bad samples must report all-zero skip_stats."""
+        dataset = self._dataset()
+        with patch(
+            "qasr.data.load_mono_audio",
+            return_value=np.zeros(200, dtype=np.float32),
+        ):
+            dataset[0]
+            dataset[1]
+
+        self.assertEqual(
+            dataset.skip_stats,
+            {
+                "audio_load_errors": 0,
+                "duration_errors": 0,
+                "transcript_errors": 0,
+                "substitutions": 0,
+                "invalid_indices": 0,
+            },
+        )
+
 
 if __name__ == "__main__":
     unittest.main()

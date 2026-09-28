@@ -13,9 +13,10 @@
 # =============================================================================
 # QASR Multi-Node Training via SLURM (8 nodes x 8 GPUs = 64 GPUs)
 #
-# The body is node-count agnostic: it reads SLURM_NNODES/SLURM_NODEID and
-# picks the master from SLURM_JOB_NODELIST, so `sbatch --nodes=1 ...` works
-# for the 1-node smoke gate as well.
+# The body is node-count agnostic: it reads SLURM_NNODES, picks the master
+# from SLURM_JOB_NODELIST, and srun assigns each node its rank via
+# SLURM_PROCID, so `sbatch --nodes=1 ...` works for the 1-node smoke gate
+# as well.
 #
 # Usage:
 #   # Phase 1 — projector warm-up (deep MLP):
@@ -51,6 +52,11 @@ export OMP_NUM_THREADS=1
 export NCCL_DEBUG=WARN
 export NCCL_IB_DISABLE=0
 export NCCL_NET_GDR_LEVEL=2
+# Node-local JIT caches: DeepSpeed/Triton build locks on the NFS home
+# deadlock multi-rank first steps.
+export TORCH_EXTENSIONS_DIR="/tmp/${USER}_torch_ext"
+export TRITON_CACHE_DIR="/tmp/${USER}_triton"
+mkdir -p "${TORCH_EXTENSIONS_DIR}" "${TRITON_CACHE_DIR}"
 # Known-good H100 + InfiniBand tuning:
 export NCCL_BUFFSIZE=8388608
 export CUDA_DEVICE_MAX_CONNECTIONS=1
@@ -74,7 +80,6 @@ python -c "import transformers; assert transformers.__version__.startswith('5.14
 # SLURM multi-node discovery
 # ---------------------------------------------------------------------------
 NNODES="${SLURM_NNODES:-8}"
-NODE_RANK="${SLURM_NODEID:-0}"
 MASTER_ADDR="$(scontrol show hostnames "${SLURM_JOB_NODELIST}" | head -n 1)"
 
 echo "============================================================"
@@ -83,7 +88,6 @@ echo "============================================================"
 echo " Job ID:        ${SLURM_JOB_ID:-local}"
 echo " Config:        ${CONFIG}"
 echo " Nodes:         ${NNODES}"
-echo " Node rank:     ${NODE_RANK}"
 echo " Master:        ${MASTER_ADDR}:${MASTER_PORT}"
 echo " GPUs/node:     8"
 echo " Total GPUs:    $((NNODES * 8))"
@@ -93,21 +97,29 @@ echo " HF cache:      ${HF_CACHE}"
 echo "============================================================"
 
 # ---------------------------------------------------------------------------
-# Launch training with torchrun (elastic rendezvous via static backend)
+# Launch training with torchrun (elastic rendezvous via static backend).
+# srun fans one torchrun launcher out to every allocated node
+# (--ntasks-per-node=1), where SLURM_PROCID is the node index and becomes
+# --node_rank. The exported env above (NCCL, HF, conda PATH, PYTHONPATH)
+# propagates into the step; extra sbatch args ("$@", e.g. --smoke-test)
+# are forwarded.
 # ---------------------------------------------------------------------------
-torchrun \
-  --nnodes="${NNODES}" \
-  --nproc_per_node=8 \
-  --node_rank="${NODE_RANK}" \
-  --master_addr="${MASTER_ADDR}" \
-  --master_port="${MASTER_PORT}" \
-  --rdzv_backend=static \
-  --rdzv_endpoint="${MASTER_ADDR}:${MASTER_PORT}" \
-  --rdzv_conf=timeout=7200 \
-  train.py \
-    --config "${CONFIG}" \
-    "$@"
+export NNODES MASTER_ADDR MASTER_PORT CONFIG
+srun --kill-on-bad-exit=1 bash -c '
+  exec torchrun \
+    --nnodes="${NNODES}" \
+    --nproc_per_node=8 \
+    --node_rank="${SLURM_PROCID}" \
+    --master_addr="${MASTER_ADDR}" \
+    --master_port="${MASTER_PORT}" \
+    --rdzv_backend=static \
+    --rdzv_endpoint="${MASTER_ADDR}:${MASTER_PORT}" \
+    --rdzv_conf=timeout=7200 \
+    train.py \
+      --config "${CONFIG}" \
+      "$@"
+' _ "$@"
 
 echo "============================================================"
-echo " Training finished on node ${NODE_RANK} at $(date)"
+echo " Training finished on all ${NNODES} nodes at $(date)"
 echo "============================================================"

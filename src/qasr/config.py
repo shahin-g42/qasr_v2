@@ -48,12 +48,12 @@ def _expand_manifest_config(
 @dataclass
 class TrainConfig:
     model_name_or_path: str = (
-        "/lustrefs/shared/mohammed.naseem/workspace/expmt/qasr/initial"
+        "/lustrefs/shared/shahin.konadath/workspace/train/stt/qasr/output/initial"
     )
     train_manifest: ManifestConfig = ""
     eval_manifest: ManifestConfig | None = None
     audio_root: str | None = None
-    output_dir: str = "/lustrefs/shared/mohammed.naseem/workspace/expmt/qasr/projector"
+    output_dir: str = "/lustrefs/shared/shahin.konadath/workspace/train/stt/qasr/output/run"
 
     language: str = "ar"
     punctuation: bool = True
@@ -117,6 +117,14 @@ class TrainConfig:
     # corpora (ml/hi) from being starved by naive concatenation.
     balanced_sampling: bool = True
     sampling_temperature: float = 0.5
+    # "balanced"   -> LanguageBalancedSampler: hours^temperature, WITH
+    #                 replacement. Cheap, but one epoch of steps leaves much of
+    #                 the dominant language unseen.
+    # "stratified" -> StratifiedLanguageSampler: every mini-batch holds an equal
+    #                 share of each language AND every record of every language
+    #                 is seen at least once per epoch (smaller languages repeat).
+    #                 Requires per_device_train_batch_size % num_languages == 0.
+    sampling_strategy: str = "balanced"
     # Per-group learning rates: encoder+projector at `learning_rate`, the
     # pretrained LLM body at `learning_rate * llm_lr_factor`, and the tied
     # token embeddings at `learning_rate * embed_lr_factor` (drift control).
@@ -203,6 +211,29 @@ class TrainConfig:
             raise ValueError("smoke_test_eval_samples must be non-negative")
         if self.warmup_steps < 0:
             raise ValueError("warmup_steps must be non-negative")
+        if self.sampling_strategy not in ("balanced", "stratified"):
+            raise ValueError(
+                "sampling_strategy must be 'balanced' or 'stratified', "
+                f"got {self.sampling_strategy!r}"
+            )
+        if self.balanced_sampling and self.eval_split_ratio:
+            # Both samplers index the UNSPLIT combined dataset; an eval split
+            # shrinks the train dataset underneath them -> wrong-record fetches
+            # and a mid-epoch IndexError. Fail here, not at step N.
+            raise ValueError(
+                "balanced/stratified sampling is incompatible with eval_split_ratio; "
+                "provide eval_manifest instead (the sampler indexes the unsplit dataset)"
+            )
+        if self.balanced_sampling and self.sampling_strategy == "stratified":
+            languages = {language for _, language in self.train_manifest_specs}
+            languages.update(language for _, language in self.non_speech_manifest_specs)
+            if languages and self.per_device_train_batch_size % len(languages):
+                raise ValueError(
+                    f"per_device_train_batch_size ({self.per_device_train_batch_size}) "
+                    f"must be a multiple of the number of languages "
+                    f"({len(languages)}: {', '.join(sorted(languages))}) under "
+                    "sampling_strategy: stratified"
+                )
         if not 0 < self.sampling_temperature <= 1:
             raise ValueError("sampling_temperature must be in the range (0, 1]")
         if not 0 < self.llm_lr_factor <= 1:
@@ -263,6 +294,42 @@ class TrainConfig:
         )
 
 
+def validate_local_checkpoint(model_name_or_path: str) -> None:
+    """Fail fast, with the real reason, on a bad local checkpoint path.
+
+    transformers turns a missing directory into a baffling HFValidationError
+    (it assumes a Hub repo id), and an incomplete directory into a per-file
+    OSError deep inside processor loading — both multiplied by every rank.
+    Check the path and the artifact set up front instead.
+    """
+    if not model_name_or_path.startswith(("/", "./", "../", "~")):
+        return  # Hub repo id — let transformers resolve it
+    path = Path(model_name_or_path).expanduser()
+    if not path.is_dir():
+        raise FileNotFoundError(
+            f"model_name_or_path does not exist on this node: {model_name_or_path}\n"
+            "Point it at the converted checkpoint (qasr.convert_weights output) "
+            "or a previous phase's output_dir, and check the filesystem is "
+            "mounted on every node."
+        )
+    missing = [name for name in ("config.json",) if not (path / name).is_file()]
+    # transformers <5 saved the feature extractor as preprocessor_config.json;
+    # 5.x folds it into processor_config.json. Either layout loads.
+    if not any((path / name).is_file() for name in ("preprocessor_config.json", "processor_config.json")):
+        missing.append("preprocessor_config.json or processor_config.json")
+    if not any(path.glob("model*.safetensors")):
+        missing.append("model*.safetensors")
+    if missing:
+        raise FileNotFoundError(
+            f"Checkpoint at {model_name_or_path} is INCOMPLETE — missing: "
+            f"{', '.join(missing)}.\n"
+            "Likely an interrupted or failed conversion/save. Re-run the "
+            "conversion (scripts/run_convert_weights.sh verifies completeness) "
+            "or point at a known-good checkpoint. Do not train on this "
+            "directory."
+        )
+
+
 def parse_config(argv: list[str] | None = None) -> TrainConfig:
     parser = argparse.ArgumentParser(description="Train the QASR Conformer-Qwen3 hybrid.")
     parser.add_argument("--config", required=True, help="Path to a YAML training configuration.")
@@ -284,4 +351,4 @@ def parse_config(argv: list[str] | None = None) -> TrainConfig:
     return config
 
 
-__all__ = ["TrainConfig", "parse_config"]
+__all__ = ["TrainConfig", "parse_config", "validate_local_checkpoint"]

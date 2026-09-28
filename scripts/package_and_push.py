@@ -40,6 +40,7 @@ from __future__ import annotations
 import argparse
 import json
 import logging
+import re
 import shutil
 from pathlib import Path
 
@@ -50,6 +51,26 @@ DEFAULT_MODEL_DIR = "output/full"
 DEFAULT_EAGLE_DIR = "output/eagle_v2/checkpoint-10000"
 DEFAULT_STAGING = "output/hf_release"
 DEFAULT_CARD = "scripts/HF_MODEL_CARD.md"
+
+# Rendered into the card for any metric that was never measured for THIS
+# artifact. Deliberately visible: before this, the card template carried
+# hard-coded numbers from one earlier eval run, so packaging a new head
+# silently published the old head's measurements as if they were the new one's.
+UNMEASURED = "_not measured_"
+
+# evaluate.py mode name -> placeholder suffix used in the card. A mode absent
+# from the report (e.g. the acceptance gate runs only offline+eagle) fills as
+# UNMEASURED rather than retaining a stale value.
+CARD_MODE_SUFFIX = {
+    "offline": "_OFFLINE",
+    "eagle": "_EAGLE",
+    "streaming": "_STREAM",
+    "streaming-eagle": "_STREAM_EAGLE",
+}
+
+# Placeholders that match this shape are checked for leftovers before the card
+# is written, so a typo'd or renamed key can never ship as a literal "{{X}}".
+PLACEHOLDER_RE = re.compile(r"\{\{([A-Z0-9_]+)\}\}")
 
 # Remote-code modules bundled so ``trust_remote_code=True`` can load the model
 # with no package install. Order does not matter; the dynamic loader resolves
@@ -156,12 +177,103 @@ def _copy_eagle_head(eagle_dir: Path, staging: Path) -> bool:
     return True
 
 
-def _write_model_card(card_template: Path, staging: Path, repo_id: str, has_eagle: bool) -> None:
+def _fmt_pct(value: object, nd: int = 2) -> str:
+    return f"{value * 100:.{nd}f}%" if isinstance(value, (int, float)) else UNMEASURED
+
+
+def _fmt_num(value: object, nd: int = 3, suffix: str = "") -> str:
+    return f"{value:.{nd}f}{suffix}" if isinstance(value, (int, float)) else UNMEASURED
+
+
+def build_card_vars(report: dict | None) -> dict[str, str]:
+    """Derive every measured metric in the card from one ``evaluate.py`` report.
+
+    ``report`` is the JSON that ``evaluate.py --output`` writes: top-level
+    ``modes[<mode>][summary]`` (wer/cer/rtf_mean/latency_mean_s/
+    tokens_per_second_mean/samples), ``eagle_stats`` and ``comparison``.
+    Pass ``None`` to get an all-UNMEASURED map.
+    """
+    report = report or {}
+    modes = report.get("modes") or {}
+    variables: dict[str, str] = {}
+
+    samples = None
+    for mode, suffix in CARD_MODE_SUFFIX.items():
+        summary = (modes.get(mode) or {}).get("summary") or {}
+        if samples is None and summary.get("samples"):
+            samples = summary["samples"]
+        variables[f"WER{suffix}"] = _fmt_pct(summary.get("wer"))
+        variables[f"CER{suffix}"] = _fmt_pct(summary.get("cer"))
+        variables[f"RTF{suffix}"] = _fmt_num(summary.get("rtf_mean"), 3)
+        variables[f"LAT{suffix}"] = _fmt_num(summary.get("latency_mean_s"), 3, " s")
+        tps = summary.get("tokens_per_second_mean")
+        variables[f"TPS{suffix}"] = (
+            f"{tps:.0f} tok/s" if isinstance(tps, (int, float)) else "—"
+        )
+
+    stats = report.get("eagle_stats") or {}
+    comparison = report.get("comparison") or {}
+    by_position = stats.get("acceptance_by_position") or []
+    variables["EAGLE_ACCEPTANCE"] = _fmt_pct(stats.get("acceptance_rate"), 1)
+    variables["EAGLE_TPF"] = _fmt_num(stats.get("tokens_per_target_forward"), 2)
+    variables["EAGLE_MEAN_ACCEPTED"] = _fmt_num(stats.get("mean_accepted_per_round"), 2)
+    variables["EAGLE_POS0"] = _fmt_pct(by_position[0] if by_position else None, 1)
+    variables["EAGLE_BY_POSITION"] = (
+        " · ".join(f"{p * 100:.0f}%" for p in by_position)
+        if by_position and all(isinstance(p, (int, float)) for p in by_position)
+        else UNMEASURED
+    )
+    variables["EAGLE_SPEEDUP"] = _fmt_num(comparison.get("eagle_speedup"), 2, "×")
+    variables["EAGLE_EXACT_MATCH"] = str(
+        comparison.get("exact_transcript_match") or UNMEASURED
+    )
+    variables["EAGLE_NUM_DRAFT"] = str(report.get("num_draft_tokens") or UNMEASURED)
+    variables["EVAL_SAMPLES"] = str(samples) if samples else UNMEASURED
+    variables["EVAL_LANGUAGE"] = str(report.get("language") or UNMEASURED)
+    # Basenames only. The report records absolute cluster paths, and a card is
+    # published -- those would leak the internal filesystem layout and usernames.
+    for key, field in (("EVAL_MANIFEST", "manifest"), ("EVAL_MODEL", "model"),
+                       ("EVAL_EAGLE", "eagle")):
+        raw = report.get(field)
+        variables[key] = Path(str(raw)).name if raw else UNMEASURED
+    return variables
+
+
+def _write_model_card(
+    card_template: Path,
+    staging: Path,
+    repo_id: str,
+    has_eagle: bool,
+    card_vars: dict[str, str] | None = None,
+) -> None:
     if not card_template.is_file():
         raise FileNotFoundError(f"Model card template not found: {card_template}")
     text = card_template.read_text(encoding="utf-8")
     text = text.replace("{{REPO_ID}}", repo_id)
-    text = text.replace("{{EAGLE_AVAILABLE}}", "yes" if has_eagle else "no")
+    # Display name tracks the repo id so a --repo-id override never publishes a
+    # card titled after a different model.
+    text = text.replace("{{MODEL_NAME}}", repo_id.split("/")[-1])
+    for name, value in (card_vars or {}).items():
+        text = text.replace("{{" + name + "}}", value)
+    # Anything still unsubstituted is a renamed or typo'd key. Blank it to the
+    # visible marker instead of shipping a literal placeholder to the Hub.
+    leftovers = sorted(set(PLACEHOLDER_RE.findall(text)))
+    if leftovers:
+        LOGGER.warning(
+            "card placeholders unfilled (%d): %s", len(leftovers), ", ".join(leftovers)
+        )
+        for name in leftovers:
+            text = text.replace("{{" + name + "}}", UNMEASURED)
+    if not has_eagle:
+        # The card documents EAGLE usage unconditionally; flag its absence
+        # rather than shipping instructions for a head that is not in the repo.
+        text = text.replace(
+            "## Evaluation",
+            "> **Note:** this release was packaged without the EAGLE draft head; "
+            "the speculative-decoding sections below require training one first "
+            "(`qasr-train-eagle`).\n\n## Evaluation",
+            1,
+        )
     (staging / "README.md").write_text(text, encoding="utf-8")
     LOGGER.info("  card  README.md (repo_id=%s)", repo_id)
 
@@ -206,6 +318,7 @@ def build_release(
     staging: Path,
     card_template: Path,
     repo_id: str,
+    card_vars: dict[str, str] | None = None,
 ) -> bool:
     if not model_dir.is_dir():
         raise FileNotFoundError(f"--model-dir does not exist: {model_dir}")
@@ -230,7 +343,7 @@ def build_release(
         LOGGER.info("Copying EAGLE head from %s", eagle_dir)
         has_eagle = _copy_eagle_head(eagle_dir, staging)
 
-    _write_model_card(card_template, staging, repo_id, has_eagle)
+    _write_model_card(card_template, staging, repo_id, has_eagle, card_vars)
     _write_gitattributes(staging)
 
     LOGGER.info("Release assembled at %s", staging)
@@ -267,13 +380,39 @@ def main(argv: list[str] | None = None) -> None:
     parser.set_defaults(private=True)
     parser.add_argument("--verify", action="store_true", help="Reload the staged release locally before pushing")
     parser.add_argument("--no-upload", action="store_true", help="Assemble the staging dir only; skip the Hub push")
-    parser.add_argument("--commit-message", default="Upload QASR (Audar-ASR-V1-Pro) release", help="Commit message for the upload")
+    parser.add_argument("--commit-message", default=None, help="Commit message for the upload (default: derived from --repo-id)")
+    parser.add_argument("--eval-json", default=None,
+        help="evaluate.py report whose metrics fill the card. Without it every measured "
+             "number renders as 'not measured' instead of inheriting the template's stale values.")
+    parser.add_argument("--card-var", action="append", default=[], metavar="NAME=VALUE",
+        help="Extra card placeholder, repeatable, e.g. "
+             "--card-var TARGET_CHECKPOINT=checkpoint-150000")
     args = parser.parse_args(argv)
 
     logging.basicConfig(level=logging.INFO, format="%(asctime)s | %(levelname)s | %(name)s | %(message)s")
 
     eagle_dir = None if str(args.eagle_dir).lower() == "none" else Path(args.eagle_dir)
     staging = Path(args.staging_dir)
+
+    report = None
+    if args.eval_json:
+        report_path = Path(args.eval_json)
+        if not report_path.is_file():
+            raise FileNotFoundError(f"--eval-json not found: {report_path}")
+        report = json.loads(report_path.read_text(encoding="utf-8"))
+        LOGGER.info("Card metrics sourced from %s", report_path)
+    else:
+        LOGGER.warning(
+            "no --eval-json: the card's measured metrics will render as %r. Pass the "
+            "report written by the acceptance gate to publish numbers for THIS artifact.",
+            UNMEASURED,
+        )
+    card_vars = build_card_vars(report)
+    for item in args.card_var:
+        name, sep, value = item.partition("=")
+        if not name or not sep:
+            raise ValueError(f"--card-var expects NAME=VALUE, got {item!r}")
+        card_vars[name.strip().upper()] = value
 
     has_eagle = build_release(
         model_dir=Path(args.model_dir),
@@ -282,6 +421,7 @@ def main(argv: list[str] | None = None) -> None:
         staging=staging,
         card_template=Path(args.card),
         repo_id=args.repo_id,
+        card_vars=card_vars,
     )
 
     if args.verify:
@@ -291,7 +431,8 @@ def main(argv: list[str] | None = None) -> None:
         LOGGER.info("--no-upload set; staged release ready at %s (eagle=%s)", staging, has_eagle)
         return
 
-    push_release(staging, args.repo_id, args.private, args.commit_message)
+    commit_message = args.commit_message or f"Upload {args.repo_id.split('/')[-1]} release"
+    push_release(staging, args.repo_id, args.private, commit_message)
 
 
 if __name__ == "__main__":

@@ -1,0 +1,122 @@
+# =============================================================================
+# QASR v7.6 — PHASE 4: EAGLE draft head (speculative decoding)
+# 8 nodes x 8 GPUs = 64 GPUs. Global batch: 64 x 32 = 2,048.
+# =============================================================================
+# NOTE: this file is read by EagleTrainConfig (src/qasr/train_eagle.py), NOT
+# TrainConfig. Different schema — no eval_manifest, no freeze_* flags, no
+# balanced_sampling. Unknown keys are WARNED and ignored here rather than
+# raising, so a typo fails silently. Validate with the loader before launching
+# (see configs/v7.6/README.md).
+#
+# Trains the ~8.4M-param fusion layer (fc1 4096x2048 + LayerNorm) on a FROZEN
+# target. The draft lm_head is copied from the target and frozen, which is what
+# makes one distillation epoch sufficient. The head is conditioned on
+# (hidden_state, next-token embedding) and distilled one position ahead, so it
+# learns real lookahead rather than relearning the target's own lm_head.
+#
+# CRITICAL: the head is bound to exact target weights. Train it on the FINAL
+# checkpoint you intend to ship — here, Phase 3's output. Any later change to
+# the target invalidates the head (acceptance collapses toward 0, which is the
+# failure preserved in eval_results_en_commentary.json).
+#
+# Input model: .../output/v76/hq (Phase 3)
+# Output: .../output/v76/eagle/eagle_head.pt
+# -----------------------------------------------------------------------------
+model_name_or_path: /lustrefs/shared/shahin.konadath/workspace/train/stt/qasr/output/v76/hq
+eagle_output_dir: /lustrefs/shared/shahin.konadath/workspace/train/stt/qasr/output/v76/eagle
+
+# --- EAGLE architecture ---
+hidden_size: 2048
+vocab_size: 151936
+num_draft_tokens: 5
+# EAGLE-3 multi-layer fusion over the last three decoder layers. The
+# historical bug that froze the learnable layer-mix weights (fusion ran
+# inside the teacher's no_grad block) is fixed and regression-tested
+# (tests/test_eagle.py::EagleDistillGradientTest), so the mix now trains.
+# Set to [-1] to reproduce a legacy single-layer EAGLE-2 head.
+fusion_layer_indices: [-3, -2, -1]
+
+# --- Training ---
+max_steps: 103194
+per_device_train_batch_size: 30
+learning_rate: 3.0e-4
+weight_decay: 0.01
+warmup_steps: 1000
+lr_scheduler_type: cosine
+max_grad_norm: 1.0
+kl_temperature: 1.0
+
+# --- Data ---
+# Match the DEPLOYED distribution, not the full training pool: the head only
+# has to draft well on what the model will actually be asked to transcribe.
+# Curated corpora plus q3asr for volume; the SFT manifests are omitted since
+# the target was polished on cleaned text and the head should model the
+# target's own output distribution.
+train_manifest:
+  ar:
+    - /lustrefs/shared/shahin.konadath/workspace/train/stt/qasr/training_manifests/v7.6/ar/train_ar_inworld_full.jsonl
+    - /lustrefs/shared/shahin.konadath/workspace/train/stt/qasr/training_manifests/v7.6/ar/train_ar_q3asr.jsonl
+    - /lustrefs/shared/shahin.konadath/workspace/train/stt/qasr/training_manifests/v7.6/ar/train_ar_dialect_gulf.jsonl
+    - /lustrefs/shared/shahin.konadath/workspace/train/stt/qasr/training_manifests/v7.6/ar/train_ar_ar_ae_train.jsonl
+    - /lustrefs/shared/shahin.konadath/workspace/train/stt/qasr/training_manifests/v7.6/ar/train_ar_ar_ae.jsonl
+    - /lustrefs/shared/shahin.konadath/workspace/train/stt/qasr/training_manifests/v7.6/ar/train_ar_spotify_v1.jsonl
+    - /lustrefs/shared/shahin.konadath/workspace/train/stt/qasr/training_manifests/v7.6/ar/train_ar_el_gen_v5.jsonl
+  en:
+    - /lustrefs/shared/shahin.konadath/workspace/train/stt/qasr/training_manifests/v7.6/en/train_en_inworld.jsonl
+    - /lustrefs/shared/shahin.konadath/workspace/train/stt/qasr/training_manifests/v7.6/en/train_en_q3asr.jsonl
+    - /lustrefs/shared/shahin.konadath/workspace/train/stt/qasr/training_manifests/v7.6/en/train_en_hifi_tts.jsonl
+    - /lustrefs/shared/shahin.konadath/workspace/train/stt/qasr/training_manifests/v7.6/en/train_en_commentary.jsonl
+  hi:
+    - /lustrefs/shared/shahin.konadath/workspace/train/stt/qasr/training_manifests/v7.6/hi/train_hi_q3asr.jsonl
+  ml:
+    - /lustrefs/shared/shahin.konadath/workspace/train/stt/qasr/training_manifests/v7.6/ml/train_ml_itn_punct.jsonl
+  zh:
+    - /lustrefs/shared/shahin.konadath/workspace/train/stt/qasr/training_manifests/v7.6/zh/train_zh_q3asr.jsonl
+
+language: ar
+# Equal languages per mini-batch and full coverage of every corpus per epoch
+# (small languages repeat; ar — the largest at 39.6M — is seen exactly once).
+# 30/device (not 32) because the per-device batch must divide by 5 languages.
+# Steps: max_lang 39,626,357 -> ceil-rounded per-rank layout = 103,194 steps
+# at global batch 1,920 (64 x 30).
+sampling_strategy: stratified
+min_duration_seconds: 0.1
+max_duration_seconds: 35.0
+max_target_length: 512
+
+# Full recipe, uniform with Phase 2/3, so the head learns to draft on the same
+# augmented spectrogram distribution the target was trained on.
+augmentation:
+  spec_augment:
+    enabled: true
+    num_time_masks: 2
+    max_time_mask_ratio: 0.05
+    num_freq_masks: 2
+    max_freq_mask_ratio: 0.15
+    p: 0.37
+  speed_perturb:
+    enabled: true
+    rate_range: [0.85, 1.15]
+    p: 0.37
+  noise_injection:
+    enabled: true
+    noise_dir: /lustrefs/shared/shahin.konadath/workspace/train/stt/musan
+    snr_range: [5.0, 20.0]
+    p: 0.37
+  codec_augment:
+    enabled: true
+    p: 0.37
+
+# --- Infrastructure ---
+deepspeed: configs/deepspeed_zero2.json
+bf16: true
+tf32: true
+# Teacher runs under no_grad, so activation checkpointing has nothing to save.
+gradient_checkpointing: false
+dataloader_num_workers: 8
+logging_steps: 10
+save_steps: 8000
+save_total_limit: 8
+report_to: none
+seed: 42
+attn_implementation: sdpa

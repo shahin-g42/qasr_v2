@@ -40,6 +40,11 @@ export OMP_NUM_THREADS=1
 export NCCL_DEBUG=WARN
 export NCCL_IB_DISABLE=0
 export NCCL_NET_GDR_LEVEL=2
+# Node-local JIT caches: DeepSpeed/Triton build locks on the NFS home
+# deadlock multi-rank first steps.
+export TORCH_EXTENSIONS_DIR="/tmp/${USER}_torch_ext"
+export TRITON_CACHE_DIR="/tmp/${USER}_triton"
+mkdir -p "${TORCH_EXTENSIONS_DIR}" "${TRITON_CACHE_DIR}"
 
 # ---------------------------------------------------------------------------
 # Activate conda and enter project
@@ -53,7 +58,6 @@ cd "${PROJECT_DIR}"
 # SLURM multi-node discovery
 # ---------------------------------------------------------------------------
 NNODES="${SLURM_NNODES:-4}"
-NODE_RANK="${SLURM_NODEID:-0}"
 MASTER_ADDR="$(scontrol show hostnames "${SLURM_JOB_NODELIST}" | head -n 1)"
 
 echo "============================================================"
@@ -62,7 +66,6 @@ echo "============================================================"
 echo " Job ID:        ${SLURM_JOB_ID:-local}"
 echo " Config:        ${CONFIG}"
 echo " Nodes:         ${NNODES}"
-echo " Node rank:     ${NODE_RANK}"
 echo " Master:        ${MASTER_ADDR}:${MASTER_PORT}"
 echo " GPUs/node:     8"
 echo " Total GPUs:    $((NNODES * 8))"
@@ -72,21 +75,28 @@ echo " HF cache:      ${HF_CACHE}"
 echo "============================================================"
 
 # ---------------------------------------------------------------------------
-# Launch training with torchrun (elastic rendezvous via static backend)
+# Launch training with torchrun (elastic rendezvous via static backend).
+# srun fans one torchrun launcher out to every allocated node
+# (--ntasks-per-node=1), where SLURM_PROCID is the node index and becomes
+# --node_rank. The exported env above (NCCL, HF, conda PATH) propagates
+# into the step; extra sbatch args ("$@", e.g. --smoke-test) are forwarded.
 # ---------------------------------------------------------------------------
-torchrun \
-  --nnodes="${NNODES}" \
-  --nproc_per_node=8 \
-  --node_rank="${NODE_RANK}" \
-  --master_addr="${MASTER_ADDR}" \
-  --master_port="${MASTER_PORT}" \
-  --rdzv_backend=static \
-  --rdzv_endpoint="${MASTER_ADDR}:${MASTER_PORT}" \
-  --rdzv_conf=timeout=7200 \
-  train.py \
-    --config "${CONFIG}" \
-    "$@"
+export NNODES MASTER_ADDR MASTER_PORT CONFIG
+srun --kill-on-bad-exit=1 bash -c '
+  exec torchrun \
+    --nnodes="${NNODES}" \
+    --nproc_per_node=8 \
+    --node_rank="${SLURM_PROCID}" \
+    --master_addr="${MASTER_ADDR}" \
+    --master_port="${MASTER_PORT}" \
+    --rdzv_backend=static \
+    --rdzv_endpoint="${MASTER_ADDR}:${MASTER_PORT}" \
+    --rdzv_conf=timeout=7200 \
+    train.py \
+      --config "${CONFIG}" \
+      "$@"
+' _ "$@"
 
 echo "============================================================"
-echo " Training finished on node ${NODE_RANK} at $(date)"
+echo " Training finished on all ${NNODES} nodes at $(date)"
 echo "============================================================"

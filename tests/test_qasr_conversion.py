@@ -79,5 +79,29 @@ class ExactTransferTest(unittest.TestCase):
             _load_exact(target, {"weight": torch.zeros(2, 4)}, "linear")
 
 
+class EncoderFeatureSizeTest(unittest.TestCase):
+    """Regression: conversion crashed with AttributeError because
+    ParakeetEncoderConfig defines no ``feature_size`` — the attribute only
+    survives when the source repo's JSON carries it as an extra key. The
+    helper must fall back to the always-present ``num_mel_bins``."""
+
+    def test_falls_back_to_num_mel_bins(self) -> None:
+        from transformers import ParakeetEncoderConfig
+
+        from qasr.convert_weights import _encoder_feature_size
+
+        bare = ParakeetEncoderConfig(num_mel_bins=128)
+        self.assertFalse(hasattr(bare, "feature_size"))
+        self.assertEqual(_encoder_feature_size(bare), 128)
+
+    def test_explicit_feature_size_wins(self) -> None:
+        from transformers import ParakeetEncoderConfig
+
+        from qasr.convert_weights import _encoder_feature_size
+
+        with_key = ParakeetEncoderConfig(num_mel_bins=128, feature_size=128)
+        self.assertEqual(_encoder_feature_size(with_key), 128)
+
+
 if __name__ == "__main__":
     unittest.main()

@@ -17,6 +17,7 @@ Usage:
 from __future__ import annotations
 
 import argparse
+import asyncio
 import json
 import logging
 import time
@@ -28,6 +29,7 @@ from typing import Any
 import numpy as np
 import torch
 
+from .processing import resolve_qasr_language
 from .streaming import PCM16Buffer, QASRTranscriber, merge_windowed_transcript
 
 # FastAPI is an optional dependency, but WebSocket/WebSocketDisconnect must be
@@ -59,6 +61,9 @@ class SessionState:
     # Cumulative sample count at the last inference — used to throttle
     # inference to at most once per ``step_seconds`` of new audio.
     last_infer_samples: int = 0
+    # A decode failure is reported to the client once per session, not once
+    # per window, to avoid flooding the UI with identical error frames.
+    decode_error_sent: bool = False
     created_at: float = field(default_factory=time.time)
 
 
@@ -126,9 +131,15 @@ class TranscriptionServer:
         LOGGER.info("Model loaded successfully")
 
     def transcribe_window(self, audio: np.ndarray, language: str) -> str:
-        """Run inference on an audio window."""
+        """Run inference on an audio window.
+
+        Blocking; callers on an event loop must dispatch via asyncio.to_thread.
+        """
         if self._eagle_decoder is not None:
-            return self._transcribe_eagle(audio, language)
+            # The EAGLE decoder drives the same target model the transcriber
+            # wraps, so both branches serialize on the transcriber's lock.
+            with self._transcriber.lock:
+                return self._transcribe_eagle(audio, language)
         return self._transcriber.transcribe(audio, language=language, max_new_tokens=self.max_new_tokens)
 
     def _transcribe_eagle(self, audio: np.ndarray, language: str) -> str:
@@ -163,6 +174,8 @@ def create_app(server: TranscriptionServer):
       server -> client            : {"type": "partial", "text", "audio_seconds",
                                      "latency_ms", "session_id"}
       server -> client            : {"type": "final", ...} after a stop request
+      server -> client            : {"type": "error", "message": str} on a bad
+                                     frame, bad language code, or decode failure
     """
     try:
         from fastapi import FastAPI
@@ -220,7 +233,13 @@ def create_app(server: TranscriptionServer):
 
                 raw = message.get("bytes")
                 if raw is not None:
-                    session.pcm_buffer.append(raw)
+                    try:
+                        session.pcm_buffer.append(raw)
+                    except ValueError as e:
+                        # A malformed frame is dropped; the session stays alive.
+                        LOGGER.warning("Dropping bad audio frame from %s: %s", session_id, e)
+                        await websocket.send_json({"type": "error", "message": str(e)})
+                        continue
                     available = session.pcm_buffer.total_samples / server.sample_rate
                     session.total_audio_seconds = available
 
@@ -242,13 +261,21 @@ def create_app(server: TranscriptionServer):
                     if audio.size < 800:  # < 50ms
                         continue
 
-                    # Run inference
+                    # Run inference off the event loop so a 0.5-1.0s decode
+                    # does not stall every other session and HTTP route.
                     session.last_infer_samples = session.pcm_buffer.total_samples
                     t0 = time.time()
                     try:
-                        partial = server.transcribe_window(audio, language=session.language)
+                        partial = await asyncio.to_thread(
+                            server.transcribe_window, audio, language=session.language
+                        )
                     except Exception as e:
                         LOGGER.error("Inference error: %s", e)
+                        if not session.decode_error_sent:
+                            session.decode_error_sent = True
+                            await websocket.send_json(
+                                {"type": "error", "message": f"Transcription failed: {e}"}
+                            )
                         continue
                     inference_time = time.time() - t0
                     session.total_inference_time += inference_time
@@ -284,7 +311,20 @@ def create_app(server: TranscriptionServer):
                 if kind == "start":
                     language = control.get("language")
                     if language:
-                        session.language = language
+                        # Reject unknown codes here instead of letting every
+                        # decode fail silently inside the inference try/except.
+                        try:
+                            resolve_qasr_language(language)
+                        except ValueError:
+                            await websocket.send_json({
+                                "type": "error",
+                                "message": (
+                                    f"Unsupported language {language!r}; "
+                                    f"keeping {session.language!r}"
+                                ),
+                            })
+                        else:
+                            session.language = language
                 elif kind == "stop":
                     # One last pass over the buffered window, then finalize.
                     latency_ms = 0.0
@@ -292,11 +332,16 @@ def create_app(server: TranscriptionServer):
                     if audio.size >= 800:
                         t0 = time.time()
                         try:
-                            partial = server.transcribe_window(
-                                audio, language=session.language
+                            partial = await asyncio.to_thread(
+                                server.transcribe_window, audio, language=session.language
                             )
                         except Exception as e:
                             LOGGER.error("Final inference error: %s", e)
+                            if not session.decode_error_sent:
+                                session.decode_error_sent = True
+                                await websocket.send_json(
+                                    {"type": "error", "message": f"Transcription failed: {e}"}
+                                )
                         else:
                             latency_ms = (time.time() - t0) * 1000
                             session.total_inference_time += latency_ms / 1000

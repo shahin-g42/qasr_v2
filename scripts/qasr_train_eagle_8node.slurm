@@ -48,6 +48,11 @@ export OMP_NUM_THREADS=1
 export NCCL_DEBUG=WARN
 export NCCL_IB_DISABLE=0
 export NCCL_NET_GDR_LEVEL=2
+# Node-local JIT caches: DeepSpeed/Triton build locks on the NFS home
+# deadlock multi-rank first steps.
+export TORCH_EXTENSIONS_DIR="/tmp/${USER}_torch_ext"
+export TRITON_CACHE_DIR="/tmp/${USER}_triton"
+mkdir -p "${TORCH_EXTENSIONS_DIR}" "${TRITON_CACHE_DIR}"
 # Known-good H100 + InfiniBand tuning:
 export NCCL_BUFFSIZE=8388608
 export CUDA_DEVICE_MAX_CONNECTIONS=1
@@ -73,7 +78,6 @@ mkdir -p logs
 # SLURM multi-node discovery
 # ---------------------------------------------------------------------------
 NNODES="${SLURM_NNODES:-8}"
-NODE_RANK="${SLURM_NODEID:-0}"
 MASTER_ADDR="$(scontrol show hostnames "${SLURM_JOB_NODELIST}" | head -n 1)"
 
 echo "============================================================"
@@ -82,28 +86,34 @@ echo "============================================================"
 echo " Job ID:        ${SLURM_JOB_ID:-local}"
 echo " Config:        ${CONFIG}"
 echo " Nodes:         ${NNODES}"
-echo " Node rank:     ${NODE_RANK}"
 echo " Master:        ${MASTER_ADDR}:${MASTER_PORT}"
 echo " Total GPUs:    $((NNODES * 8))"
 echo " Started:       $(date)"
 echo "============================================================"
 
 # ---------------------------------------------------------------------------
-# Launch with torchrun (static rendezvous on master:29501)
+# Launch with torchrun (static rendezvous on master:29501).
+# srun fans one torchrun launcher out to every allocated node
+# (--ntasks-per-node=1), where SLURM_PROCID is the node index and becomes
+# --node_rank. The exported env above (NCCL, HF, conda PATH, PYTHONPATH)
+# propagates into the step; extra sbatch args ("$@") are forwarded.
 # ---------------------------------------------------------------------------
-torchrun \
-  --nnodes="${NNODES}" \
-  --nproc_per_node=8 \
-  --node_rank="${NODE_RANK}" \
-  --master_addr="${MASTER_ADDR}" \
-  --master_port="${MASTER_PORT}" \
-  --rdzv_backend=static \
-  --rdzv_endpoint="${MASTER_ADDR}:${MASTER_PORT}" \
-  --rdzv_conf=timeout=3600 \
-  train_eagle.py \
-    --config "${CONFIG}" \
-    "$@"
+export NNODES MASTER_ADDR MASTER_PORT CONFIG
+srun --kill-on-bad-exit=1 bash -c '
+  exec torchrun \
+    --nnodes="${NNODES}" \
+    --nproc_per_node=8 \
+    --node_rank="${SLURM_PROCID}" \
+    --master_addr="${MASTER_ADDR}" \
+    --master_port="${MASTER_PORT}" \
+    --rdzv_backend=static \
+    --rdzv_endpoint="${MASTER_ADDR}:${MASTER_PORT}" \
+    --rdzv_conf=timeout=3600 \
+    train_eagle.py \
+      --config "${CONFIG}" \
+      "$@"
+' _ "$@"
 
 echo "============================================================"
-echo " EAGLE training complete on node ${NODE_RANK} at $(date)"
+echo " EAGLE training complete on all ${NNODES} nodes at $(date)"
 echo "============================================================"

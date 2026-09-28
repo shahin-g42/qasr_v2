@@ -165,7 +165,7 @@ async function startRecording() {
     await setupMicrophone(ready.sample_rate);
     socket.send(JSON.stringify({
       type: "start",
-      language: languageSelect.value || null,
+      language: languageSelect.value,
     }));
     sendingAudio = true;
     stopButton.disabled = false;

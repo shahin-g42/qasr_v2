@@ -81,6 +81,9 @@ class TrainingYamlAugmentationCoverageTest(unittest.TestCase):
         "configs/train_full_4node.yaml",
         "configs/train_full_4node_filtered.yaml",
         "configs/train_hq_8node.yaml",
+        "configs/v7.6/01_projector_8node.yaml",
+        "configs/v7.6/02_full_8node.yaml",
+        "configs/v7.6/03_hq_8node.yaml",
     ]
 
     def test_full_phase_configs_enable_all_augmentations(self) -> None:
@@ -99,14 +102,21 @@ class TrainingYamlAugmentationCoverageTest(unittest.TestCase):
                 self.assertIsNotNone(augmenter.noise_injection, f"{path} missing noise injection")
                 self.assertIsNotNone(augmenter.codec_augment, f"{path} missing codec augment")
 
+    EAGLE_YAMLS: ClassVar[list[str]] = [
+        "configs/train_eagle_8node_filtered.yaml",
+        "configs/v7.6/04_eagle_8node.yaml",
+    ]
+
     def test_eagle_config_enables_all_augmentations(self) -> None:
         from qasr.train_eagle import _load_yaml_config
 
-        config = _load_yaml_config("configs/train_eagle_8node_filtered.yaml")
-        self.assertIsNotNone(config.augmentation)
-        augmenter = build_augmenter(config.augmentation, sampling_rate=16000)
-        self.assertTrue(augmenter.has_spec_augmentation)
-        self.assertTrue(augmenter.has_waveform_augmentation)
+        for path in self.EAGLE_YAMLS:
+            with self.subTest(config=path):
+                config = _load_yaml_config(path)
+                self.assertIsNotNone(config.augmentation)
+                augmenter = build_augmenter(config.augmentation, sampling_rate=16000)
+                self.assertTrue(augmenter.has_spec_augmentation)
+                self.assertTrue(augmenter.has_waveform_augmentation)
 
 
 if __name__ == "__main__":

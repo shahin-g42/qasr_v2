@@ -1,0 +1,167 @@
+# =============================================================================
+# QASR v7.6 — PHASE 3: high-quality polish
+# 8 nodes x 8 GPUs = 64 GPUs. Global batch: 64 x 10 x 1 = 640.
+# =============================================================================
+# A low-LR full-epoch pass over the curated corpora. Phase 2 is dominated by
+# ~137M q3asr-derived records whose transcripts are machine-made; this stage
+# re-weights the model toward the corpora where the reference is trustworthy.
+# One stratified epoch over the curated pool: 161,639 steps x 640 = 103.4M
+# samples, every curated record seen at least once (ar exactly once).
+#
+# EXCLUDED ON PURPOSE: the raw q3asr SFT corpora and the ar q3asr range
+# slices. Two exceptions, both because no alternative source exists:
+#   hi -> cleaned train_hi_q3asr (a 161k-step run with zero Hindi would badly
+#         regress it), zh -> cleaned train_zh_q3asr (zh's only corpus).
+# Both are the LLM-cleaned versions, not the raw SFT ones.
+#
+# Input model: .../output/v76/full (Phase 2)
+# Output: .../output/v76/hq  ->  the release candidate, and the EAGLE target
+# -----------------------------------------------------------------------------
+model_name_or_path: /lustrefs/shared/shahin.konadath/workspace/train/stt/qasr/output/v76/full
+output_dir: /lustrefs/shared/shahin.konadath/workspace/train/stt/qasr/output/v76/hq
+
+freeze_audio_tower: false
+freeze_language_model: false
+
+# --- Curated pool, ~45.8M records (ar_inworld_full 19.0M, en_inworld 18.3M,
+#     hi_q3asr 5.8M; the tail corpora are genuinely small) ---
+train_manifest:
+  ar:
+    - /lustrefs/shared/shahin.konadath/workspace/train/stt/qasr/training_manifests/v7.6/ar/train_ar_inworld_full.jsonl
+    - /lustrefs/shared/shahin.konadath/workspace/train/stt/qasr/training_manifests/v7.6/ar/train_ar_dialect_gulf.jsonl
+    - /lustrefs/shared/shahin.konadath/workspace/train/stt/qasr/training_manifests/v7.6/ar/train_ar_ar_ae_train.jsonl
+    - /lustrefs/shared/shahin.konadath/workspace/train/stt/qasr/training_manifests/v7.6/ar/train_ar_ar_ae.jsonl
+    - /lustrefs/shared/shahin.konadath/workspace/train/stt/qasr/training_manifests/v7.6/ar/train_ar_el_gen_v5.jsonl
+    - /lustrefs/shared/shahin.konadath/workspace/train/stt/qasr/training_manifests/v7.6/ar/train_ar_spotify_v1.jsonl
+    - /lustrefs/shared/shahin.konadath/workspace/train/stt/qasr/training_manifests/v7.6/ar/train_ar_se_v1.jsonl
+    - /lustrefs/shared/shahin.konadath/workspace/train/stt/qasr/training_manifests/v7.6/ar/train_ar_qudratech_batch2.jsonl
+    - /lustrefs/shared/shahin.konadath/workspace/train/stt/qasr/training_manifests/v7.6/ar/train_ar_qudratech_phase4.jsonl
+    - /lustrefs/shared/shahin.konadath/workspace/train/stt/qasr/training_manifests/v7.6/ar/train_ar_camel_race.jsonl
+    - /lustrefs/shared/shahin.konadath/workspace/train/stt/qasr/training_manifests/v7.6/ar/train_ar_khalid_msa.jsonl
+  en:
+    - /lustrefs/shared/shahin.konadath/workspace/train/stt/qasr/training_manifests/v7.6/en/train_en_inworld.jsonl
+    - /lustrefs/shared/shahin.konadath/workspace/train/stt/qasr/training_manifests/v7.6/en/train_en_hifi_tts.jsonl
+    - /lustrefs/shared/shahin.konadath/workspace/train/stt/qasr/training_manifests/v7.6/en/train_en_expresso.jsonl
+    - /lustrefs/shared/shahin.konadath/workspace/train/stt/qasr/training_manifests/v7.6/en/train_en_anispeech.jsonl
+    - /lustrefs/shared/shahin.konadath/workspace/train/stt/qasr/training_manifests/v7.6/en/train_en_commentary.jsonl
+  hi:
+    # Only Hindi that exists. Without it a full-epoch Phase 3 would
+    # regress hi badly, which outweighs keeping this stage q3asr-free.
+    - /lustrefs/shared/shahin.konadath/workspace/train/stt/qasr/training_manifests/v7.6/hi/train_hi_q3asr.jsonl
+  ml:
+    - /lustrefs/shared/shahin.konadath/workspace/train/stt/qasr/training_manifests/v7.6/ml/train_ml_itn_punct.jsonl
+    - /lustrefs/shared/shahin.konadath/workspace/train/stt/qasr/training_manifests/v7.6/ml/train_ml_itn_punct_r0_end.jsonl
+  zh:
+    - /lustrefs/shared/shahin.konadath/workspace/train/stt/qasr/training_manifests/v7.6/zh/train_zh_q3asr.jsonl
+
+eval_manifest:
+  ar:
+    - /lustrefs/shared/shahin.konadath/workspace/train/stt/qasr/training_manifests/v7.6/ar/eval_ar_inworld.jsonl
+    - /lustrefs/shared/shahin.konadath/workspace/train/stt/qasr/training_manifests/v7.6/ar/eval_ar_ar_ae.jsonl
+    - /lustrefs/shared/shahin.konadath/workspace/train/stt/qasr/q3asr_sft_manifests/ar/eval_ar_q3asr.jsonl
+  en:
+    - /lustrefs/shared/shahin.konadath/workspace/train/stt/qasr/training_manifests/v7.6/en/eval_en_inworld.jsonl
+    - /lustrefs/shared/shahin.konadath/workspace/train/stt/qasr/training_manifests/v7.6/en/eval_en_expresso.jsonl
+    - /lustrefs/shared/shahin.konadath/workspace/train/stt/qasr/q3asr_sft_manifests/en/eval_en_q3asr.jsonl
+  hi:
+    - /lustrefs/shared/shahin.konadath/workspace/train/stt/qasr/q3asr_sft_manifests/hi/eval_hi_q3asr.jsonl
+  ml:
+    - /lustrefs/shared/shahin.konadath/workspace/train/stt/qasr/training_manifests/v7.6/ml/eval_ml_inworld.jsonl
+    - /lustrefs/shared/shahin.konadath/workspace/train/stt/qasr/q3asr_sft_manifests/ml/eval_ml_q3asr.jsonl
+  zh:
+    - /lustrefs/shared/shahin.konadath/workspace/train/stt/qasr/training_manifests/v7.6/zh/eval_zh_inworld.jsonl
+    - /lustrefs/shared/shahin.konadath/workspace/train/stt/qasr/q3asr_sft_manifests/zh/eval_zh_q3asr.jsonl
+
+audio_root: null
+
+language: ar
+punctuation: true
+min_duration_seconds: 0.1
+max_duration_seconds: 35.0
+max_target_length: 512
+truncate_long_transcripts: false
+validate_audio_paths: false
+eval_log_samples: 37
+eval_generation_max_new_tokens: 256
+
+num_train_epochs: 1.0
+max_steps: 161639
+per_device_train_batch_size: 10
+per_device_eval_batch_size: 4
+gradient_accumulation_steps: 1
+# An order of magnitude below Phase 2's peak: this stage re-weights, it does
+# not re-learn. Per-group split -> encoder+projector 4e-6, LLM 2e-6, embed 1e-6.
+learning_rate: 4.0e-6
+weight_decay: 0.01
+lr_scheduler_type: cosine
+lr_scheduler_kwargs: null
+warmup_steps: 1600
+max_grad_norm: 1.0
+
+# --- Phase A accuracy recipe ---
+balanced_sampling: true
+# Unused under stratified sampling (kept for config-diff hygiene).
+sampling_temperature: 0.5
+# Equal languages in every mini-batch AND every record of every language
+# seen at least once per epoch (ar exactly once; zh repeats x132 — accepted,
+# augmentation differentiates the repeat views).
+sampling_strategy: stratified
+llm_lr_factor: 0.5
+embed_lr_factor: 0.25
+label_smoothing: 0.1
+non_speech_manifest: null
+ctc_loss_weight: 0.0
+eval_wer_samples_per_language: 100
+
+logging_steps: 10
+eval_steps: 8000
+save_steps: 12000
+save_total_limit: 8
+
+smoke_test: false
+smoke_test_max_steps: 2
+smoke_test_train_samples: 256
+smoke_test_eval_samples: 16
+
+dataloader_num_workers: 8
+dataloader_pin_memory: true
+dataloader_persistent_workers: true
+
+gradient_checkpointing: true
+bf16: true
+fp16: false
+tf32: true
+torch_compile: false
+optim: adamw_torch
+
+deepspeed: configs/deepspeed_zero2.json
+ddp_find_unused_parameters: false
+report_to: wandb
+wandb_project: qasr
+run_name: qasr-v76-p3-hq
+seed: 42
+data_seed: 42
+
+resume_from_checkpoint: null
+attn_implementation: sdpa
+
+augmentation:
+  spec_augment:
+    enabled: true
+    num_time_masks: 2
+    max_time_mask_ratio: 0.05
+    num_freq_masks: 2
+    max_freq_mask_ratio: 0.15
+    p: 0.37
+  speed_perturb:
+    enabled: true
+    rate_range: [0.85, 1.15]
+    p: 0.37
+  noise_injection:
+    enabled: true
+    noise_dir: /lustrefs/shared/shahin.konadath/workspace/train/stt/musan
+    snr_range: [5.0, 20.0]
+    p: 0.37
+  codec_augment:
+    enabled: true
+    p: 0.37

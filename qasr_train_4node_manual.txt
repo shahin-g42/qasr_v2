@@ -19,13 +19,13 @@
 --- [NODE 0] Master --- screen -S qasr-node0
 
 conda deactivate
-conda activate /lustrefs/shared/shahin.konadath/workspace/conda/envs/qasr
-cd /lustrefs/shared/shahin.konadath/workspace/train/qasr
+conda activate /lustrefs/shared/shahin.konadath/workspace/conda/envs/qasr3
+cd /lustrefs/shared/shahin.konadath/workspace/train/stt/qasr
 clear
 
 pkill -9 python3
 export CUDA_VISIBLE_DEVICES=0,1,2,3,4,5,6,7
-export HF_HOME=/lustrefs/shared/shahin.konadath/workspace/train/qasr/.cache
+export HF_HOME=/lustrefs/shared/shahin.konadath/workspace/train/stt/qasr/.cache
 export PYTHONPATH=$(pwd)/src
 export TOKENIZERS_PARALLELISM=false
 export OMP_NUM_THREADS=1
@@ -48,13 +48,13 @@ torchrun \
 --- [NODE 1] --- screen -S qasr-node1
 
 conda deactivate
-conda activate /lustrefs/shared/shahin.konadath/workspace/conda/envs/qasr
-cd /lustrefs/shared/shahin.konadath/workspace/train/qasr
+conda activate /lustrefs/shared/shahin.konadath/workspace/conda/envs/qasr3
+cd /lustrefs/shared/shahin.konadath/workspace/train/stt/qasr
 clear
 
 pkill -9 python3
 export CUDA_VISIBLE_DEVICES=0,1,2,3,4,5,6,7
-export HF_HOME=/lustrefs/shared/shahin.konadath/workspace/train/qasr/.cache
+export HF_HOME=/lustrefs/shared/shahin.konadath/workspace/train/stt/qasr/.cache
 export PYTHONPATH=$(pwd)/src
 export TOKENIZERS_PARALLELISM=false
 export OMP_NUM_THREADS=1
@@ -77,13 +77,13 @@ torchrun \
 --- [NODE 2] --- screen -S qasr-node2
 
 conda deactivate
-conda activate /lustrefs/shared/shahin.konadath/workspace/conda/envs/qasr
-cd /lustrefs/shared/shahin.konadath/workspace/train/qasr
+conda activate /lustrefs/shared/shahin.konadath/workspace/conda/envs/qasr3
+cd /lustrefs/shared/shahin.konadath/workspace/train/stt/qasr
 clear
 
 pkill -9 python3
 export CUDA_VISIBLE_DEVICES=0,1,2,3,4,5,6,7
-export HF_HOME=/lustrefs/shared/shahin.konadath/workspace/train/qasr/.cache
+export HF_HOME=/lustrefs/shared/shahin.konadath/workspace/train/stt/qasr/.cache
 export PYTHONPATH=$(pwd)/src
 export TOKENIZERS_PARALLELISM=false
 export OMP_NUM_THREADS=1
@@ -106,13 +106,13 @@ torchrun \
 --- [NODE 3] --- screen -S qasr-node3
 
 conda deactivate
-conda activate /lustrefs/shared/shahin.konadath/workspace/conda/envs/qasr
-cd /lustrefs/shared/shahin.konadath/workspace/train/qasr
+conda activate /lustrefs/shared/shahin.konadath/workspace/conda/envs/qasr3
+cd /lustrefs/shared/shahin.konadath/workspace/train/stt/qasr
 clear
 
 pkill -9 python3
 export CUDA_VISIBLE_DEVICES=0,1,2,3,4,5,6,7
-export HF_HOME=/lustrefs/shared/shahin.konadath/workspace/train/qasr/.cache
+export HF_HOME=/lustrefs/shared/shahin.konadath/workspace/train/stt/qasr/.cache
 export PYTHONPATH=$(pwd)/src
 export TOKENIZERS_PARALLELISM=false
 export OMP_NUM_THREADS=1
@@ -159,19 +159,19 @@ torchrun \
 
 
 ================================================================================
- PHASE 3: EAGLE HEAD (single node, ~1 hour)
+ PHASE 3: EAGLE HEAD (single node, 10,000 steps @ 32/GPU, ~2-5 hours)
 ================================================================================
 
  Run on NODE 0 only (single node, 8 GPUs):
 
 conda deactivate
-conda activate /lustrefs/shared/shahin.konadath/workspace/conda/envs/qasr
-cd /lustrefs/shared/shahin.konadath/workspace/train/qasr
+conda activate /lustrefs/shared/shahin.konadath/workspace/conda/envs/qasr3
+cd /lustrefs/shared/shahin.konadath/workspace/train/stt/qasr
 clear
 
 pkill -9 python3
 export CUDA_VISIBLE_DEVICES=0,1,2,3,4,5,6,7
-export HF_HOME=/lustrefs/shared/shahin.konadath/workspace/train/qasr/.cache
+export HF_HOME=/lustrefs/shared/shahin.konadath/workspace/train/stt/qasr/.cache
 export PYTHONPATH=$(pwd)/src
 
 torchrun \
@@ -182,7 +182,7 @@ torchrun \
   --master_port=29501 \
   --rdzv_backend=static \
   --rdzv_endpoint="127.0.0.1:29501" \
-  train_eagle.py --config configs/train_eagle_4node.yaml
+  train_eagle.py --config configs/train_eagle_8node_filtered.yaml
 
 
 ================================================================================

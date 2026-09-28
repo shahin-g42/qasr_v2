@@ -4,6 +4,7 @@ import argparse
 import gc
 import json
 import logging
+import os
 import re
 from pathlib import Path
 
@@ -24,7 +25,7 @@ from .processing import QASRProcessor
 LOGGER = logging.getLogger("qasr.convert")
 DEFAULT_ENCODER = "CohereLabs/cohere-transcribe-03-2026"
 DEFAULT_QWEN = "audarai/Audar-ASR-V1.2-Turbo"
-DEFAULT_OUTPUT = "/lustrefs/shared/mohammed.naseem/workspace/expmt/qasr/initial"
+DEFAULT_OUTPUT = "/lustrefs/shared/shahin.konadath/workspace/train/stt/qasr/output/initial"
 
 
 def _load_exact(module: torch.nn.Module, state_dict: dict[str, torch.Tensor], name: str) -> None:
@@ -173,6 +174,22 @@ def _load_encoder_weights(encoder_name_or_path: str) -> dict[str, torch.Tensor]:
     )
 
 
+def _encoder_feature_size(audio_config) -> int:
+    """Mel-bin count for the feature extractor, robust to config schema.
+
+    ``ParakeetEncoderConfig`` does not define ``feature_size`` — the attribute
+    only exists when the source repo's config JSON happens to carry it as an
+    extra key and the installed transformers preserves unknown keys through
+    the sub-config round-trip. Reading it directly crashed conversion with
+    AttributeError. ``num_mel_bins`` is class-defined and always present (and
+    for this log-mel front end the two are the same number).
+    """
+    feature_size = getattr(audio_config, "feature_size", None)
+    if feature_size is not None:
+        return int(feature_size)
+    return int(audio_config.num_mel_bins)
+
+
 def convert_components(
     *,
     encoder_name_or_path: str,
@@ -293,7 +310,7 @@ def convert_components(
 
     # Create QASRFeatureExtractor explicitly (not from_pretrained which loads the native one)
     feature_extractor = QASRFeatureExtractor(
-        feature_size=config.audio_config.feature_size,
+        feature_size=_encoder_feature_size(config.audio_config),
         sampling_rate=16000,
         hop_length=160,
         n_fft=512,
@@ -369,6 +386,14 @@ def main(argv: list[str] | None = None) -> None:
         seed=args.seed,
         verify_reload=args.verify_reload,
     )
+    # One-shot CLI hardening: the HF stack (hf_xet download threads in
+    # particular) can leave non-daemon threads that stall interpreter
+    # shutdown long after a successful conversion — the process prints
+    # "Conversion complete" and then never returns to the shell. Everything
+    # is saved, closed, and verified by this point, so exit unconditionally.
+    # Failures still propagate normally: an exception above skips this line.
+    logging.shutdown()
+    os._exit(0)
 
 
 if __name__ == "__main__":

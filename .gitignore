@@ -54,3 +54,4 @@ Thumbs.db
 
 # Generated analysis reports
 logs/*.json
+q3asr_sft_manifests/

@@ -211,6 +211,25 @@ class CTCLossTest(unittest.TestCase):
         output.loss.backward()
         self.assertIsNotNone(head.weight.grad)
 
+    def test_ctc_works_under_bf16_mixed_precision(self) -> None:
+        """Regression: the head used to be cast to bf16 while being fed
+        .float() encoder states — a hard matmul dtype error on the very first
+        training step of any bf16 run with ctc_loss_weight > 0."""
+        torch.manual_seed(3)
+        model = QASRForConditionalGeneration(tiny_config()).to(torch.bfloat16)
+        head = model.add_ctc_head()
+        head.to(dtype=torch.bfloat16)  # mirrors train.py's compute-dtype cast
+        model.ctc_loss_weight = 0.3
+        model.train()
+        batch = self._batch()
+        batch["input_features"] = batch["input_features"].to(torch.bfloat16)
+
+        output = model(**batch)
+
+        self.assertTrue(torch.isfinite(output.loss))
+        output.loss.backward()
+        self.assertIsNotNone(head.weight.grad)
+
     def test_no_labels_skips_ctc(self) -> None:
         model = QASRForConditionalGeneration(tiny_config())
         model.add_ctc_head()

@@ -37,7 +37,8 @@ Merge rules (per corpus):
      (<corpus>_<role>_pNNNN.jsonl) are treated exactly like the
      whole-file <corpus>_<role>.jsonl they slice.
   3. Excluded: *_rejected, *_still_rejected, *_suspect, *_selected samples,
-     reports, backups, tmp files — including their part-file variants.
+     *_safe audit splits, reports, backups, tmp files — including their
+     part-file variants.
   4. Corpora with a `_as_<lang>` stem suffix (e.g. eval_ml_inworld_as_hi)
      are routed to the target language's output directory — including
      their recovery rounds.
@@ -78,6 +79,7 @@ ROLE_SUFFIXES = (
     ("_recovered", "overlay"),
     ("_rejected", "exclude"),
     ("_selected", "exclude"),
+    ("_safe", "exclude"),  # audit.py split — duplicates records the base ships
     ("_cleaned", "base_merged"),
 )
 
@@ -87,11 +89,14 @@ SUSPECT_PRIORITY = 10_000
 _SHARD_RE = re.compile(r"^(?P<corpus>.+)_shard_\d{4}$")
 _AS_LANG_RE = re.compile(r"^(?P<corpus>.+)_as_(?P<lang>[a-z]{2})$")
 # Distributed-reprocess part files: <corpus>_<role>_p0012.jsonl
-# Covers ALL roles: _recovered, _suspect_recovered, _rejected, _still_rejected,
-# _selected. Without this, *_rejected_p0019 escapes the ROLE_SUFFIXES check and
-# gets registered as its own training corpus.
+# Covers ALL roles: _recovered, _suspect_recovered, _suspect, _rejected,
+# _still_rejected, _selected — with any index width >= 3 ({slice_idx:04d}
+# formats indices >= 10000 as 5 digits). Without this, *_rejected_p0019
+# escapes the ROLE_SUFFIXES check and gets registered as its own training
+# corpus.
 _PART_RE = re.compile(
-    r"^(?P<stem>.+?_(?:suspect_recovered|recovered|still_rejected|rejected|selected))_p\d{4}$"
+    r"^(?P<stem>.+?_(?:suspect_recovered|suspect|recovered|still_rejected|rejected|selected))"
+    r"_p\d{3,}$"
 )
 
 # <<<...>>> fences are the cleaning-LLM's response delimiters. They should never
@@ -113,7 +118,14 @@ def classify_file(path: Path) -> tuple[str, str] | None:
         stem = part.group("stem")
     for suffix, role in ROLE_SUFFIXES:
         if stem.endswith(suffix):
-            return stem[: -len(suffix)], role
+            corpus = stem[: -len(suffix)]
+            # Audit/reprocess chains embed the audited file's full stem
+            # (x_cleaned_suspect -> x_cleaned_suspect_recovered): fold the
+            # trailing _cleaned so the recovery overlays corpus x instead
+            # of registering a phantom corpus x_cleaned.
+            if role != "base_merged" and corpus.endswith("_cleaned"):
+                corpus = corpus[: -len("_cleaned")]
+            return corpus, role
     # Bare <corpus>.jsonl (no recognized suffix): treat as merged base
     return stem, "base_merged"
 
@@ -358,7 +370,7 @@ def main() -> int:
 
     print(f"\nsnapshot total: {grand_total} records"
           f" | excluded piles: {len(excluded)} files"
-          f" (rejected/still_rejected/suspect/selected)"
+          f" (rejected/still_rejected/suspect/selected/safe)"
           f" | recovery chains folded: {len(folded_chains)} corpora")
 
     if args.dry_run:

@@ -1,9 +1,10 @@
 # QASR — Cohere-Conformer × Qwen3 Hybrid ASR
 
-A 1.7B-parameter speech recognition model combining Cohere's 48-layer Conformer
-encoder (1280-dim, 8× subsampling) with a Qwen3-1.7B decoder-only LLM
-(28 layers, 2048-dim, 151,936 vocab). Audio embeddings are injected at `<|audio|>`
-token positions via a learned multimodal projector (LLaVA-style).
+A 3.62B-parameter speech recognition model combining Cohere's 48-layer Conformer
+encoder (1.9B params, 1280-dim, 8× subsampling) with a Qwen3-1.7B decoder-only LLM
+(1.72B params, 28 layers, 2048-dim, 151,936 vocab). Audio embeddings are injected
+at `<|audio|>` token positions via a learned multimodal projector (4.3M params,
+LLaVA-style).
 
 ```
 ┌─────────────────────────────────────────────────────────────────────┐
@@ -46,10 +47,10 @@ Step 3  Dataset Validation        ~30 min   Catches: corrupt/missing audio, bad 
 Step 4  Smoke Test (2 steps)      ~5 min    Catches: data, config, OOM issues
 Step 5  Phase 1: Projector        ~3 hrs    Catches: training dynamics
 Step 6  Phase 2: Full Fine-tune   ~5 days   The main training run
-Step 7  Phase 3: EAGLE Head       ~1 hr     Inference acceleration (optional)
+Step 7  Phase 3: EAGLE Head       ~1-2 hrs  Inference acceleration (optional)
 ```
 
-**Total GPU-hours:** ~2,500 (Phases 1+2) + ~10 (Phase 3)
+**Total GPU-hours:** ~2,500 (Phases 1+2) + ~100 (Phase 3)
 
 ---
 
@@ -60,8 +61,8 @@ need to re-run from Step 0. Code changes (bug fixes, branding, new features) onl
 require a package reinstall:
 
 ```bash
-conda activate /lustrefs/shared/shahin.konadath/workspace/conda/envs/qasr
-cd /lustrefs/shared/shahin.konadath/workspace/train/qasr
+conda activate /lustrefs/shared/shahin.konadath/workspace/conda/envs/qasr3
+cd /lustrefs/shared/shahin.konadath/workspace/train/stt/qasr
 
 # Pull / rsync the latest code, then:
 pip install -e ".[deepspeed,streaming,dev]"
@@ -106,14 +107,14 @@ library identifier and remains unchanged on disk.
 
 ```bash
 # 1. Create conda environment on shared filesystem
-conda create -p /lustrefs/shared/shahin.konadath/workspace/conda/envs/qasr python=3.11 -y
-conda activate /lustrefs/shared/shahin.konadath/workspace/conda/envs/qasr
+conda create -p /lustrefs/shared/shahin.konadath/workspace/conda/envs/qasr3 python=3.11 -y
+conda activate /lustrefs/shared/shahin.konadath/workspace/conda/envs/qasr3
 
 # 2. Install PyTorch (match your CUDA version — check with: nvidia-smi)
 pip install torch==2.10.0 --index-url https://download.pytorch.org/whl/cu126
 
 # 3. Clone/copy the project to shared FS
-cd /lustrefs/shared/shahin.konadath/workspace/train/qasr
+cd /lustrefs/shared/shahin.konadath/workspace/train/stt/qasr
 
 # 4. Install QASR with all dependencies
 pip install -e ".[deepspeed,streaming,dev]"
@@ -142,7 +143,7 @@ print('All imports OK')
 "
 
 # 6. Pre-cache models on shared FS (avoids per-node downloads)
-export HF_HOME=/lustrefs/shared/shahin.konadath/workspace/train/qasr/.cache
+export HF_HOME=/lustrefs/shared/shahin.konadath/workspace/train/stt/qasr/.cache
 python -c "from huggingface_hub import snapshot_download; snapshot_download('CohereLabs/cohere-transcribe-03-2026')"
 python -c "from huggingface_hub import snapshot_download; snapshot_download('audarai/Audar-ASR-V1.2-Turbo')"
 
@@ -161,9 +162,9 @@ wandb login
 
 ```bash
 # Run on each of the 4 nodes to confirm environment is visible:
-conda activate /lustrefs/shared/shahin.konadath/workspace/conda/envs/qasr
+conda activate /lustrefs/shared/shahin.konadath/workspace/conda/envs/qasr3
 python -c "import torch; print(f'{torch.cuda.device_count()} GPUs, CUDA OK')"
-ls /lustrefs/shared/shahin.konadath/workspace/train/qasr/src/qasr/__init__.py
+ls /lustrefs/shared/shahin.konadath/workspace/train/stt/qasr/src/qasr/__init__.py
 ```
 
 ---
@@ -217,19 +218,21 @@ Builds the initial QASR checkpoint by merging Cohere encoder weights with
 Qwen3 decoder weights and initializing the multimodal projector randomly.
 
 ```bash
-cd /lustrefs/shared/shahin.konadath/workspace/train/qasr
+cd /lustrefs/shared/shahin.konadath/workspace/train/stt/qasr
 export PYTHONPATH=src
-export HF_HOME=/lustrefs/shared/shahin.konadath/workspace/train/qasr/.cache
+export HF_HOME=/lustrefs/shared/shahin.konadath/workspace/train/stt/qasr/.cache
 
 python -m qasr.convert_weights \
   --encoder CohereLabs/cohere-transcribe-03-2026 \
   --qwen audarai/Audar-ASR-V1.2-Turbo \
-  --output /lustrefs/shared/mohammed.naseem/workspace/expmt/qasr/initial \
+  --output-dir /lustrefs/shared/mohammed.naseem/workspace/expmt/qasr/initial \
   --verify-reload
 ```
 
 **Success criteria:**
-- `--verify-reload` passes (loads checkpoint back, checks tensor equality)
+- `--verify-reload` passes (reloads the saved checkpoint and asserts the
+  embeddings stayed tied; per-tensor equality is checked during the weight
+  transfer itself, not on reload)
 - Output contains: `model.safetensors`, `config.json`, `preprocessor_config.json`, tokenizer files
 
 ---
@@ -304,6 +307,27 @@ manifests in `/lustrefs/shared/shahin.konadath/workspace/data/filtered/`.
 
 ---
 
+## Data Cleaning & Manifest Pipeline
+
+Upstream of validation sits the manifest supply chain. `src/data_processing`
+is an LLM-based transcript-cleaning pipeline: it slices raw manifests into
+record ranges, sends each transcript to a local vLLM server (OpenAI-compatible
+API) for correction against the audio's language conventions, validates and
+audits the results, and writes cleaned manifests. Its configs live in
+`configs/data_processing/` and its SLURM launchers are
+`scripts/qasr_clean_arabic.slurm` / `scripts/qasr_reprocess.slurm`.
+
+The cleaned outputs are then assembled into versioned training sets by
+`scripts/prepare_q3asr_filter.py`, `scripts/assemble_training_manifests.py`,
+`scripts/audit_training_manifests.py`, and `scripts/backfill_durations.py`,
+which together produce `training_manifests/vN/` (currently `v7.6/`). The
+`configs/v7.6/` training configs consume these manifests directly and use
+`sampling_strategy: stratified` — equal language share per batch, with every
+record of every language seen at least once per epoch (smaller languages
+repeat to fill their share).
+
+---
+
 ## Step 4: Smoke Test
 
 **Catches:** Data loading errors, OOM, config typos, DeepSpeed issues — in 2 training steps.
@@ -337,8 +361,8 @@ torchrun ... train.py --config configs/train_projector_4node.yaml --smoke-test
 
 **Success criteria:**
 ```
-INFO | qasr | Trainable parameters: 2,622,464/1,735,477,248 (0.15%)
-INFO | qasr | Global batch size: 128 (8 devices x 4 samples x 1 accumulation)
+INFO | qasr | Trainable parameters: 4,263,168/3,620,177,408 (0.12%)
+INFO | qasr | Global batch size: 128 (32 devices x 4 samples x 1 accumulation)
 INFO | qasr | Audio augmentation enabled: ['spec_augment', 'speed_perturb', 'noise_injection', 'codec_augment']
 {'loss': 12.4523, 'grad_norm': 3.21, ...}   ← Step 1
 {'loss': 11.8901, 'grad_norm': 2.87, ...}   ← Step 2
@@ -362,7 +386,7 @@ INFO | qasr | Evaluation example 1/2
 
 ## Step 5: Phase 1 — Projector Training
 
-**Purpose:** Train only the multimodal projector (2.6M params) to align audio
+**Purpose:** Train only the multimodal projector (4.3M params) to align audio
 embeddings with the LLM's input space. Encoder and decoder are frozen.
 
 **Duration:** ~3 hours on 32 GPUs (5,000 steps)
@@ -383,14 +407,14 @@ torchrun \
 
 | Parameter | Value |
 |-----------|-------|
-| Frozen | Encoder + Decoder (99.85% of params) |
-| Trainable | Projector only (2.6M params) |
+| Frozen | Encoder + Decoder (99.88% of params) |
+| Trainable | Projector only (4.3M params) |
 | Steps | 5,000 |
 | Global batch | 128 (32 GPUs × 4 × 1 accum) |
 | Learning rate | 1e-4, cosine, 500 warmup |
 | Precision | BF16 + TF32 |
 | DeepSpeed | ZeRO-3, no CPU offload |
-| Augmentation | Disabled (projector only needs clean signal) |
+| Augmentation | **All enabled** at p=0.37 (same recipe as Phase 2) |
 | Eval | Every 2,500 steps |
 | Checkpoints | Every 2,500 steps (keep 5) |
 
@@ -423,7 +447,7 @@ torchrun ... train.py --config configs/train_full_4node.yaml \
 
 | Parameter | Value |
 |-----------|-------|
-| Frozen | Nothing (all 1.7B params trainable) |
+| Frozen | Nothing (all 3.62B params trainable) |
 | Steps | 500,000 |
 | Global batch | 128 (32 GPUs × 4 × 1 accum) |
 | Learning rate | 2e-5, cosine, 2,500 warmup |
@@ -441,8 +465,8 @@ by the `QASRDataCollator` during training:
 |-------------|-------|-----------|-------------|
 | **SpecAugment** | Post-feature (on 128-bin mel) | 2 time masks (5%), 2 freq masks (15%) | p=0.37 |
 | **Speed Perturbation** | Pre-feature (on waveform) | 0.85×–1.15× continuous | p=0.37 |
-| **Noise Injection** | Pre-feature (on waveform) | SNR 5–20 dB (Gaussian) | p=0.37 |
-| **Codec Augmentation** | Pre-feature (on waveform) | Bandpass + 8-bit quantization | p=0.37 |
+| **Noise Injection** | Pre-feature (on waveform) | Real MUSAN audio from `noise_dir`, SNR 5–20 dB (Gaussian fallback only if no noise dir resolves) | p=0.37 |
+| **Codec Augmentation** | Pre-feature (on waveform) | Random bandpass + random 6–16-bit quantization, blended with clean signal at random alpha | p=0.37 |
 
 **Verification:** The smoke test log should show:
 ```
@@ -452,7 +476,8 @@ INFO | qasr | Audio augmentation enabled: ['spec_augment', 'speed_perturb', 'noi
 If this line is missing, augmentations are NOT active. Check:
 1. `augmentation:` section exists in your YAML config
 2. Each augmentation has `enabled: true`
-3. You're using the full config (not projector config)
+3. Each augmentation has a non-zero `p` (both projector and full configs
+   ship with all four enabled at p=0.37)
 
 ### Success Criteria
 
@@ -465,23 +490,32 @@ If this line is missing, augmentations are NOT active. Check:
 
 ## Step 7: Phase 3 — EAGLE-2 Speculative Decoding Head
 
-**Purpose:** Train a lightweight 8M-parameter draft head for 2–3× faster inference.
+**Purpose:** Train a lightweight 8M-parameter draft head for ~2× faster inference.
 
-**Duration:** ~30–60 minutes on 8 GPUs (single node, 2,000 steps)
+**Duration:** ~1–2 hours on 64 GPUs (8 nodes, 10,000 steps, batch 32/device,
+warmup 200)
 
 ```bash
-# Single node only (see qasr_train_4node_manual.txt Phase 3 section):
-torchrun --nnodes=1 --nproc_per_node=8 --node_rank=0 \
-  --master_addr="127.0.0.1" --master_port=29501 \
-  --rdzv_backend=static --rdzv_endpoint="127.0.0.1:29501" \
-  train_eagle.py --config configs/train_eagle_4node.yaml
+# 8-node launch via SLURM (see scripts/qasr_train_eagle_8node.slurm):
+sbatch scripts/qasr_train_eagle_8node.slurm
+
+# Or manual per-node (run on ALL 8 nodes with --node_rank=0..7):
+torchrun --nnodes=8 --nproc_per_node=8 --node_rank=<N> \
+  --master_addr="inception-H100-hpc-001" --master_port=29501 \
+  --rdzv_backend=static --rdzv_endpoint="inception-H100-hpc-001:29501" \
+  train_eagle.py --config configs/train_eagle_8node_filtered.yaml
 ```
 
 ### Success Criteria
 
-- KL loss converges to < 0.5 within 2,000 steps
-- Acceptance rate > 80% on held-out audio
-- Output: `eagle/eagle_head.pt` (~16 MB)
+- KL loss converges to < 0.5 within 10,000 steps
+- Acceptance rate ≥ 0.15 with end-to-end speedup ≥ 1.5× on held-out audio.
+  Acceptance is measured as accepted/(rounds × K) with K=5 draft tokens;
+  the shipped head measures ~0.18 acceptance, 1.76 tokens per target
+  forward, and ~2× speedup (see `eval_results_eagle_v2.json`)
+- Output: `eagle/eagle_head.pt` (~639 MB on disk — `save_pretrained`
+  serializes the frozen copy of the 311M-param `lm_head` alongside the
+  ~16.8 MB of actually-trained weights)
 
 ---
 
@@ -545,7 +579,7 @@ export OMP_NUM_THREADS=1
 PYTHONPATH=src python inference.py audio.wav \
   --model /lustrefs/shared/shahin.konadath/workspace/expmt/qasr/full
 
-# With EAGLE speculative decoding (2-3× faster)
+# With EAGLE speculative decoding (~2× faster)
 PYTHONPATH=src python inference.py audio.wav \
   --model /lustrefs/shared/shahin.konadath/workspace/expmt/qasr/full \
   --eagle /lustrefs/shared/shahin.konadath/workspace/expmt/qasr/eagle \
@@ -611,15 +645,29 @@ and streaming via `qasr-stream --model "$LOCAL" --eagle "$LOCAL/eagle"`.
 ```
 qasr/
 ├── configs/
+│   ├── data_processing/              # LLM manifest-cleaning configs (Arabic + multilingual)
+│   ├── v7.6/                         # Current recipe: 01_projector / 02_full / 03_hq /
+│   │                                 #   04_eagle (+ README), all 8-node
+│   ├── deepspeed_zero2.json          # ZeRO-2 config
 │   ├── deepspeed_zero3.json          # ZeRO-3 config (no CPU offload)
-│   ├── train_projector_4node.yaml    # Phase 1: projector (5K steps)
-│   ├── train_full_4node.yaml         # Phase 2: full fine-tune (500K steps)
-│   └── train_eagle_4node.yaml        # Phase 3: EAGLE head (2K steps)
+│   ├── train_projector_*.yaml        # Legacy Phase 1 configs (4node, 4node_filtered, 8node)
+│   ├── train_full_*.yaml             # Legacy Phase 2 configs (4node, 4node_filtered,
+│   │                                 #   8node_filtered)
+│   ├── train_hq_8node.yaml           # Legacy HQ fine-tune config
+│   └── train_eagle_8node_filtered.yaml  # Phase 3: EAGLE head (10K steps, 8-node)
 ├── scripts/
 │   ├── HF_MODEL_CARD.md              # Model card template for the Hub release
+│   ├── assemble_training_manifests.py  # Build training_manifests/vN/ from cleaned outputs
+│   ├── audit_training_manifests.py   # Audit assembled manifest sets
+│   ├── backfill_durations.py         # Backfill missing durations in manifests
 │   ├── package_and_push.py           # Package checkpoint + EAGLE head → push to HF Hub
-│   ├── qasr_train_4node.slurm        # Multi-node SLURM (if sbatch available)
-│   └── qasr_train_eagle.slurm        # Single-node SLURM (Phase 3)
+│   ├── prepare_q3asr_filter.py       # Prepare/filter q3asr SFT manifests
+│   ├── qasr_train_4node.slurm        # 4-node SLURM (if sbatch available)
+│   ├── qasr_train_8node.slurm        # 8-node SLURM
+│   ├── qasr_train_eagle.slurm        # Legacy single-node SLURM (Phase 3)
+│   └── qasr_train_eagle_8node.slurm  # 8-node SLURM (Phase 3: EAGLE head)
+├── src/data_processing/              # LLM-based transcript cleaning pipeline (vLLM client,
+│                                     #   validators, audit/reporting)
 ├── src/qasr/
 │   ├── __init__.py                   # Package exports
 │   ├── audio.py                      # Audio I/O utilities
@@ -641,6 +689,7 @@ qasr/
 │   ├── utils.py                      # Shared utilities
 │   └── static/                       # Browser demo UI (HTML/JS/CSS)
 ├── tests/                            # Unit + integration tests
+├── training_manifests/               # Assembled training manifest sets (vN/)
 ├── inference.py                      # CLI inference entry point
 ├── train.py                          # Root training entry point
 ├── train_eagle.py                    # Root EAGLE training entry point
@@ -704,7 +753,7 @@ Training manifests are JSONL files where each line is:
 
 ```bash
 # Full pipeline from scratch:
-python -m qasr.convert_weights --encoder CohereLabs/cohere-transcribe-03-2026 --qwen audarai/Audar-ASR-V1.2-Turbo --output .../initial --verify-reload
+python -m qasr.convert_weights --encoder CohereLabs/cohere-transcribe-03-2026 --qwen audarai/Audar-ASR-V1.2-Turbo --output-dir .../initial --verify-reload
 python -m qasr.validate_data --config configs/train_full_4node.yaml --output-dir filtered/ --workers 64
 # Then launch smoke test on all 4 nodes (see qasr_train_4node_manual.txt)
 # Then launch Phase 1 on all 4 nodes

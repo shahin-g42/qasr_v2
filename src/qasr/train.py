@@ -16,13 +16,13 @@ from transformers import Trainer, TrainingArguments, set_seed
 
 from .augmentation import build_augmenter
 from .collator import QASRDataCollator
-from .config import TrainConfig, parse_config
+from .config import TrainConfig, parse_config, validate_local_checkpoint
 from .data import CombinedSpeechDataset, JsonlSpeechDataset, ResilientAudioDataset
 from .eval_callback import WEREvalCallback
 from .losses import make_smoothed_causal_lm_loss
 from .modeling import QASRForConditionalGeneration
 from .processing import QASRProcessor
-from .sampling import LanguageBalancedSampler
+from .sampling import LanguageBalancedSampler, StratifiedLanguageSampler
 
 LOGGER = logging.getLogger("qasr")
 
@@ -137,6 +137,12 @@ class _StatsSubset(Subset):
     def stats(self):
         return self.dataset.stats
 
+    @property
+    def language(self):
+        # StratifiedLanguageSampler groups parts by language; Subset does not
+        # forward attributes, so smoke-mode subsets need this too.
+        return getattr(self.dataset, "language", None)
+
 
 class PredictionLoggingTrainer(Trainer):
     """Trainer that preserves Conformer statistics and logs prompt-only generations."""
@@ -151,6 +157,8 @@ class PredictionLoggingTrainer(Trainer):
         balanced_parts: list[JsonlSpeechDataset] | None = None,
         balanced_sampling: bool = False,
         sampling_temperature: float = 0.5,
+        sampling_strategy: str = "balanced",
+        allow_partial_epoch: bool = False,
         llm_lr_factor: float = 1.0,
         embed_lr_factor: float = 1.0,
         eval_collator: QASRDataCollator | None = None,
@@ -165,6 +173,8 @@ class PredictionLoggingTrainer(Trainer):
         self._balanced_parts = balanced_parts
         self._balanced_sampling = balanced_sampling and bool(balanced_parts)
         self._sampling_temperature = sampling_temperature
+        self._sampling_strategy = sampling_strategy
+        self._allow_partial_epoch = allow_partial_epoch
         self._llm_lr_factor = llm_lr_factor
         self._embed_lr_factor = embed_lr_factor
         # Evaluation batches must stay augmentation-free (no masks, noise, or
@@ -185,14 +195,64 @@ class PredictionLoggingTrainer(Trainer):
     def get_train_dataloader(self):
         if not self._balanced_sampling or self.train_dataset is None:
             return super().get_train_dataloader()
-        sampler = LanguageBalancedSampler(
-            self._balanced_parts,
-            temperature=self._sampling_temperature,
-            seed=self.args.data_seed,
-            epoch_size=len(self.train_dataset),
-            num_replicas=self.args.world_size,
-            rank=self.args.process_index,
-        )
+        # TrainingArguments leaves data_seed as None unless explicitly set;
+        # the samplers need a real int, so fall back to the run seed.
+        data_seed = self.args.data_seed if self.args.data_seed is not None else self.args.seed
+        if self._sampling_strategy == "stratified":
+            sampler = StratifiedLanguageSampler(
+                self._balanced_parts,
+                batch_size=self.args.per_device_train_batch_size,
+                seed=data_seed,
+                num_replicas=self.args.world_size,
+                rank=self.args.process_index,
+            )
+            if self.args.process_index == 0:
+                repeats = ", ".join(
+                    f"{lang} x{factor:.1f}"
+                    for lang, factor in sorted(sampler.repeat_factors.items())
+                )
+                LOGGER.info(
+                    "Stratified sampling: %d languages, %d per language per batch, "
+                    "%d draws/language/epoch (%s)",
+                    len(sampler.languages),
+                    sampler.per_language,
+                    sampler.epoch_draws,
+                    repeats,
+                )
+            # Full-coverage guard: max_steps in the YAMLs is computed for a
+            # specific world size. If fewer ranks launch (e.g. a broken
+            # multi-node submission), each rank's epoch needs more batches
+            # than max_steps allows and training would stop with a large
+            # fraction of the data silently unseen. Refuse instead.
+            if self.args.max_steps and self.args.max_steps > 0 and not self._allow_partial_epoch:
+                needed = math.ceil(
+                    sampler.num_batches / self.args.gradient_accumulation_steps
+                )
+                if self.args.max_steps < needed:
+                    covered = self.args.max_steps / needed
+                    raise RuntimeError(
+                        f"max_steps ({self.args.max_steps:,}) covers only "
+                        f"{covered:.1%} of one stratified epoch at world_size "
+                        f"{self.args.world_size} ({needed:,} steps needed). "
+                        "Either the job launched fewer ranks than the config "
+                        "was computed for (check the srun/torchrun fan-out) or "
+                        "max_steps needs recomputing for this world size. "
+                        "Smoke runs bypass this via allow_partial_epoch."
+                    )
+        else:
+            sampler = LanguageBalancedSampler(
+                self._balanced_parts,
+                temperature=self._sampling_temperature,
+                seed=data_seed,
+                epoch_size=len(self.train_dataset),
+                num_replicas=self.args.world_size,
+                rank=self.args.process_index,
+            )
+        # Rank-distinct generator: torch derives worker base seeds from it, so
+        # augmentation RNG streams differ across ranks (the stock HF loader
+        # gets this from its rank-aware seed_worker, which we bypass here).
+        generator = torch.Generator()
+        generator.manual_seed(data_seed * 100_003 + self.args.process_index)
         return _SamplerEpochDataLoader(
             self.train_dataset,
             batch_size=self.args.per_device_train_batch_size,
@@ -203,6 +263,7 @@ class PredictionLoggingTrainer(Trainer):
             persistent_workers=self.args.dataloader_persistent_workers
             and self.args.dataloader_num_workers > 0,
             drop_last=self.args.dataloader_drop_last,
+            generator=generator,
         )
 
     def create_optimizer(self, model: Any = None) -> torch.optim.Optimizer:
@@ -438,6 +499,10 @@ def run(config: TrainConfig) -> None:
     os.environ["WANDB_WATCH"] = "false"
     set_seed(config.seed)
 
+    # First check, before anything heavy: a missing or incomplete local
+    # checkpoint produces baffling per-rank errors deep inside transformers.
+    validate_local_checkpoint(config.model_name_or_path)
+
     has_eval = bool(config.eval_manifest_paths) or config.eval_split_ratio > 0 or (
         config.smoke_test and config.smoke_test_eval_samples > 0
     )
@@ -630,6 +695,8 @@ def run(config: TrainConfig) -> None:
         if config.smoke_test
         else config.eval_generation_max_new_tokens,
         balanced_parts=balanced_parts,
+        sampling_strategy=config.sampling_strategy,
+        allow_partial_epoch=config.smoke_test,
         balanced_sampling=config.balanced_sampling,
         sampling_temperature=config.sampling_temperature,
         llm_lr_factor=config.llm_lr_factor,
@@ -642,16 +709,15 @@ def run(config: TrainConfig) -> None:
     if config.smoke_test:
         wer_samples = min(wer_samples, 2)
     if config.eval_manifest_specs and wer_samples > 0:
-        trainer.add_callback(
-            WEREvalCallback(
-                processor=processor,
-                eval_manifest_specs=config.eval_manifest_specs,
-                samples_per_language=wer_samples,
-                seed=config.seed,
-                dataset_kwargs=dataset_kwargs,
-                max_new_tokens=config.eval_generation_max_new_tokens,
-            )
-        )
+        wer_callback = WEREvalCallback(
+            processor=processor,
+            eval_manifest_specs=config.eval_manifest_specs,
+            samples_per_language=wer_samples,
+            seed=config.seed,
+            dataset_kwargs=dataset_kwargs,
+            max_new_tokens=config.eval_generation_max_new_tokens,
+        ).bind_trainer(trainer)
+        trainer.add_callback(wer_callback)
         LOGGER.info(
             "WER eval callback registered: %d samples/language across %d manifests",
             config.eval_wer_samples_per_language,

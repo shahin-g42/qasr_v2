@@ -1,3 +1,4 @@
+import tempfile
 import unittest
 from pathlib import Path
 from types import SimpleNamespace
@@ -227,6 +228,71 @@ class EvalCollatorGateTest(unittest.TestCase):
             trainer.get_eval_dataloader()
 
         self.assertEqual(seen["collator"], "train-collator")
+
+
+class EpochCoverageGuardTest(unittest.TestCase):
+    """Regression: max_steps in the v7.6 YAMLs is computed for world_size 64.
+    A launch that starts fewer ranks (the historical srun-less SLURM failure)
+    used to stop at a fraction of the stratified epoch with no error, leaving
+    most of the data silently unseen. The trainer must refuse instead."""
+
+    class _Part:
+        def __init__(self, size: int, language: str) -> None:
+            self._size = size
+            self.language = language
+
+        def __len__(self) -> int:
+            return self._size
+
+    def _trainer(self, tmp_dir: str, max_steps: int, allow_partial: bool):
+        import torch
+        from transformers import TrainingArguments
+
+        from qasr.train import PredictionLoggingTrainer
+
+        args = TrainingArguments(
+            output_dir=tmp_dir,
+            report_to=[],
+            per_device_train_batch_size=2,
+            max_steps=max_steps,
+            dataloader_num_workers=0,
+        )
+        parts = [self._Part(10, "ar"), self._Part(4, "en")]
+        return PredictionLoggingTrainer(
+            model=torch.nn.Linear(2, 2),
+            args=args,
+            train_dataset=list(range(14)),
+            data_collator=lambda features: features,
+            prediction_processor=None,
+            prediction_collator=None,
+            eval_log_samples=0,
+            eval_generation_max_new_tokens=1,
+            balanced_parts=parts,
+            balanced_sampling=True,
+            sampling_strategy="stratified",
+            allow_partial_epoch=allow_partial,
+        )
+
+    def test_truncating_max_steps_is_refused(self) -> None:
+        # ar=10 records at 1/language/batch (batch 2, 2 languages) -> a full
+        # epoch needs 10 batches at world_size 1; max_steps=3 covers 30%.
+        with tempfile.TemporaryDirectory() as tmp_dir:
+            trainer = self._trainer(tmp_dir, max_steps=3, allow_partial=False)
+            with self.assertRaises(RuntimeError) as ctx:
+                trainer.get_train_dataloader()
+            self.assertIn("stratified epoch", str(ctx.exception))
+            self.assertIn("world_size", str(ctx.exception))
+
+    def test_full_epoch_max_steps_accepted(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp_dir:
+            trainer = self._trainer(tmp_dir, max_steps=10, allow_partial=False)
+            loader = trainer.get_train_dataloader()
+            self.assertEqual(len(loader.sampler), 20)  # 10 batches x 2
+
+    def test_smoke_mode_bypasses_the_guard(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp_dir:
+            trainer = self._trainer(tmp_dir, max_steps=2, allow_partial=True)
+            trainer.get_train_dataloader()  # must not raise
 
 
 if __name__ == "__main__":

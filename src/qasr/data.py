@@ -326,7 +326,13 @@ class CombinedSpeechDataset:
 
 
 class ResilientAudioDataset:
-    """Decode lazily and replace unreadable audio or oversized transcripts."""
+    """Decode lazily and replace unreadable audio or oversized transcripts.
+
+    Skip counters (see ``skip_stats``) are per-process: every DataLoader worker
+    holds its own copy of this dataset, so aggregate across workers and ranks
+    when reporting a global drop rate. With ``persistent_workers=True`` the
+    counters accumulate across epochs instead of resetting.
+    """
 
     def __init__(
         self,
@@ -349,6 +355,22 @@ class ResilientAudioDataset:
         self.max_target_length = max_target_length
         self.truncate_long_transcripts = truncate_long_transcripts
         self._invalid_indices: set[int] = set()
+        self._audio_load_errors = 0
+        self._duration_errors = 0
+        self._transcript_errors = 0
+        self._substitutions = 0
+        self._next_failure_summary = 1
+
+    @property
+    def skip_stats(self) -> dict[str, int]:
+        """Per-process drop and substitution counts (see class docstring)."""
+        return {
+            "audio_load_errors": self._audio_load_errors,
+            "duration_errors": self._duration_errors,
+            "transcript_errors": self._transcript_errors,
+            "substitutions": self._substitutions,
+            "invalid_indices": len(self._invalid_indices),
+        }
 
     def _validate_transcript(self, feature: dict[str, Any]) -> tuple[list[int] | None, str]:
         if self.tokenizer is None or self.max_target_length is None:
@@ -401,8 +423,32 @@ class ResilientAudioDataset:
                     max_audio_seconds=self.max_audio_seconds,
                 )
             except (AudioLoadingError, AudioDurationError, TranscriptLengthError) as exc:
+                if isinstance(exc, AudioLoadingError):
+                    self._audio_load_errors += 1
+                elif isinstance(exc, AudioDurationError):
+                    self._duration_errors += 1
+                else:
+                    self._transcript_errors += 1
                 self._invalid_indices.add(candidate_index)
-                LOGGER.warning("Skipping unusable sample at dataset index %d: %s", candidate_index, exc)
+                LOGGER.debug(
+                    "Skipping unusable sample at dataset index %d: %s", candidate_index, exc
+                )
+                failures = (
+                    self._audio_load_errors + self._duration_errors + self._transcript_errors
+                )
+                if failures == self._next_failure_summary:
+                    self._next_failure_summary *= 10
+                    LOGGER.warning(
+                        "Dropped %d unusable samples so far in this process (dataset size %d): "
+                        "audio_load_errors=%d duration_errors=%d transcript_errors=%d "
+                        "substitutions=%d",
+                        failures,
+                        dataset_size,
+                        self._audio_load_errors,
+                        self._duration_errors,
+                        self._transcript_errors,
+                        self._substitutions,
+                    )
                 continue
 
             result = dict(feature)
@@ -411,6 +457,7 @@ class ResilientAudioDataset:
             if transcript_ids is not None:
                 result["transcript_ids"] = transcript_ids
             if candidate_index != index:
+                self._substitutions += 1
                 LOGGER.warning(
                     "Replaced unusable dataset index %d with index %d (%s)",
                     index,

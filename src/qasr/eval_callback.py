@@ -14,6 +14,7 @@ from __future__ import annotations
 
 import logging
 import random
+import zlib
 from collections.abc import Sequence
 from typing import Any
 
@@ -64,6 +65,16 @@ class WEREvalCallback(TrainerCallback):
         # Indexing 100M-line manifests is expensive; build each part lazily
         # once (rank 0 only) and reuse it for every evaluation.
         self._datasets: dict[tuple[str, str], JsonlSpeechDataset] = {}
+        # transformers' CallbackHandler passes a fixed kwarg set that never
+        # includes the trainer, so it must be bound explicitly after
+        # construction (see bind_trainer). Relying on an on_evaluate kwarg
+        # silently disables the callback.
+        self._trainer: Any | None = None
+
+    def bind_trainer(self, trainer: Any) -> WEREvalCallback:
+        """Attach the Trainer whose model/log pipeline the decode pass uses."""
+        self._trainer = trainer
+        return self
 
     def _dataset_for(self, path: str, language: str) -> JsonlSpeechDataset:
         key = (path, language)
@@ -76,8 +87,10 @@ class WEREvalCallback(TrainerCallback):
     def _sample_indices(self, dataset: JsonlSpeechDataset, language: str) -> list[int]:
         count = min(self.samples_per_language, len(dataset))
         # Deterministic per language so every evaluation decodes the same
-        # utterances regardless of world size or epoch.
-        rng = random.Random((self.seed, language))
+        # utterances regardless of world size or epoch. random.Random rejects
+        # tuple seeds, and hash() is PYTHONHASHSEED-randomized, so mix the
+        # language in with crc32.
+        rng = random.Random(self.seed * 1_000_003 + zlib.crc32(language.encode("utf-8")))
         return rng.sample(range(len(dataset)), count)
 
     def _transcribe(self, trainer: Any, feature: dict[str, Any]) -> str:
@@ -137,7 +150,14 @@ class WEREvalCallback(TrainerCallback):
         }
 
     def on_evaluate(self, args, state, control, model=None, trainer=None, **kwargs) -> None:
-        if not state.is_world_process_zero or self.samples_per_language == 0 or trainer is None:
+        trainer = trainer if trainer is not None else self._trainer
+        if trainer is None:
+            LOGGER.warning(
+                "WER callback registered but no trainer bound; call "
+                "bind_trainer(trainer) after construction — skipping decode pass"
+            )
+            return
+        if not state.is_world_process_zero or self.samples_per_language == 0:
             return
         # Group manifests by language (several manifests may share a language).
         by_language: dict[str, list[tuple[str, str]]] = {}

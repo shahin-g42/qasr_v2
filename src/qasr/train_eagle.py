@@ -21,6 +21,7 @@ from __future__ import annotations
 
 import argparse
 import logging
+import os
 from dataclasses import dataclass, fields
 from pathlib import Path
 from typing import Any
@@ -28,14 +29,17 @@ from typing import Any
 import torch
 import yaml
 from torch import nn
+from torch.utils.data import DataLoader
 from transformers import Trainer, TrainingArguments
 
 from .augmentation import build_augmenter
 from .collator import QASRDataCollator
+from .config import validate_local_checkpoint
 from .data import CombinedSpeechDataset, JsonlSpeechDataset, ResilientAudioDataset
 from .eagle import EagleConfig, EagleHead, compute_eagle_loss
 from .modeling import QASRForConditionalGeneration
 from .processing import QASRProcessor
+from .sampling import StratifiedLanguageSampler
 
 LOGGER = logging.getLogger("qasr.eagle.train")
 
@@ -74,6 +78,17 @@ class EagleTrainConfig:
     min_duration_seconds: float = 0.1
     max_duration_seconds: float = 30.0
     max_target_length: int = 256
+    # "random"     -> HF Trainer's default RandomSampler (one shuffled pass,
+    #                 no per-batch language guarantee).
+    # "stratified" -> StratifiedLanguageSampler: equal languages per mini-batch
+    #                 and every record of every language seen at least once per
+    #                 epoch (small languages repeat). Requires
+    #                 per_device_train_batch_size % num_languages == 0.
+    sampling_strategy: str = "random"
+    # Permit max_steps < one full stratified epoch (quick experiments only;
+    # the default refuses so a broken multi-node launch cannot silently
+    # truncate coverage).
+    allow_partial_epoch: bool = False
     # Data augmentation (same schema as Phase 2 training YAMLs). Applied to
     # the teacher's input audio so the head learns to draft on augmented
     # spectrograms, matching what the deployed model sees during fine-tune.
@@ -90,7 +105,14 @@ class EagleTrainConfig:
     logging_steps: int = 10
     save_steps: int = 500
     save_total_limit: int | None = None
-    report_to: str = "none"
+    # Experiment tracking. Defaults mirror TrainConfig so an EAGLE run lands in
+    # wandb next to the runs it distills from. The previous "none" default meant
+    # a multi-million-step run produced no graph at all, and with no
+    # ``wandb_project``/``run_name`` fields there was no way to make the run
+    # identifiable even after flipping it in the YAML.
+    report_to: str | list[str] = "wandb"
+    wandb_project: str = "qasr"
+    run_name: str | None = None
     seed: int = 42
 
     # Model loading
@@ -153,14 +175,19 @@ class EagleDistillModel(nn.Module):
                 attention_mask=attention_mask,
                 output_hidden_states=True,
             )
-            if self.eagle_head.fuses_multiple_layers:
-                # Not detached: the learnable layer-mix weights must receive
-                # gradients. Teacher activations carry none (no_grad context).
-                hidden_states = self.eagle_head.fuse_hidden_states(outputs.hidden_states)
-            else:
-                hidden_states = outputs.hidden_states[-1].detach()
             target_logits = outputs.logits.detach()
             token_embeds = self.qasr.get_input_embeddings()(input_ids).detach()
+        if self.eagle_head.fuses_multiple_layers:
+            # OUTSIDE the no_grad block: the learnable layer-mix weights must
+            # receive gradients. Inside no_grad the softmax mix is recorded
+            # with no graph and layer_weights stays frozen at its zero init.
+            # The teacher activations themselves are detached — only the mix
+            # coefficients train.
+            hidden_states = self.eagle_head.fuse_hidden_states(
+                tuple(h.detach() for h in outputs.hidden_states)
+            )
+        else:
+            hidden_states = outputs.hidden_states[-1].detach()
 
         # Distill one step ahead on positions where the conditioned-on token is
         # a real transcript token (labels != -100).
@@ -176,8 +203,85 @@ class EagleDistillModel(nn.Module):
         return {"loss": loss}
 
 
+class _EpochAwareDataLoader(DataLoader):
+    """DataLoader exposing ``set_epoch`` so the Trainer advances the sampler."""
+
+    def set_epoch(self, epoch: int) -> None:
+        sampler = getattr(self, "sampler", None)
+        if sampler is not None and hasattr(sampler, "set_epoch"):
+            sampler.set_epoch(epoch)
+
+
 class EagleTrainer(Trainer):
     """Trainer that checkpoints only the EAGLE head, never the 8 GB teacher."""
+
+    def __init__(
+        self,
+        *args,
+        sampler_parts: list[JsonlSpeechDataset] | None = None,
+        sampling_strategy: str = "random",
+        allow_partial_epoch: bool = False,
+        **kwargs,
+    ) -> None:
+        super().__init__(*args, **kwargs)
+        self._sampler_parts = sampler_parts
+        self._sampling_strategy = sampling_strategy
+        self._allow_partial_epoch = allow_partial_epoch
+
+    def get_train_dataloader(self) -> DataLoader:
+        if self._sampling_strategy != "stratified" or not self._sampler_parts:
+            return super().get_train_dataloader()
+        sampler = StratifiedLanguageSampler(
+            self._sampler_parts,
+            batch_size=self.args.per_device_train_batch_size,
+            seed=self.args.seed,
+            num_replicas=self.args.world_size,
+            rank=self.args.process_index,
+        )
+        if self.args.process_index == 0:
+            repeats = ", ".join(
+                f"{language} x{factor:.1f}"
+                for language, factor in sorted(sampler.repeat_factors.items())
+            )
+            LOGGER.info(
+                "Stratified sampling: %d languages, %d per language per batch, "
+                "%d draws/language/epoch (%s)",
+                len(sampler.languages),
+                sampler.per_language,
+                sampler.epoch_draws,
+                repeats,
+            )
+        # Full-coverage guard, mirroring PredictionLoggingTrainer: refuse a
+        # max_steps that cannot fit one stratified epoch at the LIVE world
+        # size, so a broken multi-node launch fails loudly instead of
+        # distilling on a fraction of the data.
+        if (
+            self.args.max_steps
+            and self.args.max_steps > 0
+            and not self._allow_partial_epoch
+            and self.args.max_steps < sampler.num_batches
+        ):
+            covered = self.args.max_steps / sampler.num_batches
+            raise RuntimeError(
+                f"max_steps ({self.args.max_steps:,}) covers only "
+                f"{covered:.1%} of one stratified epoch at world_size "
+                f"{self.args.world_size} ({sampler.num_batches:,} steps "
+                "needed). Fix the launch fan-out or recompute max_steps; "
+                "set allow_partial_epoch: true for quick experiments."
+            )
+        # Rank-distinct worker base seeds (see PredictionLoggingTrainer).
+        generator = torch.Generator()
+        generator.manual_seed(self.args.seed * 100_003 + self.args.process_index)
+        return _EpochAwareDataLoader(
+            self.train_dataset,
+            batch_size=self.args.per_device_train_batch_size,
+            sampler=sampler,
+            collate_fn=self.data_collator,
+            num_workers=self.args.dataloader_num_workers,
+            pin_memory=self.args.dataloader_pin_memory,
+            drop_last=self.args.dataloader_drop_last,
+            generator=generator,
+        )
 
     def save_model(self, output_dir: str | None = None, _internal_call: bool = False) -> None:
         output_dir = output_dir if output_dir is not None else self.args.output_dir
@@ -187,7 +291,9 @@ class EagleTrainer(Trainer):
             LOGGER.info("Saved EAGLE head to %s", output_dir)
 
 
-def _build_dataset(config: EagleTrainConfig, processor: QASRProcessor) -> ResilientAudioDataset:
+def _build_dataset(
+    config: EagleTrainConfig, processor: QASRProcessor
+) -> tuple[ResilientAudioDataset, list[JsonlSpeechDataset]]:
     dataset_kwargs = {
         "min_duration_seconds": config.min_duration_seconds,
         "max_duration_seconds": config.max_duration_seconds,
@@ -208,7 +314,7 @@ def _build_dataset(config: EagleTrainConfig, processor: QASRProcessor) -> Resili
         parts = [JsonlSpeechDataset(config.train_manifest, language=config.language, **dataset_kwargs)]
 
     dataset = parts[0] if len(parts) == 1 else CombinedSpeechDataset(parts)
-    return ResilientAudioDataset(
+    resilient = ResilientAudioDataset(
         dataset,
         sampling_rate=int(processor.feature_extractor.sampling_rate),
         min_audio_seconds=config.min_duration_seconds,
@@ -216,6 +322,44 @@ def _build_dataset(config: EagleTrainConfig, processor: QASRProcessor) -> Resili
         tokenizer=processor.tokenizer,
         max_target_length=config.max_target_length,
     )
+    return resilient, parts
+
+
+def _configure_experiment_tracking(config: EagleTrainConfig) -> list[str]:
+    """Export the ``WANDB_*`` environment the Trainer's callback relies on.
+
+    Mirrors ``train.run()`` (Phases 1-3). HF's WandbCallback reads the project
+    from ``WANDB_PROJECT`` rather than from ``TrainingArguments``, so without
+    this an EAGLE run lands in wandb's default "uncategorized" project even with
+    ``report_to: wandb``. ``LOG_MODEL``/``WATCH`` stay off for the same reason as
+    the other phases: the 3.62B frozen teacher must never be uploaded or hooked.
+
+    Returns the normalized reporter list so callers and tests can assert on what
+    will actually be attached. Raises rather than silently tracking to an
+    unnamed project, since that failure is invisible until you look for a graph
+    that was never there.
+    """
+    reporters = [
+        str(item)
+        for item in (
+            config.report_to
+            if isinstance(config.report_to, (list, tuple))
+            else [config.report_to]
+        )
+    ]
+    if any(item.lower() != "none" for item in reporters):
+        if not isinstance(config.wandb_project, str) or not config.wandb_project.strip():
+            raise ValueError(
+                "wandb_project must be a non-empty string when report_to is enabled"
+            )
+        os.environ["WANDB_PROJECT"] = config.wandb_project
+        os.environ["WANDB_LOG_MODEL"] = "false"
+        os.environ["WANDB_WATCH"] = "false"
+        LOGGER.info(
+            "Experiment tracking: report_to=%s project=%s run_name=%s",
+            reporters, config.wandb_project, config.run_name or "(auto-generated)",
+        )
+    return reporters
 
 
 def train_eagle(config: EagleTrainConfig) -> Path:
@@ -224,10 +368,24 @@ def train_eagle(config: EagleTrainConfig) -> Path:
         level=logging.INFO,
         format="%(asctime)s | %(levelname)s | %(name)s | %(message)s",
     )
+
+    _configure_experiment_tracking(config)
+
     dtype = torch.bfloat16 if config.bf16 else torch.float32
     output_dir = Path(config.eagle_output_dir)
 
+    # Fail before the multi-GB teacher load, not at dataloader construction.
+    if config.sampling_strategy == "stratified" and isinstance(config.train_manifest, dict):
+        num_languages = len(config.train_manifest)
+        if num_languages and config.per_device_train_batch_size % num_languages:
+            raise ValueError(
+                f"per_device_train_batch_size ({config.per_device_train_batch_size}) "
+                f"must be a multiple of the number of languages ({num_languages}) "
+                "under sampling_strategy: stratified"
+            )
+
     # --- Load frozen QASR teacher (Trainer/Accelerate handle device placement) ---
+    validate_local_checkpoint(config.model_name_or_path)
     LOGGER.info("Loading frozen QASR model from %s", config.model_name_or_path)
     model = QASRForConditionalGeneration.from_pretrained(
         config.model_name_or_path,
@@ -272,7 +430,7 @@ def train_eagle(config: EagleTrainConfig) -> Path:
     wrapper = EagleDistillModel(model, eagle_head, config.kl_temperature)
 
     # --- Dataset + collator (identical pipeline to Phase 2) ---
-    train_dataset = _build_dataset(config, processor)
+    train_dataset, sampler_parts = _build_dataset(config, processor)
     augmenter = build_augmenter(
         config.augmentation,
         sampling_rate=int(processor.feature_extractor.sampling_rate),
@@ -321,6 +479,7 @@ def train_eagle(config: EagleTrainConfig) -> Path:
         ddp_find_unused_parameters=False,
         deepspeed=config.deepspeed,
         report_to=config.report_to,
+        run_name=config.run_name,
         seed=config.seed,
     )
 
@@ -329,6 +488,9 @@ def train_eagle(config: EagleTrainConfig) -> Path:
         args=args,
         train_dataset=train_dataset,
         data_collator=collator,
+        sampler_parts=sampler_parts,
+        sampling_strategy=config.sampling_strategy,
+        allow_partial_epoch=config.allow_partial_epoch,
     )
     trainer.train()
 

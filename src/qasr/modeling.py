@@ -263,7 +263,12 @@ class QASRForConditionalGeneration(Qwen3ASRForConditionalGeneration):
 
         encoder_states = audio_output.encoder_states
         encoder_lengths = audio_output.encoder_lengths.to(encoder_states.device)
-        ctc_logits = self.model.ctc_head(encoder_states.float())
+        # Match the head's dtype (bf16 under mixed-precision training —
+        # a .float() input against a bf16 head is a hard matmul dtype error),
+        # then do the loss arithmetic in float32 for numerical stability.
+        ctc_logits = self.model.ctc_head(
+            encoder_states.to(self.model.ctc_head.weight.dtype)
+        )
 
         # CTC targets: contiguous unmasked labels = the shifted target tokens
         # (prompt positions are -100). Shift ids by +1 so blank can live at 0.
@@ -312,7 +317,7 @@ class QASRForConditionalGeneration(Qwen3ASRForConditionalGeneration):
             target_lengths, dtype=torch.long, device=encoder_states.device
         )
         ctc_loss = nn.functional.ctc_loss(
-            ctc_logits.log_softmax(-1).transpose(0, 1),
+            ctc_logits.float().log_softmax(-1).transpose(0, 1),
             ctc_targets,
             encoder_lengths,
             ctc_target_lengths,

@@ -27,14 +27,14 @@ metrics:
   - cer
 ---
 
-# Audar-ASR-V1-Pro
+# {{MODEL_NAME}}
 
-**A 1.7B-parameter multilingual speech-recognition model that pairs a Conformer
+**A 3.6B-parameter multilingual speech-recognition model that pairs a Conformer
 audio encoder with a Qwen3 language-model decoder — shipped with a lossless
-EAGLE speculative-decoding head for ~2× faster inference and a real-time
+EAGLE speculative-decoding head for {{EAGLE_SPEEDUP}} faster inference and a real-time
 streaming server.**
 
-Audar-ASR-V1-Pro (internal codename **QASR**) injects audio into a decoder-only
+{{MODEL_NAME}} (internal codename **QASR**) injects audio into a decoder-only
 LLM LLaVA-style: a 48-layer Conformer encoder turns 16 kHz audio into acoustic
 features, a learned projector maps them into the Qwen3 embedding space, and the
 LLM autoregressively decodes a fluent, punctuated transcript. Because the decoder
@@ -63,7 +63,7 @@ LLM autoregressively decodes a fluent, punctuated transcript. Because the decode
         ▼
   Transcript  (Arabic · English · Chinese · Hindi · Malayalam)
         ▲
-        │  (optional) EAGLE draft head → ~2× faster, identical output
+        │  (optional) EAGLE draft head → {{EAGLE_SPEEDUP}} faster, identical output
 ```
 
 ---
@@ -71,7 +71,7 @@ LLM autoregressively decodes a fluent, punctuated transcript. Because the decode
 ## Highlights
 
 - **Fluent multilingual ASR** across Arabic, English, Chinese, Hindi, and Malayalam, with native casing and punctuation from the LLM decoder.
-- **~2× faster decoding, losslessly.** A tiny (~8.4M-param) EAGLE lookahead head drafts tokens the full model verifies in one pass. Greedy decoding is **provably identical** to standard generation — you trade compute, never accuracy.
+- **{{EAGLE_SPEEDUP}} faster decoding, losslessly.** An EAGLE lookahead head with 8.4M *trained* parameters drafts tokens the full model verifies in one pass. The shipped `eagle/eagle_head.pt` is larger ({{HEAD_FILE_SIZE}}) because it also carries a frozen copy of the decoder's 151,936-row output projection. Greedy decoding is identical to standard generation up to bf16 tie-breaks — you trade compute, never accuracy.
 - **Real-time streaming.** A WebSocket server performs rolling-window inference and emits partial transcripts as audio arrives.
 - **Zero-install offline use** via `trust_remote_code=True` — the modeling code travels with the checkpoint.
 
@@ -79,38 +79,49 @@ LLM autoregressively decodes a fluent, punctuated transcript. Because the decode
 
 ## Evaluation
 
-Measured on an internal **English motorsport-commentary** benchmark (50 held-out
-utterances, greedy decoding) on a single **NVIDIA H100**. WER/CER are
-lowercased, punctuation-stripped. RTF = inference-time ÷ audio-duration (lower is
-faster; RTF 0.10 ≈ 10× real time).
+Measured on **{{EVAL_SAMPLES}} utterances** of the `{{EVAL_LANGUAGE}}` eval split
+(`{{EVAL_MANIFEST}}`) — in-domain, not a held-out benchmark; broader held-out and
+multilingual evaluations are pending — with greedy decoding on a single **NVIDIA
+H100**, against target checkpoint `{{EVAL_MODEL}}` and EAGLE head
+`{{EVAL_EAGLE}}`. WER/CER are lowercased, punctuation-stripped. RTF =
+inference-time ÷ audio-duration (lower is faster; RTF 0.10 ≈ 10× real time).
+Latency and throughput are wall-clock and move with machine load; WER/CER do not.
 
 ### Quality & speed by decoding mode
 
 | Mode | WER | CER | RTF | Latency (mean) | Throughput |
 |------|:---:|:---:|:---:|:---:|:---:|
-| **Offline** (standard) | **6.77%** | 4.77% | 0.097 | 0.996 s | 58 tok/s |
-| **Offline + EAGLE** | **6.77%** | 4.74% | **0.056** | **0.503 s** | **93 tok/s** |
-| **Streaming** | 6.77% | 4.75% | 0.649 | — | — |
-| **Streaming + EAGLE** | 6.89% | 4.84% | **0.434** | — | — |
+| **Offline** (standard) | **{{WER_OFFLINE}}** | {{CER_OFFLINE}} | {{RTF_OFFLINE}} | {{LAT_OFFLINE}} | {{TPS_OFFLINE}} |
+| **Offline + EAGLE** | **{{WER_EAGLE}}** | {{CER_EAGLE}} | **{{RTF_EAGLE}}** | **{{LAT_EAGLE}}** | **{{TPS_EAGLE}}** |
+| **Streaming** | {{WER_STREAM}} | {{CER_STREAM}} | {{RTF_STREAM}} | — | — |
+| **Streaming + EAGLE** | {{WER_STREAM_EAGLE}} | {{CER_STREAM_EAGLE}} | **{{RTF_STREAM_EAGLE}}** | — | — |
 
-> EAGLE nearly **halves offline decode latency (0.996 s → 0.503 s)** and lifts
-> throughput from 58 → 93 tok/s — a **1.98× speedup** — while producing
-> byte-identical transcripts (WER unchanged at 6.77%). In streaming, EAGLE cuts
-> RTF from 0.65 → 0.43 (~1.5× faster).
+> EAGLE cuts offline decode latency from {{LAT_OFFLINE}} to **{{LAT_EAGLE}}** and
+> lifts throughput from {{TPS_OFFLINE}} to **{{TPS_EAGLE}}** — a **{{EAGLE_SPEEDUP}}
+> speedup** — at unchanged WER ({{WER_OFFLINE}} standard vs {{WER_EAGLE}} with EAGLE).
+> Streaming rows above are only populated when the streaming modes were evaluated.
 
 ### EAGLE speculation quality
 
 | Metric | Value | Meaning |
 |--------|:---:|---|
-| End-to-end speedup | **1.98×** | offline latency ÷ eagle latency |
-| Acceptance rate | 18.2% | fraction of drafted tokens accepted |
-| Tokens per model forward | 1.76 | vs 1.0 for standard decoding |
-| Position-0 acceptance | **71.8%** | the first drafted token is usually right |
-| Acceptance by position | 72% · 13% · 3% · 2% · 1% | draft depth 1…5 |
+| End-to-end speedup | **{{EAGLE_SPEEDUP}}** | offline latency ÷ eagle latency |
+| Acceptance rate | {{EAGLE_ACCEPTANCE}} | fraction of drafted tokens accepted |
+| Tokens per model forward | {{EAGLE_TPF}} | vs 1.00 for standard decoding |
+| Mean drafts accepted per round | {{EAGLE_MEAN_ACCEPTED}} | of {{EAGLE_NUM_DRAFT}} drafted |
+| Position-0 acceptance | **{{EAGLE_POS0}}** | the first drafted token is usually right |
+| Acceptance by position | {{EAGLE_BY_POSITION}} | draft depth 1…{{EAGLE_NUM_DRAFT}} |
+
+Acceptance falls steeply with draft depth: the head is trained single-step
+teacher-forced but chained autoregressively at inference, so each draft compounds
+the previous one's error. Position-0 acceptance is the health indicator — near
+zero there means the head does not match the target checkpoint, not that it is
+undertrained.
 
 Losslessness check: transcripts from EAGLE vs standard decoding matched on
-**49/50** samples; the single difference is a final-token tie-break under bf16
-rounding (numerically expected, not a decoding error).
+**{{EAGLE_EXACT_MATCH}}** samples. A mismatch is a final-token tie-break under bf16
+rounding — verifying {{EAGLE_NUM_DRAFT}} positions in one batched forward is not
+bit-identical to verifying them one at a time — not a decoding error.
 
 ---
 
@@ -285,12 +296,26 @@ acceptance.
 
 ### Training
 
-Audar-ASR-V1-Pro was built in stages: the encoder and decoder are initialized
+{{MODEL_NAME}} was built in stages: the encoder and decoder are initialized
 from their respective base models, then trained end-to-end.
 
 1. **Projector alignment** — freeze encoder + decoder, train only the projector so audio embeddings land in the LLM's input space.
 2. **Full fine-tune** — unfreeze everything and train on multilingual speech with SpecAugment, speed perturbation, noise injection, and codec augmentation for robustness.
 3. **EAGLE head distillation** — freeze the full model and train the lookahead head with a KL objective aligned one position ahead of the decoder's own distribution.
+
+This release pairs the head with the exact target checkpoint it was distilled on:
+
+| | |
+|---|---|
+| **Target checkpoint** | `{{TARGET_CHECKPOINT}}` |
+| **Head training steps** | {{HEAD_STEPS}} |
+| **Head artifact** | `eagle/eagle_head.pt` — {{HEAD_FILE_SIZE}}, {{HEAD_PARAMS}} params (8.4M trained + frozen output-projection copy) |
+
+> The head is bound to those exact target weights. Pairing it with a different
+> checkpoint — a later training step, a re-trained model, or an architecture
+> change such as a new projector or audio token rate — collapses acceptance
+> toward zero and turns speculation into pure overhead. Re-distil against the new
+> target before shipping it.
 
 ---
 
@@ -315,7 +340,7 @@ your use must also comply with the license terms of those upstream models.
 
 ```bibtex
 @software{audar_asr_v1_pro,
-  title  = {Audar-ASR-V1-Pro: A Conformer-Qwen3 Hybrid ASR Model with EAGLE Speculative Decoding},
+  title  = {{{MODEL_NAME}}: A Conformer-Qwen3 Hybrid ASR Model with EAGLE Speculative Decoding},
   author = {Audar AI},
   year   = {2026},
   url    = {https://huggingface.co/{{REPO_ID}}}

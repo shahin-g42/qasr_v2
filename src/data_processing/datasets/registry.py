@@ -39,6 +39,12 @@ LANGUAGES: tuple[str, ...] = ("ar", "en", "zh", "hi", "ml")
 #: Roots are env-overridable so the registry stays portable between the laptop,
 #: the build node and the training cluster, which mount things differently.
 INTERNAL_ROOT = os.environ.get("QASR_INTERNAL_ROOT", "training_manifests/v7.6")
+#: The SECOND internal tree: raw q3asr SFT envelopes (verbatim targets,
+#: duration-complete), a SIBLING of the v7.6 manifests rather than a subdir.
+#: configs/v7.6/internal_ds_sources.yaml -- the training config whose
+#: train_manifest lists name every file in both trees -- is the source of
+#: truth; the internal specs here mirror it, and a test pins the two together.
+SFT_ROOT = os.environ.get("QASR_SFT_ROOT", "q3asr_sft_manifests")
 EMILIA_ROOT = os.environ.get(
     "QASR_EMILIA_ROOT", "/vast/audio/data/tts/44k/Emilia-Dataset-extracted"
 )
@@ -57,6 +63,10 @@ _F_HF_AUDIO = FieldMap(text="text", duration=None, path="audio")
 
 def _internal(lang: str, train_files: int = 0, eval_files: int = 0) -> DatasetSpec:
     """The existing v7.6 manifest tree for one language.
+
+    What lives in the tree is defined by the training config
+    ``configs/v7.6/internal_ds_sources.yaml`` (``train_manifest``), which
+    stacks the LLM-cleaned v7.6 corpora this spec reads.
 
     Patterns are RELATIVE TO ``INTERNAL_ROOT``, which callers pass as ``root``.
     They must not also contain the root: ``expand_paths`` joins the two, and an
@@ -88,9 +98,46 @@ def _internal(lang: str, train_files: int = 0, eval_files: int = 0) -> DatasetSp
     )
 
 
+def _sft(lang: str) -> DatasetSpec:
+    """The raw q3asr SFT envelopes for one language, in their own tree.
+
+    The tree sits beside -- not under -- the v7.6 manifests, so the spec
+    carries ``local_root``: the one ``--root`` the stages pass stays the v7.6
+    root and these patterns resolve against ``SFT_ROOT`` instead
+    (``local.effective_root`` is the single choke point).
+
+    The audio overlaps the v7.6 q3asr corpora on purpose -- the training
+    config stacks a cleaned and a verbatim target on the same clips -- and
+    ``audio_filepath`` is the ledger's identity key, so the shared paths
+    compete at assemble and one transcript per clip ships; never two.
+    """
+    return DatasetSpec(
+        name=f"internal_sft_{lang}",
+        lang=lang,
+        kind=Kind.LOCAL_JSONL,
+        license="internal",
+        paths=(f"{lang}/*.jsonl*",),
+        exclude=_INTERNAL_EXCLUDE,
+        fields=_F_CANONICAL,
+        local_root=SFT_ROOT,
+        max_samples=DEFAULT_MAX_SAMPLES,
+        verified=True,
+        notes=(
+            "Raw (verbatim) q3asr envelopes, duration-complete. Same audio as the "
+            "v7.6 cleaned q3asr shards by design; the richer v7.6 transcript "
+            "usually wins the shared path, and the corrector stage cleans either. "
+            "The tree's eval_<lang>_q3asr.jsonl must reach the leak gates via "
+            "--eval-root (see env.sh)."
+        ),
+    )
+
+
 _SPECS: tuple[DatasetSpec, ...] = (
     # ============================ ARABIC =====================================
+    # 29 train files: 11 named corpora + the sharded and range-sliced q3asr
+    # passes (train_manifest in configs/v7.6/internal_ds_sources.yaml).
     _internal("ar", train_files=29, eval_files=2),
+    _sft("ar"),
     DatasetSpec(
         name="masc_ar", lang="ar", kind=Kind.HF_STREAM, license="cc-by-4.0",
         est_hours=420.0, repo_id="MohamedRashad/MASC-Arabic", config="default",
@@ -120,11 +167,12 @@ _SPECS: tuple[DatasetSpec, ...] = (
     ),
 
     # ============================ CHINESE ====================================
-    # The zh pool is the binding constraint: the internal corpus holds only
+    # The zh pool is the binding constraint: the internal v7.6 corpus holds only
     # 153,724 unique paths across 7,851 distinct transcripts -- one batch of
     # dubious value, and below the diversity floor on its own. zh therefore
     # depends almost entirely on the external sources below.
     _internal("zh", train_files=1, eval_files=1),
+    _sft("zh"),
     DatasetSpec(
         name="emilia_zh_local", lang="zh", kind=Kind.LOCAL_AUDIO, license="cc-by-4.0",
         est_hours=49_900.0, paths=(f"{EMILIA_ROOT}/ZH",),
@@ -164,8 +212,11 @@ _SPECS: tuple[DatasetSpec, ...] = (
     ),
 
     # ============================ ENGLISH ====================================
-    # There is no internal_v76_en: v7.6 ships ar, ml and zh only. English
-    # volume comes entirely from the external sources below.
+    # v7.6 ships en as well (inworld, q3asr, hifi_tts, expresso, anispeech,
+    # commentary -- see internal_ds_sources.yaml), and the SFT tree adds the
+    # raw envelopes; external volume still dominates an en batch.
+    _internal("en", train_files=6, eval_files=2),
+    _sft("en"),
     DatasetSpec(
         name="peoples_speech", lang="en", kind=Kind.HF_STREAM, license="cc-by-2.0",
         est_hours=30_000.0, repo_id="MLCommons/peoples_speech", fields=_F_HF_AUDIO,
@@ -198,6 +249,11 @@ _SPECS: tuple[DatasetSpec, ...] = (
     ),
 
     # ============================ HINDI ======================================
+    # v7.6 holds only the cleaned q3asr hi shard (the SFT tree carries hi's
+    # eval sets); still far short of a 100k batch without the gated Indic
+    # sources below.
+    _internal("hi", train_files=1, eval_files=0),
+    _sft("hi"),
     DatasetSpec(
         name="shrutilipi_hi", lang="hi", kind=Kind.HF_GATED, license="cc-by-4.0",
         est_hours=6_700.0, repo_id="ai4bharat/Shrutilipi", config="hindi",
@@ -232,6 +288,7 @@ _SPECS: tuple[DatasetSpec, ...] = (
     # -- about two batches -- and it was measured carrying two different
     # transcripts for the same audio across its two files.
     _internal("ml", train_files=2, eval_files=1),
+    _sft("ml"),
     DatasetSpec(
         name="shrutilipi_ml", lang="ml", kind=Kind.HF_GATED, license="cc-by-4.0",
         est_hours=2_900.0, repo_id="ai4bharat/Shrutilipi", config="malayalam",
@@ -325,6 +382,7 @@ __all__ = [
     "EMILIA_ROOT",
     "INTERNAL_ROOT",
     "LANGUAGES",
+    "SFT_ROOT",
     "all_specs",
     "by_name",
     "iter_specs",

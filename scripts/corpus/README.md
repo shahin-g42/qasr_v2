@@ -47,12 +47,18 @@ sbatch --nodelist=gpu5,gpu6,gpu7,gpu8 scripts/corpus/stage2b_prewarm.slurm
 
 1. **Environment** — every driver sources `scripts/corpus/env.sh`, which
    cds to the repo root (`$QASR`), sets `PYTHONPATH`, activates the conda env
-   (`$CONDA_ENV`), exports the shared paths (`$INTERNAL_ROOT`, `$POOL_DIR`,
-   `$AUDIO_ROOT`, `$OUT_DIR`, `$LOGS`) and the node-local `$LEDGER_DIR`, and
-   enables `HF_HUB_ENABLE_HF_TRANSFER=1`. Every value is environment-
-   overridable (`POOL_DIR=/tmp/pool sbatch …`); check them before the first
-   run. `env.sh` mirrors the `paths:` section of `configs/corpus.yaml` — edit
-   both together (the test suite pins the YAML side).
+   (`$CONDA_ENV`), exports the shared paths (`$INTERNAL_ROOT`, `$QASR_SFT_ROOT`,
+   `$POOL_DIR`, `$AUDIO_ROOT`, `$OUT_DIR`, `$LOGS`) and the node-local
+   `$LEDGER_DIR`, and enables `HF_HUB_ENABLE_HF_TRANSFER=1`. Every value is
+   environment-overridable (`POOL_DIR=/tmp/pool sbatch …`); check them before
+   the first run. `env.sh` mirrors the `paths:` section of
+   `configs/corpus.yaml` — edit both together (the test suite pins the YAML
+   side). There are TWO internal trees, both in the training checkout
+   (`train/stt/qasr`) and both named file-for-file in
+   `configs/v7.6/internal_ds_sources.yaml`: the v7.6 cleaned manifests
+   (`$INTERNAL_ROOT`) and the raw q3asr SFT envelopes (`$QASR_SFT_ROOT`, the
+   registry's `internal_sft_*` specs). Stage 2 excludes — and stage 4 audits
+   against — the eval sets of BOTH trees (`--eval-root`).
 2. **`HF_TOKEN`** with accepted gated terms for `ai4bharat/Shrutilipi`,
    `ai4bharat/IndicVoices`, `ai4bharat/Kathbath` (**hi/ml mandatory** — `hi`
    has only ~12 h of ungated fleurs and cannot fill a 100k batch without
@@ -188,6 +194,7 @@ curl -sf http://localhost:8010/health || { echo "corrector down"; exit 1; }
 nohup python3 -m data_processing.build_corpus assemble \
     --lang "$L" --pool-dir "$POOL_DIR" --out-dir "$OUT_DIR" --audio-root "$AUDIO_ROOT" \
     --ledger "$LEDGER_DIR/${L}.sqlite3" --root "$INTERNAL_ROOT" \
+    --eval-root "$QASR_SFT_ROOT" \
     --llm-url "$CORRECTOR_URL" --batches 0 --exclude-eval \
     --report "$LOGS/assemble_${L}_manual.json" \
     > "$LOGS/assemble_${L}_manual.out" 2>&1 &
@@ -197,7 +204,8 @@ Stages 2b/3/4 mirror their `.slurm` files one-for-one: the
 `python3 -m data_processing.build_corpus …` line inside each driver is the
 entire command (stage 2b drops `--out-dir` and uses `--prewarm`; stage 3 adds
 `--out-dir` and drops the corrector gate; stage 4 is a single foreground
-command whose exit code you check).
+command whose exit code you check — keep its `--eval-root "$QASR_SFT_ROOT"`
+so the audit sees the SFT eval sets too).
 
 ## Ship checklist
 
@@ -207,7 +215,7 @@ the verdict** (0 means every check below passed):
 - exactly 100 000 rows per language per bundle;
 - every manifest line parses as the strict canonical 4-key `Sample`;
 - no duplicate `audio_filepath` within a language; zero cross-language overlap;
-- zero eval leak (no shipped path in any v7.6 `eval_*.jsonl`);
+- zero eval leak (no shipped path in any v7.6 or q3asr-SFT `eval_*.jsonl`);
 - every external clip present at 16 kHz mono FLAC under `$AUDIO_ROOT`;
 - per-batch diversity floor (`distinct_text_fraction >= 0.50`) recomputed
   from the shipped texts;

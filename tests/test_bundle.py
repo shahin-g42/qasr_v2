@@ -190,6 +190,25 @@ class TestAuditFailures(_Tmp):
         self.assertFalse(report["audit"]["ok"])
         self.assertTrue(any("eval-leaked" in f for f in report["audit"]["failures"]))
 
+    def test_eval_leak_via_a_second_eval_root_fails_the_audit(self):
+        """The q3asr SFT tree ships its own eval sets; a path leaked from
+        THERE must fail the audit even though it is in no v7.6 eval file."""
+        rows = self.rows("ar", 3, label="a")
+        self.write_batch("ar", "b0000", rows)
+        sft = self.dir / "q3asr_sft_manifests"
+        (sft / "ar").mkdir(parents=True)
+        (sft / "ar" / "eval_ar_q3asr.jsonl").write_text(
+            json.dumps({"audio_filepath": rows[0][0]}) + "\n", encoding="utf-8")
+        report = self._one_lang_report(eval_roots=[sft])
+        self.assertFalse(report["audit"]["ok"])
+        self.assertTrue(any("eval-leaked" in f for f in report["audit"]["failures"]))
+        # The same second root is inert once nothing leaks from it.
+        (sft / "ar" / "eval_ar_q3asr.jsonl").write_text(
+            json.dumps({"audio_filepath": "/not/shipped.wav"}) + "\n", encoding="utf-8")
+        report = self._one_lang_report(eval_roots=[sft])
+        self.assertTrue(report["audit"]["ok"], report["audit"]["failures"])
+        self.assertEqual(report["audit"]["eval_paths_loaded"], 1)
+
     def test_missing_external_audio_fails_the_audit(self):
         rows = [(f"{self.audio_root}/ar/src/a{i}.flac", 2.0, f"external text {i}")
                 for i in range(3)]

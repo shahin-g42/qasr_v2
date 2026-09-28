@@ -48,6 +48,7 @@ import logging
 import sys
 import time
 from collections import Counter
+from collections.abc import Sequence
 from concurrent.futures import Future, ThreadPoolExecutor
 from dataclasses import dataclass
 from pathlib import Path
@@ -242,6 +243,7 @@ def run_assemble(
     chunk_size: int | None = None,
     fetch_workers: int = 16,
     exclude_eval: bool = False,
+    eval_roots: Sequence[str | Path] = (),
     root: str | None = None,
     include_gated: bool = True,
     gzipped: bool = False,
@@ -280,8 +282,13 @@ def run_assemble(
     read = 0
     with SeenLedger(ledger_path, buffer_claims=False) as led:
         eval_exclusions: dict = {}
-        if exclude_eval and root:
-            eval_exclusions = led.load_eval_exclusions(root, [lang])
+        if exclude_eval:
+            # Every internal tree we ingest from contributes its eval_* files:
+            # the v7.6 root first, then any second trees (--eval-root; the
+            # q3asr SFT manifests). A path leaked from ANY eval set is a leak.
+            for eval_root in filter(None, (root, *eval_roots)):
+                for k, v in led.load_eval_exclusions(eval_root, [lang]).items():
+                    eval_exclusions[k] = eval_exclusions.get(k, 0) + v
             LOGGER.info("%s: eval exclusions loaded: %s", lang, eval_exclusions)
         dist = Distributor(lang, led, distribute)
         LOGGER.info("%s: %d pool shard(s), first batch %s, llm=%s",
@@ -387,6 +394,9 @@ def main(argv: list[str] | None = None) -> int:
                     help="parallel external-audio prefetch threads (0 = serial inline fetch)")
     ap.add_argument("--no-materialize", action="store_true", help="do not fetch external audio")
     ap.add_argument("--exclude-eval", action="store_true", help="load eval manifests as exclusions")
+    ap.add_argument("--eval-root", action="append", default=[],
+                    help="extra internal tree whose eval_* manifests join the exclusions "
+                         "(repeatable), e.g. $QASR_SFT_ROOT for the q3asr SFT manifests")
     ap.add_argument("--no-gated", action="store_true")
     ap.add_argument("--gzip", action="store_true")
     ap.add_argument("--dry-run", action="store_true", help="in-memory ledger, write nothing")
@@ -419,6 +429,7 @@ def main(argv: list[str] | None = None) -> int:
         llm_batch=args.llm_batch, llm_concurrency=args.llm_concurrency,
         llm_triage_only=not args.llm_all,
         batches=args.batches, chunk_size=args.chunk_size, exclude_eval=args.exclude_eval,
+        eval_roots=args.eval_root,
         include_gated=not args.no_gated, gzipped=args.gzip, dry_run=args.dry_run,
         fetch_workers=args.fetch_workers,
         fetcher=None,

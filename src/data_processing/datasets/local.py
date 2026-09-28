@@ -68,6 +68,19 @@ def is_excluded(path: Path, exclude: tuple[str, ...]) -> bool:
     return any(token in name for token in exclude)
 
 
+def effective_root(spec: DatasetSpec, root: str | Path | None) -> str | Path | None:
+    """The root a spec's relative ``paths`` resolve against.
+
+    Specs in a second on-disk tree (the q3asr SFT manifests, a sibling of the
+    v7.6 manifests rather than a subdirectory of them) carry their own
+    ``local_root``; every other spec resolves against the caller's ``root``.
+    Resolving here -- the one function every local loader call goes through --
+    is what keeps prepare, preflight and the stream engine from disagreeing
+    about where a tree lives.
+    """
+    return spec.local_root if spec.local_root else root
+
+
 def expand_paths(spec: DatasetSpec, root: str | Path | None = None) -> list[Path]:
     """Resolve a spec's globs into a sorted, de-duplicated file list.
 
@@ -76,11 +89,13 @@ def expand_paths(spec: DatasetSpec, root: str | Path | None = None) -> list[Path
     relative to ``root`` and must not also contain it: joining the two turns
     ``training_manifests/v7.6`` + ``ar/*.jsonl`` into the right path, while
     joining it with an already-rooted pattern silently doubles the prefix and
-    matches nothing at all.
+    matches nothing at all. A spec with ``local_root`` set (the SFT tree)
+    ignores the caller's ``root`` entirely.
 
     Directories are filtered by kind, so a LOCAL_AUDIO spec enumerates audio and
     a LOCAL_JSONL spec enumerates manifests.
     """
+    root = effective_root(spec, root)
     out: set[Path] = set()
     wanted = _wanted(spec)
     for pattern in spec.paths:
@@ -207,6 +222,7 @@ __all__ = [
     "AUDIO_SUFFIXES",
     "JSONL_TOKEN",
     "duration_coverage",
+    "effective_root",
     "expand_paths",
     "is_excluded",
     "iter_local",

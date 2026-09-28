@@ -130,6 +130,23 @@ class TestLocalAssemble(_Tmp):
         self.assertEqual(report["counters"].get("released_pending"), 3)
         self.assertEqual(self.written(), [])
 
+    def test_a_second_eval_root_excludes_its_paths_too(self):
+        """The q3asr SFT tree's eval files reach the exclusion set via
+        ``--eval-root``: a path leaked from THERE cannot ship, exactly like
+        one leaked from a v7.6 eval file."""
+        self.put_pool("ar", "internal_v76_ar", [self.local_rec(i, 0.5) for i in range(8)])
+        sft = self.dir / "q3asr_sft_manifests"
+        (sft / "ar").mkdir(parents=True)
+        (sft / "ar" / "eval_ar_q3asr.jsonl").write_text(
+            json.dumps({"audio_filepath": "/data/internal_v76_ar/a1.wav"}) + "\n",
+            encoding="utf-8")
+        report = self.assemble(materialize_external=False, exclude_eval=True,
+                               root=None, eval_roots=[sft])
+        self.assertEqual(report["batches_written"], 1)
+        got = {s.audio_filepath for s in self.written()}
+        self.assertNotIn("/data/internal_v76_ar/a1.wav", got)
+        self.assertEqual(len(got), 5)  # the next-best record took its slot
+
     def test_drain_writes_partial_tail(self):
         self.put_pool("ar", "internal_v76_ar", [self.local_rec(i, 0.5) for i in range(3)])
         report = self.assemble(materialize_external=False, batches=0)

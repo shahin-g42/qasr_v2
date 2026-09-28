@@ -186,6 +186,12 @@ class DatasetSpec:
     #: ``_still_rejected_`` shards are recovery inputs folded into their parent,
     #: and counting them is how ml came to be overstated by 41%.
     exclude: tuple[str, ...] = ()
+    #: Root for a LOCAL_* spec in a SECOND on-disk tree. The q3asr SFT
+    #: manifests sit beside -- not under -- the v7.6 manifests, and the stages
+    #: pass one ``--root`` for the v7.6 tree; a spec with ``local_root`` set
+    #: resolves its relative ``paths`` against it and ignores the caller's
+    #: root (see ``local.effective_root``, the single choke point).
+    local_root: str | None = None
 
     # --- Shape ---------------------------------------------------------------
     fields: FieldMap = field(default_factory=FieldMap)

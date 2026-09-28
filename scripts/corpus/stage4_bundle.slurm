@@ -26,6 +26,7 @@ python3 -m data_processing.build_corpus bundle \
     --out-dir "${OUT_DIR}" \
     --audio-root "${AUDIO_ROOT}" \
     --root "${INTERNAL_ROOT}" \
+    --eval-root "${QASR_SFT_ROOT}" \
     --report "${LOGS}/bundle_${SLURM_JOB_ID}.json"
 
 echo "[$(date)] stage4 done: bundles manifested and audited"

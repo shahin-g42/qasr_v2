@@ -36,9 +36,18 @@ from .base import (
     Kind,
     require_datasets,
 )
-from .local import duration_coverage, expand_paths, iter_local, iter_local_audio
+from .local import duration_coverage, effective_root, expand_paths, iter_local, iter_local_audio
 from .preflight import CheckResult, check_hub, check_local, probe_fields
-from .registry import EMILIA_ROOT, INTERNAL_ROOT, LANGUAGES, all_specs, by_name, specs_for, summary
+from .registry import (
+    EMILIA_ROOT,
+    INTERNAL_ROOT,
+    LANGUAGES,
+    SFT_ROOT,
+    all_specs,
+    by_name,
+    specs_for,
+    summary,
+)
 from .stream import ingest, interleave, stats_report, stream_metadata, to_sample
 
 __all__ = [
@@ -47,6 +56,7 @@ __all__ = [
     "EMILIA_ROOT",
     "INTERNAL_ROOT",
     "LANGUAGES",
+    "SFT_ROOT",
     "CheckResult",
     "DatasetSpec",
     "FieldMap",
@@ -57,6 +67,7 @@ __all__ = [
     "check_hub",
     "check_local",
     "duration_coverage",
+    "effective_root",
     "expand_paths",
     "ingest",
     "interleave",

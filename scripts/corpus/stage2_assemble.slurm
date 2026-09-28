@@ -57,6 +57,7 @@ python3 -m data_processing.build_corpus assemble \
     --ledger "${LEDGER_DIR}/${LG}.sqlite3" \
     --audio-root "${AUDIO_ROOT}" \
     --root "${INTERNAL_ROOT}" \
+    --eval-root "${QASR_SFT_ROOT}" \
     --llm-url "${CORRECTOR_URL}" \
     --batches 0 \
     --exclude-eval \

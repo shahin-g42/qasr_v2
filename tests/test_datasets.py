@@ -15,6 +15,8 @@ import unittest
 from pathlib import Path
 from unittest import mock
 
+import yaml
+
 from data_processing.canonical import Meta, Sample
 from data_processing.datasets import registry
 from data_processing.datasets.base import (
@@ -28,6 +30,7 @@ from data_processing.datasets.base import (
 from data_processing.datasets.local import (
     AUDIO_SUFFIXES,
     duration_coverage,
+    effective_root,
     expand_paths,
     is_excluded,
     iter_local,
@@ -175,12 +178,27 @@ class TestRegistry(unittest.TestCase):
         self.assertEqual(specs[0].name, "internal_v76_ar")
         self.assertEqual([s.name for s in registry.iter_specs(("ar",))], [s.name for s in specs])
 
-    def test_internal_v76_covers_exactly_the_languages_that_ship(self):
-        """Regression: an ``en`` spec once described a directory that does not
-        exist, while ``zh`` -- which does -- was missing entirely."""
-        internal = {s.name for s in registry.all_specs() if s.name.startswith("internal_v76_")}
-        self.assertEqual(internal, {"internal_v76_ar", "internal_v76_ml", "internal_v76_zh"})
-        self.assertNotIn("internal_v76_en", registry._BY_NAME)
+    def test_internal_specs_cover_all_five_languages_in_both_trees(self):
+        """configs/v7.6/internal_ds_sources.yaml names internal sources for
+        every language: the v7.6 cleaned manifests AND the raw q3asr SFT
+        envelopes. The registry mirrors that (the file-level pin is
+        TestInternalSourcesMatchTrainingConfig below)."""
+        internal = {s.name for s in registry.all_specs() if s.name.startswith("internal_")}
+        self.assertEqual(
+            internal,
+            {f"internal_v76_{lang}" for lang in registry.LANGUAGES}
+            | {f"internal_sft_{lang}" for lang in registry.LANGUAGES},
+        )
+
+    def test_sft_specs_resolve_against_their_own_root(self):
+        """The SFT tree is a sibling of -- not under -- the v7.6 root the
+        stages pass, so only a spec-level root can reach it."""
+        for lang in registry.LANGUAGES:
+            spec = registry.by_name(f"internal_sft_{lang}")
+            self.assertEqual(spec.local_root, registry.SFT_ROOT)
+            self.assertEqual(spec.paths, (f"{lang}/*.jsonl*",))
+        for lang in registry.LANGUAGES:
+            self.assertIsNone(registry.by_name(f"internal_v76_{lang}").local_root)
 
     def test_internal_patterns_are_relative_to_root_not_already_rooted(self):
         """Regression for the path-doubling bug preflight caught.
@@ -197,6 +215,7 @@ class TestRegistry(unittest.TestCase):
             for pattern in spec.paths:
                 self.assertFalse(Path(pattern).is_absolute(), f"{spec.name}: {pattern}")
                 self.assertNotIn(registry.INTERNAL_ROOT, pattern, f"{spec.name}: {pattern}")
+                self.assertNotIn(registry.SFT_ROOT, pattern, f"{spec.name}: {pattern}")
 
     def test_internal_specs_exclude_recovery_and_eval_shards(self):
         for spec in registry.all_specs():
@@ -246,6 +265,55 @@ class TestRegistry(unittest.TestCase):
         msg = str(ctx.exception)
         self.assertIn("pip install", msg)
         self.assertIn("datasets>=3.0", msg)
+
+
+class TestInternalSourcesMatchTrainingConfig(unittest.TestCase):
+    """The registry's internal specs must cover exactly the datasets the
+    v7.6 training config names in ``configs/v7.6/internal_ds_sources.yaml``.
+
+    That file is the source of truth for what "internal" means: its
+    ``train_manifest`` lists the v7.6 cleaned corpora and the raw q3asr SFT
+    envelopes per language. Every listed file must be ingestible by its
+    language's spec -- routed to the right tree, matched by the glob, and not
+    caught by the exclusion tokens. A dataset added to the training config
+    but not the registry (or vice versa) fails here, not three hours into
+    Stage 1."""
+
+    def setUp(self) -> None:
+        self.cfg = yaml.safe_load(
+            (Path(__file__).resolve().parent.parent
+             / "configs" / "v7.6" / "internal_ds_sources.yaml").read_text(encoding="utf-8"))
+
+    def test_every_training_config_source_is_ingestible_by_its_spec(self):
+        listed = self.cfg["train_manifest"]
+        self.assertEqual(set(listed), set(registry.LANGUAGES), list(listed))
+        sft_langs = set()
+        for lang, files in listed.items():
+            self.assertTrue(files, f"{lang}: empty train_manifest")
+            for f in files:
+                path = Path(f)
+                self.assertEqual(path.parent.name, lang, f)
+                self.assertTrue(path.name.endswith(".jsonl"), f)
+                if "q3asr_sft_manifests" in path.parts:
+                    spec = registry.by_name(f"internal_sft_{lang}")
+                    sft_langs.add(lang)
+                else:
+                    self.assertIn("training_manifests", path.parts, f)
+                    self.assertIn("v7.6", path.parts, f)
+                    spec = registry.by_name(f"internal_v76_{lang}")
+                self.assertFalse(is_excluded(path, spec.exclude), f)
+        self.assertEqual(sft_langs, set(registry.LANGUAGES))
+
+    def test_v76_and_sft_specs_stay_in_the_registry_plan(self):
+        """Internal specs are ingestible by prepare (LOCAL_JSONL, canonical
+        fields) so a YAML/registry drift cannot hide behind a spec that is
+        declared but unusable."""
+        for lang in registry.LANGUAGES:
+            for name in (f"internal_v76_{lang}", f"internal_sft_{lang}"):
+                spec = registry.by_name(name)
+                self.assertIs(spec.kind, Kind.LOCAL_JSONL, name)
+                self.assertEqual(spec.fields, FieldMap(), name)
+                self.assertEqual(spec.lang, lang, name)
 
 
 class TestExpandPaths(_TmpTree):
@@ -325,6 +393,26 @@ class TestExpandPaths(_TmpTree):
         self.write("ar/train_a.jsonl", [self.rec(0)])
         spec = _spec(paths=("ar/*.jsonl", "ar/train_a.jsonl"))
         self.assertEqual(len(expand_paths(spec, self.root)), 1)
+
+    def test_local_root_resolves_a_second_tree_ignoring_the_passed_root(self):
+        """The SFT specs live in a sibling tree; their patterns must resolve
+        against ``spec.local_root``, not the v7.6 root the stages pass --
+        joining the v7.6 root would match nothing and the source would
+        silently contribute zero rows."""
+        self.write("v7.6/ar/train_ar_inworld.jsonl", [self.rec(0)])
+        self.write("sft/ar/train_ar_q3asr.jsonl", [self.rec(1)])
+        sft = _spec(paths=("ar/*.jsonl*",), local_root=str(self.root / "sft"))
+        self.assertEqual([p.name for p in expand_paths(sft, self.root / "v7.6")],
+                         ["train_ar_q3asr.jsonl"])
+
+    def test_local_root_none_falls_back_to_the_callers_root(self):
+        self.write("v7.6/ar/train_a.jsonl", [self.rec(0)])
+        self.assertEqual(effective_root(_spec(), "v7.6"), "v7.6")
+        self.assertEqual(effective_root(_spec(local_root="sft"), "v7.6"), "sft")
+        self.assertEqual(effective_root(_spec(local_root="sft"), None), "sft")
+        plain = _spec(paths=("ar/*.jsonl*",))
+        self.assertEqual([p.name for p in expand_paths(plain, self.root / "v7.6")],
+                         ["train_a.jsonl"])
 
 
 class TestIterLocal(_TmpTree):

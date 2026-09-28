@@ -39,6 +39,7 @@ import statistics
 import sys
 import time
 from collections import Counter
+from collections.abc import Sequence
 from pathlib import Path
 
 from .canonical import Sample, _atomic_write, _open_read, iter_shards
@@ -279,6 +280,7 @@ def run_bundle(
     out_dir: str | Path,
     audio_root: str | Path,
     root: str | None = None,
+    eval_roots: Sequence[str | Path] = (),
     langs: tuple[str, ...] | None = None,
     batch_size: int = DEFAULT_BATCH_SIZE,
     sample_rate: int = DEFAULT_SAMPLE_RATE,
@@ -327,6 +329,10 @@ def run_bundle(
             + ", ".join(f"{lang}={len(full[lang])}" for lang in langs))
 
     eval_paths = _eval_paths(root)
+    for extra in eval_roots:
+        # Every internal tree we ingest from must contribute its eval_* files
+        # to the leak audit: the q3asr SFT manifests ship their own eval sets.
+        eval_paths |= _eval_paths(extra)
     seen_paths: set[str] = set()
     audio_prefix = str(audio_root).rstrip("/") + "/"
     entries: dict[str, dict[str, dict]] = {lang: {} for lang in langs}
@@ -409,6 +415,9 @@ def main(argv: list[str] | None = None) -> int:
                     help="root external clips were materialized under")
     ap.add_argument("--root", default=registry.INTERNAL_ROOT,
                     help="eval-manifest root for the leak audit")
+    ap.add_argument("--eval-root", action="append", default=[],
+                    help="extra eval-manifest root for the leak audit (repeatable), "
+                         "e.g. $QASR_SFT_ROOT for the q3asr SFT manifests")
     ap.add_argument("--langs", help=f"comma-separated (default {','.join(registry.LANGUAGES)})")
     ap.add_argument("--batch-size", type=int, default=DEFAULT_BATCH_SIZE)
     ap.add_argument("--sample-rate", type=int, default=DEFAULT_SAMPLE_RATE)
@@ -430,6 +439,7 @@ def main(argv: list[str] | None = None) -> int:
         if args.langs else registry.LANGUAGES
     report = run_bundle(
         out_dir=args.out_dir, audio_root=args.audio_root, root=args.root,
+        eval_roots=args.eval_root,
         langs=langs, batch_size=args.batch_size, sample_rate=args.sample_rate,
         spot_check=args.spot_check,
         min_distinct_text_fraction=args.min_distinct_text_fraction,

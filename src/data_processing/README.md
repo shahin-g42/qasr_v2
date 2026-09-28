@@ -7,8 +7,9 @@ A **bundle N** = `{ar,en,zh,hi,ml}/bN`, each language exactly **100 000** sample
 all five languages have a full `bN`.
 
 Samples are filtered for transcript **quality and richness**, drawn from both
-**internal** sources (the v7.6 manifest tree, already-extracted Emilia-ZH — paths
-kept as-is) and **external** HuggingFace sources (audio downloaded to fixed
+**internal** sources (the v7.6 manifest tree, the raw q3asr SFT tree,
+already-extracted Emilia-ZH — paths kept as-is) and **external** HuggingFace
+sources (audio downloaded to fixed
 16 kHz mono FLAC paths). The LLM `corrector` runs **co-located** on each node at
 `http://localhost:8010/v1` — there is no load balancer and no multi-URL pool.
 
@@ -84,20 +85,24 @@ $LEDGER_DIR/<lang>.sqlite3                          # per-language ledger — NO
 
 ## Registry — what each node pulls
 
-`data_processing.datasets.registry` holds **24 sources**: 3 internal v7.6 trees
-plus 21 external. **22 are `verified=True`** against the live Hub API; the two
+`data_processing.datasets.registry` holds **31 sources**: 5 internal v7.6
+trees + the 5-language q3asr SFT tree (raw, verbatim — same audio as the v7.6
+q3asr shards by design; the ledger's path claims keep one transcript per clip)
+plus 21 external. **29 are `verified=True`** against the live Hub API; the two
 Common Voice 17 entries (`cv17_ar`, `cv17_ml`) are `verified=False` because their
 config names are unconfirmed. **7 are gated** (need `HF_TOKEN` + accepted Hub
-terms). Note that **`en` and `hi` have no internal tree** — they are
-external-only, so they depend entirely on the Hub.
+terms). What "internal" means is defined by
+`configs/v7.6/internal_ds_sources.yaml` (`train_manifest`); a test pins the
+registry to that file. Both internal trees' eval sets feed the leak gates:
+`--root` (v7.6) plus `--eval-root` (SFT) in stages 2 and 4.
 
-| lang | internal v7.6 (train/eval shards) | external sources |
-|------|-----------------------------------|------------------|
-| `ar` | ✓ (29 / 2) | `masc_ar`, `fleurs_ar_eg`, `cv17_ar`?, `arabic_speech_corpus` |
-| `zh` | ✓ (1 / 1) + `emilia_zh_local` (44 kHz) | `aishell1`, `aishell3`, `wenetspeech`\*, `fleurs_cmn_hans` |
-| `en` | — (external only) | `peoples_speech`, `gigaspeech`\*, `librispeech`, `voxpopuli_en` |
-| `hi` | — (external only) | `shrutilipi_hi`\*, `indicvoices_hi`\*, `kathbath_hi`\*, `fleurs_hi_in` |
-| `ml` | ✓ (2 / 1) | `shrutilipi_ml`\*, `indicvoices_ml`\*, `fleurs_ml_in`, `cv17_ml`? |
+| lang | internal v7.6 (train/eval shards) | q3asr SFT (raw) | external sources |
+|------|-----------------------------------|-----------------|------------------|
+| `ar` | ✓ (29 / 2) | ✓ | `masc_ar`, `fleurs_ar_eg`, `cv17_ar`?, `arabic_speech_corpus` |
+| `zh` | ✓ (1 / 1) + `emilia_zh_local` (44 kHz) | ✓ | `aishell1`, `aishell3`, `wenetspeech`\*, `fleurs_cmn_hans` |
+| `en` | ✓ (6 / 2) | ✓ | `peoples_speech`, `gigaspeech`\*, `librispeech`, `voxpopuli_en` |
+| `hi` | ✓ (1 / 0) | ✓ (its eval sets) | `shrutilipi_hi`\*, `indicvoices_hi`\*, `kathbath_hi`\*, `fleurs_hi_in` |
+| `ml` | ✓ (2 / 1) | ✓ | `shrutilipi_ml`\*, `indicvoices_ml`\*, `fleurs_ml_in`, `cv17_ml`? |
 
 `\*` = gated · `?` = `verified=False`. Ungated supply is the binding constraint:
 **`hi` has only `fleurs_hi_in` (~12 h) without a token**, so it cannot fill a
@@ -223,6 +228,7 @@ python3 -m data_processing.assemble \
   --lang "$L" \
   --pool-dir "$POOL_DIR" --out-dir "$OUT_DIR" --audio-root "$AUDIO_ROOT" \
   --ledger "$LEDGER_DIR/${L}.sqlite3" --root "$INTERNAL_ROOT" \
+  --eval-root "$QASR_SFT_ROOT" \
   --llm-url http://localhost:8010/v1 --llm-model corrector \
   --exclude-eval \
   --batches 0 \
@@ -242,6 +248,9 @@ Key flags:
   so a re-run appends `b0001`, `b0002`, … — this is how you add bundles later.
 - `--exclude-eval` — load `eval_*.jsonl` (under `--root`) as ledger exclusions
   first, making the measured ar eval/train leak structurally impossible.
+- `--eval-root PATH` — a **second** internal tree whose `eval_*.jsonl` also join
+  the exclusions (repeatable). Pass `$QASR_SFT_ROOT` (the raw q3asr SFT
+  manifests): that tree ships its own `eval_<lang>_q3asr.jsonl` sets.
 - `--no-materialize` — skip external download (internal-only build).
 - `--llm-all` — correct every sample, not just the triaged ~18%.
 - `--min-richness`, `--gate-duration` — quality knobs (see below).
@@ -288,7 +297,8 @@ later runs once the laggards catch up.
 
 The audit hard-gates the ship (**exit 1 on any failure**): count contract,
 strict canonical record shape, no duplicate `audio_filepath` within or across
-languages, zero eval leak against the v7.6 eval sets, every external clip
+languages, zero eval leak against the v7.6 **and** q3asr-SFT eval sets
+(`--root` + `--eval-root "$QASR_SFT_ROOT"`), every external clip
 present at 16 kHz mono (`--spot-check N` for a sampled fast pass), the ≥ 0.50
 diversity floor recomputed from the shipped texts, positive durations. A
 failed audit never overwrites an existing good `MANIFEST.json`; `--dry-run`
@@ -297,6 +307,7 @@ audits and reports without writing anything.
 ```bash
 python3 -m data_processing.build_corpus bundle \
   --out-dir "$OUT_DIR" --audio-root "$AUDIO_ROOT" --root "$INTERNAL_ROOT" \
+  --eval-root "$QASR_SFT_ROOT" \
   --report "$LOGS/bundle.json"
 ```
 

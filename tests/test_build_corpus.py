@@ -223,8 +223,8 @@ class TestLoadConfig(unittest.TestCase):
         # it is never injected as flags -- but it stays closed-world: adding a
         # path key must be a conscious act mirrored in scripts/corpus/env.sh.
         self.assertEqual(set(raw.get("paths", {})),
-                         {"internal_root", "pool_dir", "audio_root", "out_dir",
-                          "ledger_dir", "logs"})
+                         {"internal_root", "sft_root", "pool_dir", "audio_root",
+                          "out_dir", "ledger_dir", "logs"})
 
     def test_shipped_corpus_yaml_has_no_knob_that_nothing_reads(self):
         """A config option that silently does nothing is worse than no option.

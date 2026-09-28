@@ -143,7 +143,13 @@ bundle:
 
 paths:
   # Shared (relative to the repo root on shared storage, $QASR in the drivers).
+  # Both internal trees are named file-for-file in
+  # configs/v7.6/internal_ds_sources.yaml; on the cluster they live in the
+  # training checkout (train/stt/qasr), which env.sh points at.
   internal_root: training_manifests/v7.6
+  # SECOND internal tree (registry $QASR_SFT_ROOT / internal_sft_* specs);
+  # stages 2 + 4 also pass it as --eval-root for the leak gates.
+  sft_root: q3asr_sft_manifests
   pool_dir: corpus/pool
   audio_root: corpus/audio
   out_dir: training_manifests/v8.0

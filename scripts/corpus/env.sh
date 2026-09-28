@@ -23,9 +23,17 @@ source "$(conda info --base)/etc/profile.d/conda.sh"
 conda activate "$CONDA_ENV"
 
 # --- shared build paths (all nodes must mount these) -------------------------
-# Mirrors configs/corpus.yaml paths: internal_root / pool_dir / audio_root /
-# out_dir / logs.
-export INTERNAL_ROOT="${INTERNAL_ROOT:-$QASR/training_manifests/v7.6}"
+# Mirrors configs/corpus.yaml paths: internal_root / sft_root / pool_dir /
+# audio_root / out_dir / logs. Both internal trees live in the TRAINING
+# checkout (train/stt/qasr) and are named file-for-file in
+# configs/v7.6/internal_ds_sources.yaml -- the corpus registry mirrors that
+# list (internal_v76_* + internal_sft_* specs).
+export INTERNAL_ROOT="${INTERNAL_ROOT:-/lustrefs/shared/shahin.konadath/workspace/train/stt/qasr/training_manifests/v7.6}"
+# SECOND internal tree: raw q3asr SFT envelopes, sibling of the v7.6 manifests.
+# The registry reads it (the internal_sft_* specs resolve against it), and
+# stages 2 + 4 pass it as --eval-root so its eval_<lang>_q3asr.jsonl files
+# join the leak-exclusion set.
+export QASR_SFT_ROOT="${QASR_SFT_ROOT:-/lustrefs/shared/shahin.konadath/workspace/train/stt/qasr/q3asr_sft_manifests}"
 export POOL_DIR="${POOL_DIR:-$QASR/corpus/pool}"
 export AUDIO_ROOT="${AUDIO_ROOT:-$QASR/corpus/audio}"
 export OUT_DIR="${OUT_DIR:-$QASR/training_manifests/v8.0}"

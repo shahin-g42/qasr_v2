@@ -17,6 +17,21 @@ nine concurrent writers on Lustre/NFS -- so each language gets its own local
 ledger (the languages have disjoint audio pools), and cross-language overlap is
 audited to zero afterwards rather than prevented by a shared lock.
 
+Slicing one language across nodes
+---------------------------------
+"One ledger, one writer per language" is the correctness argument above, and it
+still holds -- but on its own it caps Stage 2 at five nodes. ``--pool-part K/N``
+lifts that cap without sharing the ledger: each of the N processes owns a hash
+slice of the pool (blake2b over ``audio_filepath``, see :func:`in_pool_part`),
+keeps its own node-local ledger, and writes part ``K`` of every batch label at
+``batch_size // N`` rows per part -- so the N parts compose one whole batch,
+which is exactly what the manifest layout already expresses
+(``train_<lang>_b####_p####``) and the bundle stage already sums and audits as
+one batch. Costs, all documented in the corpus README: ``max_per_text`` applies
+per slice (up to N x the renditions per language), and if a slice runs out of
+material mid-round its part is short, which makes that label short -- the
+Stage-4 report lists it under ``short_batches`` and it never ships.
+
 Inline materialization, bounded over-fetch
 ---------------------------------------
 A batch manifest must carry a true ``duration``, and for an external clip that
@@ -43,6 +58,7 @@ on stale information.
 from __future__ import annotations
 
 import argparse
+import hashlib
 import json
 import logging
 import sys
@@ -76,6 +92,32 @@ class _Item:
 
     rec: PoolRecord
     meta: Meta
+
+
+# --- pool slicing (multi-node Stage 2) ---------------------------------------
+#: Slice-identity digest size. 8 bytes makes an accidental collision between two
+#: distinct paths astronomically unlikely, so "same path -> same slice" is exact
+#: in practice while the partition stays a pure function of the path.
+_POOL_PART_DIGEST = 8
+
+
+def in_pool_part(audio_filepath: str, index: int, count: int) -> bool:
+    """True when ``audio_filepath`` belongs to slice ``index`` of ``count``.
+
+    The split hashes the final identity key -- not a shard index -- and that is
+    what makes it safe to run one batch's parts on different machines: the
+    v7.6-cleaned and q3asr-SFT pools deliberately share ``audio_filepath`` for
+    the cleaned/raw pair of a clip, so any partition that could send the two
+    copies to different slices would land a duplicate path in two parts of one
+    batch and fail the Stage-4 audit. A path (and therefore every duplicate of
+    it) always falls in exactly one slice; dedup then happens where it always
+    did, inside the slice's own Distributor.
+    """
+    if count <= 1:
+        return True
+    raw = audio_filepath.encode("utf-8")
+    digest = hashlib.blake2b(raw, digest_size=_POOL_PART_DIGEST).digest()
+    return int.from_bytes(digest, "big") % count == index
 
 
 # --- LLM correction (reuses BatchCorrector unchanged) -----------------------
@@ -240,6 +282,8 @@ def run_assemble(
     llm_max_tokens: int = 4096,
     llm_triage_only: bool = True,
     batches: int = 1,
+    pool_part: tuple[int, int] | None = None,
+    batch_part: int = 0,
     chunk_size: int | None = None,
     fetch_workers: int = 16,
     exclude_eval: bool = False,
@@ -253,11 +297,33 @@ def run_assemble(
 
     ``batches=0`` drains the pool (and writes a short trailing batch). Batch
     numbering continues across runs via the ledger's ``next_index``.
+
+    ``pool_part`` ``(index, count)`` keeps only this hash slice of the pool and
+    pairs with ``batch_part=index`` so the ``count`` parallel slices compose one
+    batch; ``count`` must divide ``batch_size`` exactly, otherwise the parts
+    would not sum to a whole batch.
     """
     quality = quality or QualityConfig()
     distribute = distribute or DistributeConfig()
     if gzipped:
         distribute.gzipped = True
+
+    # Multi-node Stage 2: this process owns one hash slice of the pool and
+    # writes one part of every batch label. in_pool_part explains why the split
+    # hashes the path rather than a shard index.
+    part_filter: tuple[int, int] | None = None
+    if pool_part is not None:
+        part_index, part_count = pool_part
+        if not 0 <= part_index < part_count:
+            raise ValueError(f"pool_part needs 0 <= index < count, got {pool_part!r}")
+        if part_count > 1 and distribute.batch_size % part_count:
+            raise ValueError(
+                f"batch_size {distribute.batch_size} is not divisible by pool_part "
+                f"count {part_count}: the parts would not compose a whole batch")
+        if not 0 <= batch_part < max(part_count, 1):
+            raise ValueError(f"batch_part needs 0 <= part < {part_count}, got {batch_part}")
+        if part_count > 1:
+            part_filter = (part_index, part_count)
 
     corrector = BatchCorrector(BuildConfig(
         llm_url=llm_url, llm_model=llm_model, llm_prompt=llm_prompt, llm_batch=llm_batch,
@@ -291,8 +357,11 @@ def run_assemble(
                     eval_exclusions[k] = eval_exclusions.get(k, 0) + v
             LOGGER.info("%s: eval exclusions loaded: %s", lang, eval_exclusions)
         dist = Distributor(lang, led, distribute)
-        LOGGER.info("%s: %d pool shard(s), first batch %s, llm=%s",
-                    lang, len(shards), dist.pending().label, llm_url or "disabled")
+        slice_note = (f", pool slice {part_filter[0]}/{part_filter[1]}"
+                      if part_filter else "")
+        LOGGER.info("%s: %d pool shard(s), first batch %s, llm=%s%s",
+                    lang, len(shards), dist.pending().label, llm_url or "disabled",
+                    slice_note)
 
         # Windowed prefetch of external clips (see module docstring). Submit
         # happens at chunk-build time -- before LLM correction -- so the fetch
@@ -307,6 +376,9 @@ def run_assemble(
         chunk: list[_Item] = []
         stopped = False
         for rec in merge_pools(shards):
+            if part_filter is not None and not in_pool_part(rec.audio_filepath, *part_filter):
+                counters["skipped_other_pool_part"] += 1
+                continue
             read += 1
             chunk.append(_Item(rec, rec.to_meta()))
             if pool is not None and rec.external:
@@ -352,10 +424,12 @@ def run_assemble(
         written: list[list[str]] = []
         if not dry_run:
             for batch in dist.batches:
-                written.append([str(p) for p in dist.write(batch, out_dir)])
+                written.append([str(p) for p in dist.write(batch, out_dir, part=batch_part)])
 
         report = {
             "stage": "assemble", "lang": lang, "started": started,
+            "pool_part": list(part_filter) if part_filter else None,
+            "batch_part": batch_part,
             "rows_read": read, "batches_written": len(written), "files": written,
             "batch_labels": [b.label for b in dist.batches],
             "batch_hours": {b.label: round(b.hours(), 2) for b in dist.batches},
@@ -381,6 +455,13 @@ def main(argv: list[str] | None = None) -> int:
     ap.add_argument("--root", help="internal tree root (eval exclusions + registry)")
     ap.add_argument("--sample-rate", type=int, default=DEFAULT_SAMPLE_RATE)
     ap.add_argument("--batches", type=int, default=1, help="batches to emit; 0 = drain pool")
+    ap.add_argument("--pool-part", metavar="K/N",
+                    help="this node's hash slice of the pool (multi-node Stage 2); each of "
+                         "the N slices writes one part of every batch and needs --batch-size "
+                         "divisible by N")
+    ap.add_argument("--batch-part", type=int,
+                    help="shard index within each batch label (default: the --pool-part "
+                         "index, else 0)")
     ap.add_argument("--batch-size", type=int, default=100_000)
     ap.add_argument("--chunk-size", type=int, help="records corrected/placed per chunk")
     ap.add_argument("--llm-url", help="local corrector base URL, e.g. http://localhost:8010/v1")
@@ -414,6 +495,23 @@ def main(argv: list[str] | None = None) -> int:
         level=logging.DEBUG if args.verbose else logging.INFO,
         format="%(asctime)s %(levelname)-7s %(name)s: %(message)s",
     )
+    pool_part = None
+    batch_part = args.batch_part if args.batch_part is not None else 0
+    if args.pool_part:
+        try:
+            part_index, part_count = (int(x) for x in args.pool_part.split("/", 1))
+        except ValueError:
+            ap.error(f"--pool-part must look like K/N, got {args.pool_part!r}")
+        if not 0 <= part_index < part_count:
+            ap.error(f"--pool-part needs 0 <= K < N, got {args.pool_part!r}")
+        if args.batch_part is None:
+            batch_part = part_index
+        elif not 0 <= args.batch_part < part_count:
+            ap.error(f"--batch-part needs 0 <= K < N={part_count}, got {args.batch_part}")
+        pool_part = (part_index, part_count)
+    elif args.batch_part is not None and args.batch_part < 0:
+        ap.error(f"--batch-part needs 0 <= K, got {args.batch_part}")
+
     distribute = DistributeConfig(
         batch_size=args.batch_size, max_per_source_fraction=args.max_per_source_fraction,
         max_per_text=args.max_per_text,
@@ -428,7 +526,8 @@ def main(argv: list[str] | None = None) -> int:
         llm_url=args.llm_url, llm_model=args.llm_model, llm_prompt=args.llm_prompt,
         llm_batch=args.llm_batch, llm_concurrency=args.llm_concurrency,
         llm_triage_only=not args.llm_all,
-        batches=args.batches, chunk_size=args.chunk_size, exclude_eval=args.exclude_eval,
+        batches=args.batches, pool_part=pool_part, batch_part=batch_part,
+        chunk_size=args.chunk_size, exclude_eval=args.exclude_eval,
         eval_roots=args.eval_root,
         include_gated=not args.no_gated, gzipped=args.gzip, dry_run=args.dry_run,
         fetch_workers=args.fetch_workers,
@@ -447,7 +546,7 @@ def main(argv: list[str] | None = None) -> int:
     return 0
 
 
-__all__ = ["main", "run_assemble"]
+__all__ = ["in_pool_part", "main", "run_assemble"]
 
 
 if __name__ == "__main__":

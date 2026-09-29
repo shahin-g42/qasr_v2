@@ -15,7 +15,7 @@ from collections import Counter
 from pathlib import Path
 from unittest import mock
 
-from data_processing.assemble import _apply_llm, run_assemble
+from data_processing.assemble import _apply_llm, in_pool_part, main, run_assemble
 from data_processing.build_corpus import BatchCorrector
 from data_processing.candidate import PoolRecord, pool_shard_path, write_pool
 from data_processing.canonical import MANIFEST_KEYS, iter_shards, read_manifest, read_sidecar
@@ -191,6 +191,92 @@ class TestLocalAssemble(_Tmp):
             self.assertIn("richness", meta.metrics)
             self.assertEqual(meta.stages["llm"], "disabled")
             self.assertIsNotNone(meta.final_text)
+
+
+class TestInPoolPart(unittest.TestCase):
+    def test_single_slice_takes_everything(self):
+        self.assertTrue(in_pool_part("/data/a.wav", 0, 1))
+
+    def test_partition_is_total_disjoint_and_stable(self):
+        paths = [f"/data/clips/a{i}.wav" for i in range(500)]
+        for count in (2, 4, 5, 8):
+            for path in paths:
+                owners = [k for k in range(count) if in_pool_part(path, k, count)]
+                self.assertEqual(len(owners), 1)  # exactly one slice owns a path
+            for k in range(count):  # every slice is non-trivial at this size
+                self.assertGreater(sum(in_pool_part(p, k, count) for p in paths), 0)
+        self.assertEqual(in_pool_part("/x.wav", 3, 4), in_pool_part("/x.wav", 3, 4))
+
+
+class TestPoolSlicing(_Tmp):
+    """Multi-node stage 2: hash slices compose one batch, part by part.
+
+    The pool mirrors the real layout: every clip appears twice, once from the
+    v7.6 pool and once from the q3asr SFT pool, under the SAME
+    ``audio_filepath``. Keeping that duplicate pair inside one part is exactly
+    what the keyed-by-path hash buys.
+    """
+
+    N = 32  # unique clips; each of the two sources carries all of them
+
+    def source_records(self, source, quality):
+        return [
+            PoolRecord(
+                audio_filepath=f"/data/clips/a{i}.wav", source=source, lang="ar",
+                normalized_text=f"{_AR} رقم {i}", quality=quality, richness=1.0,
+                composite=quality, external=False, duration=4.0, dataset=source,
+            )
+            for i in range(self.N)
+        ]
+
+    def build_pool(self):
+        self.put_pool("ar", "internal_v76_ar", self.source_records("internal_v76_ar", 0.6))
+        self.put_pool("ar", "internal_sft_ar", self.source_records("internal_sft_ar", 0.5))
+
+    def test_two_slices_compose_one_batch_without_crossing_duplicates(self):
+        self.build_pool()
+        dist = DistributeConfig(batch_size=64, max_per_source_fraction=1.0)
+        self.assemble(materialize_external=False, batches=0, distribute=dist,
+                      ledger=self.dir / "base.sqlite3", out_dir=self.dir / "base_out")
+        base_rows = [s for m, _ in iter_shards(self.dir / "base_out" / "ar", lang="ar")
+                     for s in read_manifest(m)]
+        want = {s.audio_filepath for s in base_rows}
+        self.assertEqual(len(want), self.N)
+
+        for part in (0, 1):
+            report = self.assemble(
+                materialize_external=False, batches=0, distribute=dist,
+                ledger=self.dir / f"slice{part}.sqlite3",
+                pool_part=(part, 2), batch_part=part)
+            self.assertEqual(report["pool_part"], [part, 2])
+            self.assertEqual(report["batch_part"], part)
+            self.assertEqual(report["batch_labels"], ["b0000"])
+            self.assertTrue(report["files"][0][0].endswith(f"train_ar_b0000_p{part:04d}.jsonl"))
+
+        rows = self.written()
+        self.assertEqual(len(rows), self.N)
+        self.assertEqual({s.audio_filepath for s in rows}, want)
+        self.assertEqual(len({s.audio_filepath for s in rows}), len(rows))  # no cross-part dup
+        for manifest, _ in iter_shards(self.out / "ar", lang="ar"):
+            self.assertGreater(len(list(read_manifest(manifest))), 0)
+
+    def test_slice_params_are_validated(self):
+        with self.assertRaises(ValueError):
+            self.assemble(materialize_external=False, pool_part=(2, 2))
+        with self.assertRaises(ValueError):
+            # batch_size 5 is not divisible by 3: parts would not compose a batch
+            self.assemble(materialize_external=False, pool_part=(0, 3))
+        with self.assertRaises(ValueError):
+            dist = DistributeConfig(batch_size=64, max_per_source_fraction=1.0)
+            self.assemble(materialize_external=False, distribute=dist,
+                          pool_part=(0, 2), batch_part=2)
+
+    def test_cli_rejects_malformed_pool_part(self):
+        base = ["--lang", "ar", "--pool-dir", str(self.pool), "--out-dir", str(self.out),
+                "--ledger", str(self.ledger), "--audio-root", str(self.audio_root)]
+        for bad in ("abc", "1/0", "2/2", "-1/4"):
+            with self.assertRaises(SystemExit):
+                main([*base, "--pool-part", bad])
 
 
 @unittest.skipIf(np is None, "audio dependencies (numpy/scipy/soundfile) are not installed")

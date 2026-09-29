@@ -244,11 +244,12 @@ both scripts.
 
 When the external side is what is blocked — gated terms, the `datasets`
 dependency, a repo withdrawn from the Hub — the internal trees alone can be
-processed and corrected on **one node, in the plain conda env**: no `datasets`,
-no `HF_TOKEN`, no docker twin. `scripts/corpus/run_internal_only.sh` runs
+processed and corrected in the **plain conda env**: no `datasets`, no
+`HF_TOKEN`, no docker twin. `scripts/corpus/run_internal_only.sh` runs
 stage 1 over the ten internal specs (`internal_v76_*` + `internal_sft_*`)
-only, then stage 2 per language with the co-located corrector, health-gated
-like the campaign driver:
+only, then stage 2 with the co-located corrector, health-gated like the
+campaign driver. Every stage runs on **all the nodes of the job** — stage 2
+is hash-sliced across the ranks so the spare nodes have real work:
 
 ```bash
 scripts/corpus/run_internal_only.sh                  # all five languages
@@ -256,52 +257,82 @@ LIMIT=500 scripts/corpus/run_internal_only.sh        # smoke run first
 LANGS="ar ml" scripts/corpus/run_internal_only.sh    # subset
 ```
 
-**Using more than one machine** — two shapes:
-
-*Simplest: one node per language* — five nodes, each prepares and assembles
-only its language (no barrier, no ordering):
+**Using more than one machine** — the default shape is **one command per
+node**: run the same line on every node of a `NUM_NODES`-node job, with that
+node's rank. Every stage then runs on all the nodes:
 
 ```bash
-# per node, following the campaign's rank map (0=zh 1=hi 2=ar 3=en 4=ml):
+# on every node, R = that node's rank 0..NUM_NODES-1:
+NODE_RANK=$R NUM_NODES=9 nohup scripts/corpus/run_internal_only.sh \
+    > "$LOGS/internal_node${R}.out" 2>&1 &
+```
+
+What each rank does:
+
+1. **Stage 1** — prepares its round-robin slice of the ten internal
+   `(lang, source)` pairs (`--node-rank`/`--num-nodes`), then drops a marker
+   file under `$LOGS` for the other ranks.
+2. **Barrier** — waits until all `NUM_NODES` ranks have finished stage 1
+   (marker files, no clock assumptions; `BARRIER_TIMEOUT=<seconds>` caps the
+   wait, default 0 = forever). Each rank drops its own stale marker *before*
+   any gate, so a rank that fails early leaves the barrier waiting loudly
+   instead of letting it pass on a previous run's marker.
+3. **Stage 1.5 — plan** — every rank runs `scripts/corpus/plan_distribution.py`
+   over the finished pools: it samples each language's shards, estimates rows
+   and bytes, then decides how many **hash slices** each language gets and
+   which rank runs which slice. The plan is a pure function of the pools, so
+   all ranks agree without further coordination; the JSON lands in
+   `$LOGS/plan_internal_<langs>.json`.
+4. **Stage 2** — assembles every `(language, slice)` pair assigned to this
+   rank. Slices are keyed by `blake2b(audio_filepath) % N`, so a clip's
+   duplicate rows (the v7.6 cleaned and raw q3asr SFT copies share the same
+   path) always land in ONE slice, where the per-slice ledger still dedups
+   them. Each slice keeps its own node-local ledger (`<lang>_p<k>.sqlite3`)
+   and writes part `k` of every batch (`train_<lang>_bNNNN_p<KKKK>`) at
+   `batch_size / N` rows per part, so the parts of one label compose one
+   whole batch — the 100k-per-`bN` contract is unchanged. A language that
+   cannot fill half a batch per slice is never sliced (N = 1 → the legacy
+   one-writer path); a slice that runs out mid-batch leaves that label short
+   (listed under `short_batches` by the stage-4 audit and never shipped), and
+   `--max-per-text` applies per slice, so a transcript can appear up to 2N
+   times per language (the diversity floor is still enforced per slice).
+
+Resuming is re-running the same command: the plan is a pure function of the
+finished pools and each ledger continues its label sequence. The slice count
+per language is **pinned** in `$LOGS/slices_internal_<lang>.txt` at first
+assembly — a run that would change it (different `NUM_NODES`, or pools so
+different the plan changes) is refused before anything is written; start a
+fresh `OUT_DIR_INT` + `LEDGER_DIR_INT` for a new layout. A full re-run redoes
+stage 1 on every rank (prepare is authoritative per source, not incremental),
+so start all ranks within a few minutes of each other; for a stage-2-only
+resume use `SKIP_PREPARE=1`, which keeps the markers and passes the barrier
+at once. The auto flow replaces the older manual phase A/B dance —
+`PREPARE_ONLY=1` (prepare, then stop) and `SKIP_PREPARE=1` (assemble from
+existing markers) still work for staggered checkpoints, and `BUNDLE_ONLY=1`
+skips stages 1–2 and only runs the stage-4 audit.
+
+One node still works exactly as before (`NUM_NODES=1`, the default), and so
+does one language per node if you prefer it — the slice machinery stays out
+of the way:
+
+```bash
 LANGS="zh" nohup scripts/corpus/run_internal_only.sh \
     > "$LOGS/internal_zh.out" 2>&1 &
 ```
 
-*All nine nodes: split stage 1, then assemble on five.* Phase A shards the
-ten internal `(lang, source)` pairs round-robin across nine ranks
-(`--node-rank`/`--num-nodes`), which can roughly halve the lane of a single
-dominating source (e.g. `internal_sft_ar`, whose 58.6% duration-less rows
-force header probes); phase B still assembles on five nodes, one language
-each:
-
-```bash
-# phase A -- on EVERY node, R = that node's rank 0..8 (keep the default LANGS
-# so every rank slices the same (lang, source) list -- and don't reuse a rank):
-PREPARE_ONLY=1 NODE_RANK=$R NUM_NODES=9 nohup scripts/corpus/run_internal_only.sh \
-    > "$LOGS/internal_prepare_node${R}.out" 2>&1 &
-
-# barrier: all nine prepare reports must exist before phase B starts:
-ls "$LOGS"/prepare_internal_ar_en_zh_hi_ml_node*.json   # expect 9 files
-
-# phase B -- on the five assemble nodes, after the barrier:
-SKIP_PREPARE=1 LANGS="zh" nohup scripts/corpus/run_internal_only.sh \
-    > "$LOGS/internal_zh.out" 2>&1 &
-```
-
-Stage 2 is the ceiling either way — one ledger, one writer per language; the
-spare nodes have nothing to take there. **Never point two nodes at the same
-language** (and never reuse a rank in phase A): the ledgers are node-local
-and cannot see each other, so both nodes would claim the same paths and
-overwrite each other's batches. Report names carry language and node tags
-(`prepare_internal_<langs>[_nodeR].json`, `bundle_internal_<langs>.json`), so
-per-node reports never collide in the shared `$LOGS`. Phase B warns per
-language when a pool source has no shards — the sign that phase A has not
-finished everywhere yet.
+The rule that protects the ledgers is unchanged and absolute: **never point
+two processes at the same language AND the same ledger** — slicing is safe
+precisely because every slice has its own ledger and a disjoint, hash-defined
+path set. Report names carry language, slice and node tags
+(`prepare_internal_<langs>[_nodeR].json`,
+`assemble_internal_<lang>[_p<k>].json`, `bundle_internal_<langs>.json`), so
+per-rank reports never collide in the shared `$LOGS`.
 
 It writes to **separate roots** (`corpus/pool_internal`,
 `training_manifests/v8.0_internal`, `/scratch/corpus/ledgers_internal`) so it
-cannot touch the campaign's pools, claims or batches; the ledger stays
-node-local — resume on the same node or copy the `<lang>.sqlite3` files first.
+cannot touch the campaign's pools, claims or batches; the ledgers stay
+node-local — resume on the same node or copy the `<lang>[_p<k>].sqlite3`
+files first.
 Stage 3 is not needed (`--no-materialize`: internal audio is read in place),
 and `--batches 0` drains, so each language gets one **partial** batch of
 whatever the gates admit. Every language has exactly two internal sources,

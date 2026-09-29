@@ -562,10 +562,17 @@ class Distributor:
         return self._open
 
     # --- writing ------------------------------------------------------------
-    def write(self, batch: Batch, out_dir: str | Path) -> tuple[Path, Path]:
-        """Write one batch as a manifest + sidecar pair."""
+    def write(self, batch: Batch, out_dir: str | Path, part: int = 0) -> tuple[Path, Path]:
+        """Write one batch as a manifest + sidecar pair.
+
+        ``part`` is the shard index within the batch label: a whole-language
+        assemble writes part 0, while a hash-sliced multi-node assemble
+        (``assemble.run_assemble(pool_part=...)``) writes its slice's part, so
+        the parts of one label compose one whole batch.
+        """
         out_dir = Path(out_dir) / self.lang
-        manifest, sidecar = shard_paths(out_dir, self.lang, batch.label, 0, gzipped=self.config.gzipped)
+        manifest, sidecar = shard_paths(
+            out_dir, self.lang, batch.label, part, gzipped=self.config.gzipped)
         write_manifest(manifest, batch.samples)
         write_sidecar(sidecar, batch.metas)
         return manifest, sidecar

@@ -470,6 +470,13 @@ class TestDistributorWrite(unittest.TestCase):
         self.assertEqual(manifest.name, "train_ar_b0000_p0000.jsonl")
         self.assertEqual(sidecar.name, "train_ar_b0000_p0000.meta.jsonl")
 
+    def test_write_honors_the_part_index(self):
+        """A multi-node stage-2 slice writes its own part of the label."""
+        dist, batch = self._closed_batch()
+        manifest, sidecar = dist.write(batch, self.tmp / "out", part=3)
+        self.assertEqual(manifest.name, "train_ar_b0000_p0003.jsonl")
+        self.assertEqual(sidecar.name, "train_ar_b0000_p0003.meta.jsonl")
+
         rows = [json.loads(line) for line in manifest.read_text(encoding="utf-8").splitlines()]
         self.assertEqual(len(rows), 3)
         for row in rows:

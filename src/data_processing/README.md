@@ -21,7 +21,7 @@ sources (audio downloaded to fixed
 |------:|--------|---------|:---------------------:|--------------|
 | 0 Preflight | `data_processing.datasets.preflight` | 1 node | no | Resolve repos, probe column names, measure duration coverage |
 | 1 Prepare | `data_processing.prepare` | **all 9 nodes** (sharded by source) | no | Stream metadata → normalize → gate → accent-tag → score → **sorted candidate pools** |
-| 2 Assemble | `data_processing.assemble` | **1 node per language** | **yes** (local corrector) | Best-first merge → LLM-correct → **inline-materialize external audio** → sequential `bNNNN` batches |
+| 2 Assemble | `data_processing.assemble` | **per language; hash-sliced across nodes** | **yes** (local corrector) | Best-first merge → LLM-correct → **inline-materialize external audio** → sequential `bNNNN` batches |
 | 3 Materialize | `data_processing.materialize` | any node | no | Verify/backfill every external clip is 16 kHz mono FLAC (idempotent) |
 | 4 Bundle + audit | `data_processing.bundle` (dispatcher: `bundle`) | 1 node | no | Group `bN` across langs → `MANIFEST.json`; audit counts / overlap / eval-leak / audio — **exit 1 = not shippable** |
 
@@ -38,15 +38,17 @@ entry point; each stage module can still be invoked directly as shown below.
 > flags still win) and delegates by literal `main(argv)` passthrough, so every
 > stage keeps its own argparse, `--report` and exit codes. The staged path is
 > the 9-node build: Stage 1 fans ingest out across all nodes into shared
-> pools, Stage 2 assembles each language beside its own co-located corrector.
+> pools, Stage 2 assembles each language beside its own co-located corrector
+> — whole-language, or as N hash slices spread across the ranks.
 
 ### Why staged
 
 - The corrector is `localhost:8010` on **every** node → the LLM stage must run
   where the model is (Stage 2 is per-language, co-located).
 - `SeenLedger` is SQLite-WAL, which is unsafe with 9 concurrent writers on
-  Lustre/NFS → **one local ledger per language** (languages have disjoint audio
-  pools); cross-language overlap is audited to zero afterwards.
+  Lustre/NFS → **one local ledger per language slice** (slices have disjoint,
+  hash-defined path sets; languages have disjoint audio pools); cross-language
+  overlap is audited to zero afterwards.
 - Source caps (`max_per_source_fraction=0.40`) and the diversity floor
   (`min_distinct_text_fraction=0.50`, the "zh guard") need a whole-language pool
   view → assembly is per-language, not per-source.
@@ -63,7 +65,7 @@ $AUDIO_ROOT/<lang>/<source>/<blake2b16>.flac        # Stage 2/3: materialized ex
 $OUT_DIR/<lang>/train_<lang>_b0000_p0000.jsonl      # Stage 2: batch manifest (canonical 4-key)
 $OUT_DIR/<lang>/train_<lang>_b0000_p0000.meta.jsonl # Stage 2: sidecar (provenance, quality, richness)
 $OUT_DIR/MANIFEST.json                              # Stage 4: shipping doc (green audits only)
-$LEDGER_DIR/<lang>.sqlite3                          # per-language ledger — NODE-LOCAL, one writer
+$LEDGER_DIR/<lang>[_p<k>].sqlite3                   # per-language slice ledger — NODE-LOCAL, one writer
 ```
 
 - `<blake2b16>` = `blake2b(native_id, digest_size=8).hexdigest()` (16 hex chars).
@@ -80,6 +82,10 @@ $LEDGER_DIR/<lang>.sqlite3                          # per-language ledger — NO
   feature extractor's job, not the build's.
 - Batch manifests carry exactly `{audio_filepath, duration, text, lang}` and are
   consumable by training as-is.
+- `_p<k>` is the **part index within the batch label**: a whole-language
+  assemble writes part 0; a hash-sliced multi-node assemble writes one part
+  per slice, and the parts of one label compose one whole batch (each slice
+  writes `batch_size / N` rows per part — see *Multi-node slicing* below).
 
 ---
 
@@ -214,12 +220,30 @@ descending**, which is what lets Stage 2 merge best-first.
 
 ---
 
-## Stage 2 — Assemble + correct (1 node per language, co-located corrector)
+## Stage 2 — Assemble + correct (per language, hash-sliced across nodes)
 
-One process per language. It merges that language's pool shards **best-first**,
-LLM-corrects the triaged ~18%, **materializes each external clip inline at the
-moment it is selected** (after the distributor confirms it will actually land, so
-nothing is over-downloaded), and fills sequential batches `b0000`, `b0001`, …
+One process per (language, slice). It merges that language's pool shards
+**best-first**, LLM-corrects the triaged ~18%, **materializes each external clip
+inline at the moment it is selected** (after the distributor confirms it will
+actually land, so nothing is over-downloaded), and fills sequential batches
+`b0000`, `b0001`, …
+
+**Multi-node slicing.** A language can be assembled by several nodes at once:
+`--pool-part K/N` admits only the pool rows with
+`blake2b(audio_filepath) % N == K`, and `--batch-part K` writes part `K` of
+every batch (`train_<lang>_bNNNN_p<KKKK>` on disk). The hash keys on
+`audio_filepath`, so a clip's duplicate rows (the v7.6 cleaned and raw q3asr
+SFT copies share the path) always land in one slice, where the slice's own
+ledger still dedups them. Each slice keeps its own node-local ledger
+(`<lang>_p<k>.sqlite3`); `N` must divide `--batch-size`, and with `N` slices
+each writing `batch_size / N` rows per part the parts of one label compose
+one whole batch — the 100k-per-`bN` bundle contract is unchanged. Keep
+`N = 1` (the whole-language, one-writer default) for a language that cannot
+fill half a batch per slice. `--max-per-text` applies per slice, so a
+transcript can appear up to `2N` times per language (the diversity floor is
+still enforced per slice). `scripts/corpus/plan_distribution.py` and the
+multi-node `run_internal_only.sh` flow pick `N` and the rank→slice
+assignment automatically from the finished pools.
 
 ```bash
 curl -sf http://localhost:8010/health >/dev/null || { echo "corrector down"; exit 1; }
@@ -236,7 +260,12 @@ python3 -m data_processing.assemble \
 ```
 
 Key flags:
-- `--ledger` — **per-language, node-local.** Never point two nodes at one ledger.
+- `--ledger` — **per-language or per-slice, node-local.** Never point two
+  processes at one ledger.
+- `--pool-part K/N`, `--batch-part K` — assemble one hash slice of a language
+  across N nodes (see *Multi-node slicing*). `K/N` outside `0 <= K < N` is
+  rejected, `N > 1` must divide `--batch-size`, and `--batch-part` defaults
+  to the pool-part index.
 - `--llm-prompt rich|compact` — `rich` (default) selects the language-
   specialized cleaner prompts (Arabic dialect/diacritics-aware; en/zh/hi/ml
   conventions); `compact` is the old minimal prompt.
@@ -258,7 +287,8 @@ Key flags:
   `--min-distinct-text-fraction 0.50` — distribution/diversity policy.
 - `--dry-run` — in-memory ledger, write nothing.
 
-Output: `$OUT_DIR/<lang>/train_<lang>_bNNNN_p0000.jsonl` + `.meta.jsonl`.
+Output: `$OUT_DIR/<lang>/train_<lang>_bNNNN_p0000.jsonl` + `.meta.jsonl` (a
+sliced run writes its own part index instead of `p0000`).
 
 ---
 
@@ -323,8 +353,10 @@ python3 scripts/check_manifest_overlap.py  ...                          # eval-l
 ## Running on multiple machines (9 nodes)
 
 Nodes 0–3 serve `Qwen3.8-Flash-Next-FP8`; nodes 4–8 serve `Qwen3.8-27B-FP8`; all
-expose it as `corrector` on `localhost:8010`. Stage 1 uses **all 9**; Stage 2 uses
-**5** (one language each).
+expose it as `corrector` on `localhost:8010`. Stage 1 uses **all 9**; the
+campaign's Stage 2 maps **5** (one language each), and any language can be
+hash-sliced across more nodes with `--pool-part`/`--batch-part` (see
+*Multi-node slicing* in Stage 2).
 
 **Production drivers exist**: `scripts/corpus/*.slurm` (+ `env.sh` and the
 runbook in `scripts/corpus/README.md`) wrap everything below with a shared
@@ -482,12 +514,13 @@ guard); `max_per_source_fraction 0.40` keeps a batch mixed across ≥3 sources.
   behind for Stage 2 to double-count.
 - **Assemble** resumes from the ledger: already-claimed paths are skipped and the
   batch index continues (`b0000` → `b0001` …). A short overflow tail is *released*,
-  not stranded, so the next run can reuse it.
+  not stranded, so the next run can reuse it. A sliced run resumes per slice —
+  each slice's ledger continues its own label sequence.
 - **Materialize** is idempotent: existing correct-duration files are skipped.
-- **Ledger**: one per language, one writer. Keep it on the node that assembles
-  that language; if you must move a language to another node, copy its
-  `<lang>.sqlite3` first. Never share one ledger file across nodes (WAL on
-  Lustre/NFS corrupts under concurrent writers).
+- **Ledger**: one per language (or per slice), one writer each. Keep it on the
+  node that assembles that language/slice; if you must move a language to
+  another node, copy its `<lang>[_p<k>].sqlite3` first. Never share one ledger
+  file across processes (WAL on Lustre/NFS corrupts under concurrent writers).
 
 ---
 

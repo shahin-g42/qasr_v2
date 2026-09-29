@@ -131,8 +131,9 @@ def check_hub(spec: DatasetSpec, token: str | None = None) -> CheckResult:
                         f"close matches: {[c for c in declared if spec.config[:3] in c][:6]}"
                     )
             else:
-                # common_voice and Emilia declare no configs in cardData, so
-                # absence of evidence is not evidence of absence.
+                # CardData often omits the config list entirely, so absence of
+                # evidence is not evidence of absence -- --probe-fields is what
+                # confirms the config name for real.
                 res.config_ok = None
                 res.warn("cardData declares no configs; config name is unconfirmed until --probe-fields")
         if res.gated and not token:
@@ -206,8 +207,13 @@ def probe_fields(spec: DatasetSpec, root: str | None = None, token: str | None =
     res = CheckResult(spec_name=spec.name, lang=spec.lang, kind=spec.kind.value)
     try:
         row = next(stream_metadata(spec, root, token=token), None)
-    except (RuntimeError, ValueError, StopIteration) as exc:
-        res.fail(f"could not stream a row: {exc}")
+    except Exception as exc:
+        # Broad on purpose: a dead source must fail THIS spec in the report,
+        # never abort the run. EmptyDatasetError(FileNotFoundError) -- raised
+        # when a repo is withdrawn from the Hub mid-campaign -- is an OSError,
+        # outside any RuntimeError/ValueError tuple, and it once killed a
+        # whole 9-node preflight before a single line of report was printed.
+        res.fail(f"could not stream a row: {type(exc).__name__}: {exc}")
         return res
     if row is None:
         res.fail("stream produced no rows")
@@ -248,16 +254,27 @@ def run(
     root = INTERNAL_ROOT if root is None else root
     out: list[CheckResult] = []
     for spec in specs:
-        if spec.kind in (Kind.LOCAL_JSONL, Kind.LOCAL_AUDIO):
-            res = check_local(spec, root, sample)
-        else:
-            res = check_hub(spec, token)
+        try:
+            if spec.kind in (Kind.LOCAL_JSONL, Kind.LOCAL_AUDIO):
+                res = check_local(spec, root, sample)
+            else:
+                res = check_hub(spec, token)
+        except Exception as exc:
+            # Same principle as in probe_fields: report, never abort. A check
+            # that explodes (a weird mount, a parser bug) is one FAIL row.
+            res = CheckResult(spec_name=spec.name, lang=spec.lang, kind=spec.kind.value)
+            res.fail(f"check crashed: {type(exc).__name__}: {exc}")
         out.append(res)
         mark = "ok  " if res.ok else "FAIL"
         LOGGER.info("%s %-24s %s", mark, spec.name, "; ".join(res.problems) or "-")
     if probe:
         for i, spec in enumerate(specs):
-            out[i] = probe_fields(spec, root, token)
+            try:
+                out[i] = probe_fields(spec, root, token)
+            except Exception as exc:
+                # probe_fields is defensive but not total; keep the check
+                # result and mark it failed rather than losing the report.
+                out[i].fail(f"probe crashed: {type(exc).__name__}: {exc}")
     return out
 
 

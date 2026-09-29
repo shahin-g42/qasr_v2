@@ -57,7 +57,6 @@ _INTERNAL_EXCLUDE = ("_still_rejected_", "eval_")
 # Canonical field maps, named so specs stay readable and consistent.
 _F_CANONICAL = FieldMap()  # internal v7.6 already uses the canonical four
 _F_FLEURS = FieldMap(text="transcription", duration=None, path="audio")
-_F_CV = FieldMap(text="sentence", duration=None, path="path")
 _F_HF_AUDIO = FieldMap(text="text", duration=None, path="audio")
 
 
@@ -152,13 +151,11 @@ _SPECS: tuple[DatasetSpec, ...] = (
         notes="Small but Egyptian-dialect and clean. duration is absent from the "
               "metadata, so Phase A needs a header probe -- expensive.",
     ),
-    DatasetSpec(
-        name="cv17_ar", lang="ar", kind=Kind.HF_STREAM, license="cc0-1.0",
-        est_hours=180.0, repo_id="mozilla-foundation/common_voice_17_0", config="ar",
-        fields=_F_CV, gated=False, verified=False,
-        notes="Repo resolves, but cardData declares no configs, so 'ar' is "
-              "unconfirmed. Read-accented; useful for accent diversity.",
-    ),
+    # cv17_ar / cv17_ml (mozilla-foundation/common_voice_17_0) were removed
+    # 2025-10: Mozilla withdrew Common Voice from the Hub (it lives on the
+    # Mozilla Data Collective now), the repo resolves to zero data files, and
+    # streaming it raises EmptyDatasetError -- the dataset died, not the spec.
+    # Re-adding CV means the Data Collective route; the Hub no longer mirrors it.
     DatasetSpec(
         name="arabic_speech_corpus", lang="ar", kind=Kind.HF_STREAM, license="cc-by-4.0",
         est_hours=7.0, repo_id="halabi2016/arabic_speech_corpus",
@@ -307,12 +304,7 @@ _SPECS: tuple[DatasetSpec, ...] = (
         fields=_F_FLEURS, gated=False, verified=True,
         notes="Tiny. Useful for accent-tag calibration, not for volume.",
     ),
-    DatasetSpec(
-        name="cv17_ml", lang="ml", kind=Kind.HF_STREAM, license="cc0-1.0",
-        est_hours=25.0, repo_id="mozilla-foundation/common_voice_17_0", config="ml",
-        fields=_F_CV, gated=False, verified=False,
-        notes="Config unconfirmed (cardData declares none). Read-accented.",
-    ),
+    # cv17_ml went with the Common Voice withdrawal; see the ARABIC section.
 )
 
 #: name -> spec, for O(1) lookup and for rejecting duplicate names loudly.

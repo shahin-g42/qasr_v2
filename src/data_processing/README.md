@@ -85,30 +85,31 @@ $LEDGER_DIR/<lang>.sqlite3                          # per-language ledger — NO
 
 ## Registry — what each node pulls
 
-`data_processing.datasets.registry` holds **31 sources**: 5 internal v7.6
+`data_processing.datasets.registry` holds **29 sources**: 5 internal v7.6
 trees + the 5-language q3asr SFT tree (raw, verbatim — same audio as the v7.6
 q3asr shards by design; the ledger's path claims keep one transcript per clip)
-plus 21 external. **29 are `verified=True`** against the live Hub API; the two
-Common Voice 17 entries (`cv17_ar`, `cv17_ml`) are `verified=False` because their
-config names are unconfirmed. **7 are gated** (need `HF_TOKEN` + accepted Hub
-terms). What "internal" means is defined by
+plus 19 external, all `verified=True` against the live Hub API. **7 are gated**
+(need `HF_TOKEN` + accepted Hub terms). The two Common Voice 17 entries
+(`cv17_ar`, `cv17_ml`) were dropped 2025-10: Mozilla withdrew CV from the Hub
+(now the Mozilla Data Collective), so the repos resolve to zero data files and
+streaming raises `EmptyDatasetError`. What "internal" means is defined by
 `configs/v7.6/internal_ds_sources.yaml` (`train_manifest`); a test pins the
 registry to that file. Both internal trees' eval sets feed the leak gates:
 `--root` (v7.6) plus `--eval-root` (SFT) in stages 2 and 4.
 
 | lang | internal v7.6 (train/eval shards) | q3asr SFT (raw) | external sources |
 |------|-----------------------------------|-----------------|------------------|
-| `ar` | ✓ (29 / 2) | ✓ | `masc_ar`, `fleurs_ar_eg`, `cv17_ar`?, `arabic_speech_corpus` |
+| `ar` | ✓ (29 / 2) | ✓ | `masc_ar`, `fleurs_ar_eg`, `arabic_speech_corpus` |
 | `zh` | ✓ (1 / 1) + `emilia_zh_local` (44 kHz) | ✓ | `aishell1`, `aishell3`, `wenetspeech`\*, `fleurs_cmn_hans` |
 | `en` | ✓ (6 / 2) | ✓ | `peoples_speech`, `gigaspeech`\*, `librispeech`, `voxpopuli_en` |
 | `hi` | ✓ (1 / 0) | ✓ (its eval sets) | `shrutilipi_hi`\*, `indicvoices_hi`\*, `kathbath_hi`\*, `fleurs_hi_in` |
-| `ml` | ✓ (2 / 1) | ✓ | `shrutilipi_ml`\*, `indicvoices_ml`\*, `fleurs_ml_in`, `cv17_ml`? |
+| `ml` | ✓ (2 / 1) | ✓ | `shrutilipi_ml`\*, `indicvoices_ml`\*, `fleurs_ml_in` |
 
-`\*` = gated · `?` = `verified=False`. Ungated supply is the binding constraint:
-**`hi` has only `fleurs_hi_in` (~12 h) without a token**, so it cannot fill a
-100k batch unless the gated ai4bharat sources are accepted; `ml` is likewise thin
-(v7.6 tree + ~9 h `fleurs_ml_in` + unverified `cv17_ml`). Add `--no-gated` for a
-first tokenless smoke run, but then expect only `ar`/`zh`/`en` to fill a batch.
+`\*` = gated. Ungated supply is the binding constraint: **`hi` has only
+`fleurs_hi_in` (~12 h) without a token**, so it cannot fill a 100k batch unless
+the gated ai4bharat sources are accepted; `ml` is likewise thin (v7.6 tree +
+~9 h `fleurs_ml_in`). Add `--no-gated` for a first tokenless smoke run, but
+then expect only `ar`/`zh`/`en` to fill a batch.
 
 ---
 
@@ -175,11 +176,10 @@ python3 -m data_processing.datasets.preflight --probe-fields --json > "$LOGS/pre
 ```
 
 Fails loudly (exit 1) if a repo does not resolve, a `FieldMap` column is wrong, or
-a local source has no duration coverage. **Do not skip this** — of the 24 registry
-sources, 22 are already `verified=True` against the Hub API, but the 2 Common
-Voice 17 entries (`cv17_ar`, `cv17_ml`) are `verified=False`: their config names
-are unconfirmed, so preflight is what tells you they actually resolve before a
-multi-hour, 9-node run depends on them.
+a local source has no duration coverage. **Do not skip this** — sources rot: the
+Hub withdrew Common Voice outright (2025-10), and preflight is the only cheap
+proof the registry still matches reality before a multi-hour, 9-node run depends
+on it.
 
 ---
 

@@ -18,7 +18,7 @@ from unittest import mock
 import yaml
 
 from data_processing.canonical import Meta, Sample
-from data_processing.datasets import registry
+from data_processing.datasets import preflight, registry
 from data_processing.datasets.base import (
     DEFAULT_MAX_SAMPLES,
     DatasetSpec,
@@ -238,10 +238,12 @@ class TestRegistry(unittest.TestCase):
             self.assertIsInstance(row["unverified"], list)
 
     def test_unverified_specs_are_flagged_not_hidden(self):
-        unverified = [s.name for s in registry.all_specs() if not s.verified]
-        self.assertTrue(unverified)  # some genuinely are unconfirmed
-        for name in unverified:
-            self.assertTrue(registry.by_name(name).notes, f"{name} lacks an explanatory note")
+        # cv17_ar / cv17_ml were the last unverified entries; Mozilla withdrew
+        # Common Voice from the Hub, so they were removed rather than left to
+        # fail at stream time. Any future unverified spec must explain itself.
+        for spec in registry.all_specs():
+            if not spec.verified:
+                self.assertTrue(spec.notes, f"{spec.name} lacks an explanatory note")
 
     def test_require_datasets_returns_the_module_when_present(self):
         """Positive path, exercised without the heavy real dependency.
@@ -677,6 +679,54 @@ class TestPreflightCheckResult(unittest.TestCase):
         d = res.as_dict()
         self.assertEqual(d["files"], 0)  # 0 is information, not emptiness
         self.assertNotIn("status", d)   # None dropped
+
+
+class TestPreflightSurvivesDeadSpecs(unittest.TestCase):
+    """Regression for the cv17_ar crash that killed a whole preflight run.
+
+    Mozilla withdrew Common Voice 17 from the Hub; streaming the now-empty
+    repo raised ``EmptyDatasetError(FileNotFoundError)`` -- an OSError, so
+    outside the probe's old (RuntimeError, ValueError) tuple -- and it
+    aborted ``run()`` before ANY report was printed. The Bad-file-descriptor
+    noise and PyGILState core dump that followed were collateral of that hard
+    abort (stream-prefetch threads outliving the interpreter), not a second
+    bug. A dead source must fail its own row, never the report.
+    """
+
+    def test_probe_records_an_oserror_from_the_stream(self):
+        spec = registry.by_name("masc_ar")
+        dead = FileNotFoundError(
+            "The directory at hf://datasets/mozilla-foundation/common_voice_17_0 "
+            "doesn't contain any data files"
+        )
+        with mock.patch("data_processing.datasets.stream.stream_metadata", side_effect=dead):
+            res = preflight.probe_fields(spec, token=None)
+        self.assertFalse(res.ok)
+        self.assertIn("could not stream a row", res.problems[0])
+        self.assertIn("FileNotFoundError", res.problems[0])
+        self.assertIn("doesn't contain any data files", res.problems[0])
+
+    def test_run_reports_a_crashing_check_instead_of_dying(self):
+        spec = registry.by_name("masc_ar")
+        with mock.patch.object(preflight, "check_hub", side_effect=OSError("weird mount")):
+            out = preflight.run(specs=(spec,))
+        self.assertEqual(len(out), 1)
+        self.assertFalse(out[0].ok)
+        self.assertIn("check crashed", out[0].problems[0])
+        self.assertIn("OSError", out[0].problems[0])
+
+    def test_run_marks_a_crashing_probe_failed_and_keeps_the_row(self):
+        spec = registry.by_name("masc_ar")
+        ok = CheckResult(spec_name=spec.name, lang="ar", kind="hf_stream", status=200)
+        with (
+            mock.patch.object(preflight, "check_hub", return_value=ok),
+            mock.patch.object(preflight, "probe_fields", side_effect=RuntimeError("boom")),
+        ):
+            out = preflight.run(specs=(spec,), probe=True)
+        self.assertEqual(len(out), 1)
+        self.assertFalse(out[0].ok)           # the crash is reported...
+        self.assertEqual(out[0].status, 200)  # ...on the check result, which survives
+        self.assertIn("probe crashed", out[0].problems[0])
 
 
 class TestStatsReport(unittest.TestCase):

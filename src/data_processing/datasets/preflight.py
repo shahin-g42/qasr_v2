@@ -28,7 +28,7 @@ import os
 import sys
 import urllib.error
 import urllib.request
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, fields
 from pathlib import Path
 
 from .base import DatasetSpec, Kind
@@ -72,7 +72,12 @@ class CheckResult:
         self.problems.append(msg)
 
     def as_dict(self) -> dict:
-        return {k: v for k, v in self.__dict__.items() if v not in (None, (), [], "")}
+        # slots=True leaves instances without a __dict__; walk the declared
+        # fields instead (the JSON report path is the only consumer).
+        return {
+            f.name: v for f in fields(self)
+            if (v := getattr(self, f.name)) not in (None, (), [], "")
+        }
 
 
 def _get(url: str, token: str | None, timeout: int = TIMEOUT) -> tuple[int, dict | None]:

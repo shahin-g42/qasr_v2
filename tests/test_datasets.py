@@ -36,6 +36,7 @@ from data_processing.datasets.local import (
     iter_local,
     iter_local_audio,
 )
+from data_processing.datasets.preflight import CheckResult
 from data_processing.datasets.stream import (
     ingest,
     interleave,
@@ -657,6 +658,25 @@ class TestIngest(_TmpTree):
         self.assertEqual(seen["src_a"].spec_name, "src_a")
         self.assertEqual(seen["src_b"].spec_name, "src_b")
         self.assertEqual(seen["src_a"].read, 3)
+
+
+class TestPreflightCheckResult(unittest.TestCase):
+    """Regression for the slots-dataclass crash: ``--json`` printed via
+    ``as_dict``, which used to read ``self.__dict__`` -- and ``CheckResult``
+    is ``@dataclass(slots=True)``, so it has none (broke the whole report)."""
+
+    def test_as_dict_is_json_safe_and_drops_empty_values(self):
+        res = CheckResult(spec_name="emilia_zh_local", lang="zh", kind="local_audio")
+        res.fail("no files matched")
+        d = json.dumps(res.as_dict())  # must not raise
+        self.assertIn("problems", d)
+        self.assertEqual(res.as_dict()["ok"], False)  # False survives, unlike None
+
+    def test_as_dict_keeps_meaningful_zero_and_false(self):
+        res = CheckResult(spec_name="s", lang="ar", kind="local_jsonl", files=0)
+        d = res.as_dict()
+        self.assertEqual(d["files"], 0)  # 0 is information, not emptiness
+        self.assertNotIn("status", d)   # None dropped
 
 
 class TestStatsReport(unittest.TestCase):

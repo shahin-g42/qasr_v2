@@ -11,7 +11,9 @@
 # repo root, so drivers stay three lines of substance each.
 
 # --- repo + python -----------------------------------------------------------
-export QASR="${QASR:-/lustrefs/shared/shahin.konadath/workspace/train/qasr}"
+# The repo checkout that ALSO hosts the internal trees (training_manifests/v7.6,
+# q3asr_sft_manifests) -- the training checkout, not a separate one.
+export QASR="${QASR:-/lustrefs/shared/shahin.konadath/workspace/train/stt/qasr}"
 cd "$QASR"
 export PYTHONPATH="$QASR/src${PYTHONPATH:+:$PYTHONPATH}"
 
@@ -34,6 +36,9 @@ export INTERNAL_ROOT="${INTERNAL_ROOT:-/lustrefs/shared/shahin.konadath/workspac
 # stages 2 + 4 pass it as --eval-root so its eval_<lang>_q3asr.jsonl files
 # join the leak-exclusion set.
 export QASR_SFT_ROOT="${QASR_SFT_ROOT:-/lustrefs/shared/shahin.konadath/workspace/train/stt/qasr/q3asr_sft_manifests}"
+# The extracted Emilia-ZH tree (LOCAL_AUDIO: used in place, never downloaded).
+# The zh spec reads ${QASR_EMILIA_ROOT}/ZH; override if the extract lives elsewhere.
+export QASR_EMILIA_ROOT="${QASR_EMILIA_ROOT:-/vast/audio/data/tts/44k/Emilia-Dataset-extracted}"
 export POOL_DIR="${POOL_DIR:-$QASR/corpus/pool}"
 export AUDIO_ROOT="${AUDIO_ROOT:-$QASR/corpus/audio}"
 export OUT_DIR="${OUT_DIR:-$QASR/training_manifests/v8.0}"

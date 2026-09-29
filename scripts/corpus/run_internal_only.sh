@@ -27,7 +27,8 @@
 # Knobs (environment): LANGS, JOBS, BATCH_SIZE, MAX_PER_SOURCE_FRACTION,
 # LIMIT (prepare-only row cap, e.g. LIMIT=500 for a smoke run), BUNDLE=1
 # (also run the stage-4 audit -- expect exit 1 while any language lacks a
-# FULL batch; the report JSON is the point), and POOL_DIR_INT / OUT_DIR_INT /
+# FULL batch; the report JSON is the point), COVERAGE_CHECK=0 (skip the
+# tree-vs-config coverage gate below), and POOL_DIR_INT / OUT_DIR_INT /
 # LEDGER_DIR_INT to relocate the build.
 #
 # Multi-machine, two shapes (stage 2 is the ceiling either way: one ledger,
@@ -95,6 +96,20 @@ for L in $LANGS; do
     [ -d "$INTERNAL_ROOT/$L" ] || echo "WARNING: no v7.6 dir $INTERNAL_ROOT/$L" >&2
     [ -d "$QASR_SFT_ROOT/$L" ] || echo "WARNING: no SFT dir $QASR_SFT_ROOT/$L" >&2
 done
+
+# Coverage gate: the trees on disk must match configs/v7.6/internal_ds_sources.yaml
+# file-for-file -- every listed train file ingestible, no unlisted train file
+# that would sneak in, every listed eval file excluded AND gate-visible. Runs in
+# both phases. COVERAGE_CHECK=0 bypasses it for a deliberate partial tree.
+COVERAGE_CHECK="${COVERAGE_CHECK:-1}"
+if [ "$COVERAGE_CHECK" = "1" ]; then
+    if ! python3 "${SCRIPTS_DIR}/check_internal_sources.py" \
+        --internal-root "$INTERNAL_ROOT" --sft-root "$QASR_SFT_ROOT"; then
+        echo "ERROR: internal trees do not match configs/v7.6/internal_ds_sources.yaml (report above)." >&2
+        echo "       Fix the tree or the config, or re-run with COVERAGE_CHECK=0 to bypass." >&2
+        exit 1
+    fi
+fi
 
 # Gate on the co-located corrector before hours of work (mirrors stage 2).
 # Skipped for phase A (PREPARE_ONLY=1): stage 1 needs no GPU, and the ranks

@@ -313,6 +313,19 @@ paths — it may come out empty *by design*); ar/en/hi/ml land partial batches.
 not fatal) while any language lacks a full 100k batch; the internal-only
 deliverable is the corrected manifests plus reports, not campaign bundles.
 
+**Coverage is pinned to the training config.** Before any work the script
+runs `scripts/corpus/check_internal_sources.py`, which verifies both trees on
+disk against `configs/v7.6/internal_ds_sources.yaml`: every `train_manifest`
+file must be ingestible by its language's `internal_v76_*` / `internal_sft_*`
+spec, no on-disk train file may be missing from the config, and every
+`eval_manifest` file must be excluded from the pools *and* visible to the
+`eval_*.jsonl*` leak gate. Exit 0 = match; 1 = findings (per-file, on stderr);
+2 = a tree is not mounted. A non-zero exit stops the run before stage 1 —
+fix the tree or the config, or set `COVERAGE_CHECK=0` for a deliberate run
+against a partial tree. The checker is safe to run standalone, with or
+without `env.sh` (roots resolve from the flags, then `$INTERNAL_ROOT` /
+`$QASR_SFT_ROOT`, then the config's own paths).
+
 ## Ship checklist
 
 Per bundle — all automated by stage 4's audit, so **the job's exit code is

@@ -6,6 +6,7 @@ because a test that needs a token and a download is a test that does not run.
 
 from __future__ import annotations
 
+import fnmatch
 import gzip
 import json
 import sys
@@ -280,7 +281,14 @@ class TestInternalSourcesMatchTrainingConfig(unittest.TestCase):
     language's spec -- routed to the right tree, matched by the glob, and not
     caught by the exclusion tokens. A dataset added to the training config
     but not the registry (or vice versa) fails here, not three hours into
-    Stage 1."""
+    Stage 1.
+
+    The ``eval_manifest`` side is pinned the same way, from the opposite
+    direction: every listed eval file must be *separable* -- caught by the
+    spec's exclusion tokens (so no pool can ingest it) and matched by the
+    ``eval_*.jsonl*`` glob that ``load_eval_exclusions`` and the stage-4 audit
+    scan (so the leak gate can see it).
+    """
 
     def setUp(self) -> None:
         self.cfg = yaml.safe_load(
@@ -305,6 +313,29 @@ class TestInternalSourcesMatchTrainingConfig(unittest.TestCase):
                     self.assertIn("v7.6", path.parts, f)
                     spec = registry.by_name(f"internal_v76_{lang}")
                 self.assertFalse(is_excluded(path, spec.exclude), f)
+        self.assertEqual(sft_langs, set(registry.LANGUAGES))
+
+    def test_every_training_config_eval_is_separated_from_its_spec(self):
+        """An eval file that skips the exclusion tokens could be ingested into
+        a pool, and one that skips the ``eval_*.jsonl*`` glob is invisible to
+        the leak gate -- either way the held-out set stops being held out."""
+        listed = self.cfg["eval_manifest"]
+        self.assertEqual(set(listed), set(registry.LANGUAGES), list(listed))
+        sft_langs = set()
+        for lang, files in listed.items():
+            self.assertTrue(files, f"{lang}: empty eval_manifest")
+            for f in files:
+                path = Path(f)
+                self.assertEqual(path.parent.name, lang, f)
+                self.assertTrue(fnmatch.fnmatch(path.name, "eval_*.jsonl*"), f)
+                if "q3asr_sft_manifests" in path.parts:
+                    spec = registry.by_name(f"internal_sft_{lang}")
+                    sft_langs.add(lang)
+                else:
+                    self.assertIn("training_manifests", path.parts, f)
+                    self.assertIn("v7.6", path.parts, f)
+                    spec = registry.by_name(f"internal_v76_{lang}")
+                self.assertTrue(is_excluded(path, spec.exclude), f)
         self.assertEqual(sft_langs, set(registry.LANGUAGES))
 
     def test_v76_and_sft_specs_stay_in_the_registry_plan(self):

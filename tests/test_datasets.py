@@ -22,6 +22,7 @@ from data_processing.canonical import Meta, Sample
 from data_processing.datasets import preflight, registry
 from data_processing.datasets.base import (
     DEFAULT_MAX_SAMPLES,
+    UNLIMITED_SAMPLES,
     DatasetSpec,
     FieldMap,
     IngestStats,
@@ -181,7 +182,7 @@ class TestRegistry(unittest.TestCase):
         self.assertEqual([s.name for s in registry.iter_specs(("ar",))], [s.name for s in specs])
 
     def test_internal_specs_cover_all_five_languages_in_both_trees(self):
-        """configs/v7.6/internal_ds_sources.yaml names internal sources for
+        """configs/corpus/internal_ingest.yaml names internal sources for
         every language: the v7.6 cleaned manifests AND the raw q3asr SFT
         envelopes. The registry mirrors that (the file-level pin is
         TestInternalSourcesMatchTrainingConfig below)."""
@@ -198,7 +199,7 @@ class TestRegistry(unittest.TestCase):
         for lang in registry.LANGUAGES:
             spec = registry.by_name(f"internal_sft_{lang}")
             self.assertEqual(spec.local_root, registry.SFT_ROOT)
-            self.assertEqual(spec.paths, (f"{lang}/*.jsonl*",))
+            self.assertEqual(spec.paths, (f"{lang}/train_{lang}_q3asr.jsonl",))
         for lang in registry.LANGUAGES:
             self.assertIsNone(registry.by_name(f"internal_v76_{lang}").local_root)
 
@@ -224,6 +225,19 @@ class TestRegistry(unittest.TestCase):
             if spec.kind is Kind.LOCAL_JSONL:
                 self.assertIn("_still_rejected_", spec.exclude)
                 self.assertIn("eval_", spec.exclude)
+
+    def test_internal_specs_are_uncapped_and_hub_specs_keep_the_guardrail(self):
+        """Regression for the silent stage-1 truncation: the 10M Hub guardrail
+        also sat on the internal specs and capped ar/en ingest at exactly
+        10,000,000 rows while the user directive was 'strictly all samples of
+        the named files'. Internal specs must read every row; external Hub
+        sources must keep the guardrail."""
+        for spec in registry.all_specs():
+            if spec.name.startswith("internal_"):
+                self.assertEqual(spec.max_samples, UNLIMITED_SAMPLES, spec.name)
+                self.assertGreater(spec.max_samples, DEFAULT_MAX_SAMPLES, spec.name)
+            elif spec.kind in (Kind.HF_STREAM, Kind.HF_GATED):
+                self.assertEqual(spec.max_samples, DEFAULT_MAX_SAMPLES, spec.name)
 
     def test_fleurs_mandarin_config_is_cmn_hans_cn(self):
         """Not ``zh_cn``. Checked against the Hub API; a wrong config 404s late."""
@@ -273,7 +287,7 @@ class TestRegistry(unittest.TestCase):
 
 class TestInternalSourcesMatchTrainingConfig(unittest.TestCase):
     """The registry's internal specs must cover exactly the datasets the
-    v7.6 training config names in ``configs/v7.6/internal_ds_sources.yaml``.
+    corpus ingest contract names in ``configs/corpus/internal_ingest.yaml``.
 
     That file is the source of truth for what "internal" means: its
     ``train_manifest`` lists the v7.6 cleaned corpora and the raw q3asr SFT
@@ -293,7 +307,7 @@ class TestInternalSourcesMatchTrainingConfig(unittest.TestCase):
     def setUp(self) -> None:
         self.cfg = yaml.safe_load(
             (Path(__file__).resolve().parent.parent
-             / "configs" / "v7.6" / "internal_ds_sources.yaml").read_text(encoding="utf-8"))
+             / "configs" / "corpus" / "internal_ingest.yaml").read_text(encoding="utf-8"))
 
     def test_every_training_config_source_is_ingestible_by_its_spec(self):
         listed = self.cfg["train_manifest"]

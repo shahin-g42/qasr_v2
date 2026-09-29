@@ -55,7 +55,7 @@ sbatch --nodelist=gpu5,gpu6,gpu7,gpu8 scripts/corpus/stage2b_prewarm.slurm
    `configs/corpus.yaml` — edit both together (the test suite pins the YAML
    side). There are TWO internal trees, both in the training checkout
    (`train/stt/qasr`) and both named file-for-file in
-   `configs/v7.6/internal_ds_sources.yaml`: the v7.6 cleaned manifests
+   `configs/corpus/internal_ingest.yaml`: the v7.6 cleaned manifests
    (`$INTERNAL_ROOT`) and the raw q3asr SFT envelopes (`$QASR_SFT_ROOT`, the
    registry's `internal_sft_*` specs). Stage 2 excludes — and stage 4 audits
    against — the eval sets of BOTH trees (`--eval-root`).
@@ -347,7 +347,7 @@ deliverable is the corrected manifests plus reports, not campaign bundles.
 
 **Coverage is pinned to the training config.** Before any work the script
 runs `scripts/corpus/check_internal_sources.py`, which verifies both trees on
-disk against `configs/v7.6/internal_ds_sources.yaml`: every `train_manifest`
+disk against `configs/corpus/internal_ingest.yaml`: every `train_manifest`
 file must be ingestible by its language's `internal_v76_*` / `internal_sft_*`
 spec, no on-disk train file may be missing from the config, and every
 `eval_manifest` file must be excluded from the pools *and* visible to the

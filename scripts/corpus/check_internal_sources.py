@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
-"""Verify BOTH internal trees on disk against configs/v7.6/internal_ds_sources.yaml.
+"""Verify BOTH internal trees on disk against configs/corpus/internal_ingest.yaml.
 
-The training config is the contract: its ``train_manifest`` names every file
+The ingest contract is the contract: its ``train_manifest`` names every file
 the corpus build may ingest, and its ``eval_manifest`` names every file that
 must stay out of the pools and visible to the leak gate. The registry mirrors
 that list in code (``internal_v76_<lang>`` / ``internal_sft_<lang>``) and a
@@ -50,7 +50,7 @@ sys.path.insert(0, str(_REPO_ROOT / "src"))
 from data_processing.datasets import registry  # noqa: E402
 from data_processing.datasets.local import expand_paths, is_excluded  # noqa: E402
 
-DEFAULT_CONFIG = _REPO_ROOT / "configs" / "v7.6" / "internal_ds_sources.yaml"
+DEFAULT_CONFIG = _REPO_ROOT / "configs" / "corpus" / "internal_ingest.yaml"
 
 #: What the leak gate globs: ``distribute.load_eval_exclusions`` and
 #: ``bundle._eval_paths`` both scan ``<root>/<lang>/eval_*.jsonl*``. An eval
@@ -353,7 +353,7 @@ def main(argv: list[str] | None = None) -> int:
     logging.basicConfig(level=logging.WARNING, format="%(levelname)s %(name)s: %(message)s")
     parser = argparse.ArgumentParser(
         description="Verify the internal trees on disk against "
-        "configs/v7.6/internal_ds_sources.yaml (train ingestible, eval separated)."
+        "configs/corpus/internal_ingest.yaml (train ingestible, eval separated)."
     )
     parser.add_argument(
         "--config",

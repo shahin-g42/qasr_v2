@@ -3,7 +3,7 @@
 The checker is the only component that can see the REAL trees, so its logic is
 exercised against a synthetic clone of both trees, built from the basenames the
 config lists. That keeps the test honest: if any name in
-``configs/v7.6/internal_ds_sources.yaml`` stopped surviving a round trip
+``configs/corpus/internal_ingest.yaml`` stopped surviving a round trip
 through the registry specs, a clone planting exactly those names would report
 a finding and the clean-clone test below would fail.
 """
@@ -24,7 +24,7 @@ import yaml
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
 SCRIPT_PATH = REPO_ROOT / "scripts" / "corpus" / "check_internal_sources.py"
-CONFIG_PATH = REPO_ROOT / "configs" / "v7.6" / "internal_ds_sources.yaml"
+CONFIG_PATH = REPO_ROOT / "configs" / "corpus" / "internal_ingest.yaml"
 
 spec = importlib.util.spec_from_file_location("check_internal_sources", SCRIPT_PATH)
 check = importlib.util.module_from_spec(spec)
@@ -141,14 +141,16 @@ class FindingsTest(_Clone):
         )
         self.assertTrue(any("not on disk" in p for p in report["problems"]), report["problems"])
 
-    def test_unlisted_on_disk_train_file_is_flagged_extra(self):
+    def test_stray_on_disk_train_file_is_ignored_by_explicit_paths(self):
+        """The specs pin exact file names, so a file the config never named is
+        structurally un-ingestible -- unlike the glob era, a stray cannot leak
+        in, and the checker must not flag it."""
         self.plant_config()
         self.plant(self.roots["sft"] / "en" / "train_en_q3asr_r0_100.jsonl")
         report = self.run_audit()
-        self.assertFalse(report["ok"])
+        self.assertTrue(report["ok"])
         src = self.source(report, "en", "sft")
-        self.assertIn("train_en_q3asr_r0_100.jsonl", src["extra"])
-        self.assertTrue(any("not named in the config" in p for p in src["problems"]))
+        self.assertEqual(src["extra"], [])
 
     def test_excluded_name_reports_the_spec_tokens(self):
         """A train entry a spec's exclude tokens catch can never be ingested."""
@@ -185,7 +187,8 @@ class FindingsTest(_Clone):
         src = self.source(report, "ar", "v76")
         self.assertIn("holdout_ar_ar_ae.jsonl", src["eval_ingested"])
         self.assertIn("holdout_ar_ar_ae.jsonl", src["eval_gate_invisible"])
-        self.assertIn("holdout_ar_ar_ae.jsonl", src["extra"])
+        # Not flagged as a train 'extra': the explicit spec paths cannot
+        # ingest a stray, so the two eval findings above are the whole story.
 
     def test_unroutable_config_entry_is_flagged(self):
         def mutate(cfg: dict) -> None:

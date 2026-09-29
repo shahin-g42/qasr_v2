@@ -101,7 +101,7 @@ plus 19 external, all `verified=True` against the live Hub API. **7 are gated**
 (`cv17_ar`, `cv17_ml`) were dropped 2025-10: Mozilla withdrew CV from the Hub
 (now the Mozilla Data Collective), so the repos resolve to zero data files and
 streaming raises `EmptyDatasetError`. What "internal" means is defined by
-`configs/v7.6/internal_ds_sources.yaml` (`train_manifest`); a test pins the
+`configs/corpus/internal_ingest.yaml` (`train_manifest`); a test pins the
 registry to that file. Both internal trees' eval sets feed the leak gates:
 `--root` (v7.6) plus `--eval-root` (SFT) in stages 2 and 4.
 

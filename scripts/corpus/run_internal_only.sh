@@ -133,7 +133,7 @@ for L in $LANGS; do
     [ -d "$QASR_SFT_ROOT/$L" ] || echo "WARNING: no SFT dir $QASR_SFT_ROOT/$L" >&2
 done
 
-# Coverage gate: the trees on disk must match configs/v7.6/internal_ds_sources.yaml
+# Coverage gate: the trees on disk must match configs/corpus/internal_ingest.yaml
 # file-for-file -- every listed train file ingestible, no unlisted train file
 # that would sneak in, every listed eval file excluded AND gate-visible. Runs in
 # every mode. COVERAGE_CHECK=0 bypasses it for a deliberate partial tree.
@@ -141,7 +141,7 @@ COVERAGE_CHECK="${COVERAGE_CHECK:-1}"
 if [ "$COVERAGE_CHECK" = "1" ]; then
     if ! python3 "${SCRIPTS_DIR}/check_internal_sources.py" \
         --internal-root "$INTERNAL_ROOT" --sft-root "$QASR_SFT_ROOT"; then
-        echo "ERROR: internal trees do not match configs/v7.6/internal_ds_sources.yaml (report above)." >&2
+        echo "ERROR: internal trees do not match configs/corpus/internal_ingest.yaml (report above)." >&2
         echo "       Fix the tree or the config, or re-run with COVERAGE_CHECK=0 to bypass." >&2
         exit 1
     fi

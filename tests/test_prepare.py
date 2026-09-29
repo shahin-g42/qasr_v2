@@ -478,10 +478,10 @@ class TestRunPrepareJobsRealSpawn(_Tmp):
 
     def test_children_prepare_disjoint_sources_into_the_shared_pool(self):
         root = self.dir / "v7.6"
-        _write_jsonl(root, "ar/train_a.jsonl",
+        _write_jsonl(root, "ar/train_ar_inworld_full.jsonl",
                      [{"audio_filepath": f"/data/ar/a{i}.wav", "text": f"{_AR_RICH} {i}",
                        "duration": "4.0"} for i in range(3)])
-        _write_jsonl(root, "ml/train_b.jsonl",
+        _write_jsonl(root, "ml/train_ml_itn_punct.jsonl",
                      [{"audio_filepath": f"/data/ml/b{i}.wav",
                        "text": f"ഇതൊരു മലയാളം സാമ്പിൾ വാക്യം ആണ് ഇത് {i}",
                        "duration": "4.0"} for i in range(3)])

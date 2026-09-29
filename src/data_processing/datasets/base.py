@@ -43,7 +43,16 @@ from typing import Any
 LOGGER = logging.getLogger("data_processing.datasets.base")
 
 #: Per-dataset ceiling from the corpus spec: at most 10M samples per source.
+#: A guardrail for Hub sources only -- it caps streaming so a runaway source
+#: cannot dominate a build or a disk. Internal manifests must NOT carry it:
+#: their full rows are contractually ingested (see UNLIMITED_SAMPLES).
 DEFAULT_MAX_SAMPLES = 10_000_000
+
+#: Sentinel for "read every row". Internal specs (local manifests named by
+#: configs/corpus/internal_ingest.yaml) use this: the user directive is that
+#: every sample of every listed file enters the pool, and a 10M cap silently
+#: truncated ar/en stage 1 before it was removed.
+UNLIMITED_SAMPLES = 1 << 62
 
 #: Samples per emitted shard. 100k matches one batch-language quota exactly, so
 #: a shard is the natural unit of work for Phase B and for resumption.

@@ -622,7 +622,7 @@ class TestBuilderRun(_Fixture):
 
 class TestMainCLI(_Fixture):
     def test_end_to_end_run_writes_shards_and_a_report(self):
-        self.write("ar/train_a.jsonl", _rows(8))
+        self.write("ar/train_ar_inworld_full.jsonl", _rows(8))
         self.write("ar/eval_ar.jsonl",
                    [{"audio_filepath": "/data/a0.wav", "text": _AR, "duration": "4.0"}])
         report_path = self.root.parent / "report.json"
@@ -641,7 +641,7 @@ class TestMainCLI(_Fixture):
         cfg_path = self.root.parent / "c.yaml"
         cfg_path.write_text("build:\n  out_dir: /from/yaml\n  batches_per_lang: 9\n"
                             "  langs: [zh]\n", encoding="utf-8")
-        self.write("ar/train_a.jsonl", _rows(2))
+        self.write("ar/train_ar_inworld_full.jsonl", _rows(2))
         report_path = self.root.parent / "r.json"
         main(["--config", str(cfg_path), "--langs", "ar", "--out-dir", str(self.out),
               "--ledger", str(self.root.parent / "l.sqlite3"), "--batches", "0",
@@ -660,7 +660,7 @@ class TestMainCLI(_Fixture):
         self.assertEqual(report["languages"]["ar"]["error"], "no sources selected")
 
     def test_gzip_flag_produces_a_readable_gzipped_shard(self):
-        self.write("ar/train_a.jsonl", _rows(4))
+        self.write("ar/train_ar_inworld_full.jsonl", _rows(4))
         main(["--langs", "ar", "--root", str(self.root), "--out-dir", str(self.out),
               "--ledger", str(self.root.parent / "l.sqlite3"), "--batches", "0", "--gzip",
               "--only", "internal_v76_ar", "--report", str(self.root.parent / "r.json")])

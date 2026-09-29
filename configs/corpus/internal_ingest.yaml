@@ -1,0 +1,85 @@
+# =============================================================================
+# QASR corpus build — INTERNAL INGEST CONTRACT (v8.0 internal-only build)
+# =============================================================================
+# The authoritative file list for the corpus pipeline's internal sources.
+# ``train_manifest`` names EVERY file stage 1 may ingest; ``eval_manifest``
+# names every file that must stay out of the pools and visible to the leak
+# gates. The registry (internal_v76_<lang> / internal_sft_<lang>) mirrors this
+# list file-for-file, a unit test pins the two together, and
+# scripts/corpus/check_internal_sources.py verifies the on-disk trees against
+# it before every run.
+#
+# DIVERGENCE FROM configs/v7.6/internal_ds_sources.yaml (deliberate, user
+# directive 2026-09-29: "strictly use all the samples from the following
+# files"): the v7.6 TRAINING config additionally names 19 ar cleaned-q3asr
+# entries (train_ar_q3asr.jsonl + the 17 range-sliced shards, ~62M rows) that
+# were stacked into the v7.6 phase-2 fine-tune. They are NOT part of the
+# corpus build's ingest: the named corpora below plus the raw SFT envelopes
+# are the contract. This file only carries the manifests; training hyper-
+# parameters live in the v7.6 config.
+#
+# Every listed file is ingested IN FULL. Internal specs carry no
+# max_samples ceiling (UNLIMITED_SAMPLES); the 10M Hub guardrail applies only
+# to external sources.
+train_manifest:
+  ar:
+    # -- v7.6 cleaned: named corpora --
+    - /lustrefs/shared/shahin.konadath/workspace/train/stt/qasr/training_manifests/v7.6/ar/train_ar_inworld_full.jsonl
+    - /lustrefs/shared/shahin.konadath/workspace/train/stt/qasr/training_manifests/v7.6/ar/train_ar_dialect_gulf.jsonl
+    - /lustrefs/shared/shahin.konadath/workspace/train/stt/qasr/training_manifests/v7.6/ar/train_ar_ar_ae_train.jsonl
+    - /lustrefs/shared/shahin.konadath/workspace/train/stt/qasr/training_manifests/v7.6/ar/train_ar_ar_ae.jsonl
+    - /lustrefs/shared/shahin.konadath/workspace/train/stt/qasr/training_manifests/v7.6/ar/train_ar_el_gen_v5.jsonl
+    - /lustrefs/shared/shahin.konadath/workspace/train/stt/qasr/training_manifests/v7.6/ar/train_ar_spotify_v1.jsonl
+    - /lustrefs/shared/shahin.konadath/workspace/train/stt/qasr/training_manifests/v7.6/ar/train_ar_se_v1.jsonl
+    - /lustrefs/shared/shahin.konadath/workspace/train/stt/qasr/training_manifests/v7.6/ar/train_ar_qudratech_batch2.jsonl
+    - /lustrefs/shared/shahin.konadath/workspace/train/stt/qasr/training_manifests/v7.6/ar/train_ar_qudratech_phase4.jsonl
+    - /lustrefs/shared/shahin.konadath/workspace/train/stt/qasr/training_manifests/v7.6/ar/train_ar_camel_race.jsonl
+    - /lustrefs/shared/shahin.konadath/workspace/train/stt/qasr/training_manifests/v7.6/ar/train_ar_khalid_msa.jsonl
+    # -- q3asr SFT (raw, verbatim targets, duration-complete) --
+    - /lustrefs/shared/shahin.konadath/workspace/train/stt/qasr/q3asr_sft_manifests/ar/train_ar_q3asr.jsonl
+  en:
+    - /lustrefs/shared/shahin.konadath/workspace/train/stt/qasr/training_manifests/v7.6/en/train_en_inworld.jsonl
+    - /lustrefs/shared/shahin.konadath/workspace/train/stt/qasr/training_manifests/v7.6/en/train_en_q3asr.jsonl
+    - /lustrefs/shared/shahin.konadath/workspace/train/stt/qasr/training_manifests/v7.6/en/train_en_hifi_tts.jsonl
+    - /lustrefs/shared/shahin.konadath/workspace/train/stt/qasr/training_manifests/v7.6/en/train_en_expresso.jsonl
+    - /lustrefs/shared/shahin.konadath/workspace/train/stt/qasr/training_manifests/v7.6/en/train_en_anispeech.jsonl
+    - /lustrefs/shared/shahin.konadath/workspace/train/stt/qasr/training_manifests/v7.6/en/train_en_commentary.jsonl
+    - /lustrefs/shared/shahin.konadath/workspace/train/stt/qasr/q3asr_sft_manifests/en/train_en_q3asr.jsonl
+  hi:
+    - /lustrefs/shared/shahin.konadath/workspace/train/stt/qasr/training_manifests/v7.6/hi/train_hi_q3asr.jsonl
+    - /lustrefs/shared/shahin.konadath/workspace/train/stt/qasr/q3asr_sft_manifests/hi/train_hi_q3asr.jsonl
+  ml:
+    - /lustrefs/shared/shahin.konadath/workspace/train/stt/qasr/training_manifests/v7.6/ml/train_ml_itn_punct.jsonl
+    - /lustrefs/shared/shahin.konadath/workspace/train/stt/qasr/training_manifests/v7.6/ml/train_ml_itn_punct_r0_end.jsonl
+    - /lustrefs/shared/shahin.konadath/workspace/train/stt/qasr/q3asr_sft_manifests/ml/train_ml_q3asr.jsonl
+  zh:
+    - /lustrefs/shared/shahin.konadath/workspace/train/stt/qasr/training_manifests/v7.6/zh/train_zh_q3asr.jsonl
+    - /lustrefs/shared/shahin.konadath/workspace/train/stt/qasr/q3asr_sft_manifests/zh/train_zh_q3asr.jsonl
+
+# --- Eval sets ---
+# ar/en/zh use the v7.6 CLEANED eval sets, so the reference style matches the
+# dominant training target (ITN'd + punctuated) and eval loss stays meaningful.
+# hi/ml use the q3asr SFT eval sets because v7.6 has nothing usable for them:
+# eval_ml_inworld.jsonl is 46 records, and eval_ml_inworld_as_hi.jsonl (98
+# records) is Malayalam audio filed under Hindi. Those two languages therefore
+# score against RAW references — track them over time, but do not compare their
+# absolute WER against ar/en/zh.
+# eval_en_expresso.jsonl (16 records) is kept despite the old note above: it
+# is in the user's authoritative list.
+eval_manifest:
+  ar:
+    - /lustrefs/shared/shahin.konadath/workspace/train/stt/qasr/training_manifests/v7.6/ar/eval_ar_inworld.jsonl
+    - /lustrefs/shared/shahin.konadath/workspace/train/stt/qasr/training_manifests/v7.6/ar/eval_ar_ar_ae.jsonl
+    - /lustrefs/shared/shahin.konadath/workspace/train/stt/qasr/q3asr_sft_manifests/ar/eval_ar_q3asr.jsonl
+  en:
+    - /lustrefs/shared/shahin.konadath/workspace/train/stt/qasr/training_manifests/v7.6/en/eval_en_inworld.jsonl
+    - /lustrefs/shared/shahin.konadath/workspace/train/stt/qasr/training_manifests/v7.6/en/eval_en_expresso.jsonl
+    - /lustrefs/shared/shahin.konadath/workspace/train/stt/qasr/q3asr_sft_manifests/en/eval_en_q3asr.jsonl
+  hi:
+    - /lustrefs/shared/shahin.konadath/workspace/train/stt/qasr/q3asr_sft_manifests/hi/eval_hi_q3asr.jsonl
+  ml:
+    - /lustrefs/shared/shahin.konadath/workspace/train/stt/qasr/training_manifests/v7.6/ml/eval_ml_inworld.jsonl
+    - /lustrefs/shared/shahin.konadath/workspace/train/stt/qasr/q3asr_sft_manifests/ml/eval_ml_q3asr.jsonl
+  zh:
+    - /lustrefs/shared/shahin.konadath/workspace/train/stt/qasr/training_manifests/v7.6/zh/eval_zh_inworld.jsonl
+    - /lustrefs/shared/shahin.konadath/workspace/train/stt/qasr/q3asr_sft_manifests/zh/eval_zh_q3asr.jsonl

@@ -28,7 +28,7 @@ conda activate "$CONDA_ENV"
 # Mirrors configs/corpus.yaml paths: internal_root / sft_root / pool_dir /
 # audio_root / out_dir / logs. Both internal trees live in the TRAINING
 # checkout (train/stt/qasr) and are named file-for-file in
-# configs/v7.6/internal_ds_sources.yaml -- the corpus registry mirrors that
+# configs/corpus/internal_ingest.yaml -- the corpus registry mirrors that
 # list (internal_v76_* + internal_sft_* specs).
 export INTERNAL_ROOT="${INTERNAL_ROOT:-/lustrefs/shared/shahin.konadath/workspace/train/stt/qasr/training_manifests/v7.6}"
 # SECOND internal tree: raw q3asr SFT envelopes, sibling of the v7.6 manifests.

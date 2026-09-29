@@ -30,7 +30,7 @@ import logging
 import os
 from collections.abc import Iterator
 
-from .base import DEFAULT_MAX_SAMPLES, DatasetSpec, FieldMap, Kind
+from .base import UNLIMITED_SAMPLES, DatasetSpec, FieldMap, Kind
 
 LOGGER = logging.getLogger("data_processing.datasets.registry")
 
@@ -41,8 +41,8 @@ LANGUAGES: tuple[str, ...] = ("ar", "en", "zh", "hi", "ml")
 INTERNAL_ROOT = os.environ.get("QASR_INTERNAL_ROOT", "training_manifests/v7.6")
 #: The SECOND internal tree: raw q3asr SFT envelopes (verbatim targets,
 #: duration-complete), a SIBLING of the v7.6 manifests rather than a subdir.
-#: configs/v7.6/internal_ds_sources.yaml -- the training config whose
-#: train_manifest lists name every file in both trees -- is the source of
+#: configs/corpus/internal_ingest.yaml -- the corpus build's ingest contract
+#: whose train_manifest lists name every file in both trees -- is the source of
 #: truth; the internal specs here mirror it, and a test pins the two together.
 SFT_ROOT = os.environ.get("QASR_SFT_ROOT", "q3asr_sft_manifests")
 EMILIA_ROOT = os.environ.get(
@@ -59,13 +59,45 @@ _F_CANONICAL = FieldMap()  # internal v7.6 already uses the canonical four
 _F_FLEURS = FieldMap(text="transcription", duration=None, path="audio")
 _F_HF_AUDIO = FieldMap(text="text", duration=None, path="audio")
 
+#: The ingest contract's v76 train files per language, basename-level. The
+#: single source for both the specs' paths and their file counts; the pinning
+#: test ties this dict to configs/corpus/internal_ingest.yaml.
+_V76_FILES: dict[str, tuple[str, ...]] = {
+    "ar": (
+        "train_ar_inworld_full.jsonl",
+        "train_ar_dialect_gulf.jsonl",
+        "train_ar_ar_ae_train.jsonl",
+        "train_ar_ar_ae.jsonl",
+        "train_ar_el_gen_v5.jsonl",
+        "train_ar_spotify_v1.jsonl",
+        "train_ar_se_v1.jsonl",
+        "train_ar_qudratech_batch2.jsonl",
+        "train_ar_qudratech_phase4.jsonl",
+        "train_ar_camel_race.jsonl",
+        "train_ar_khalid_msa.jsonl",
+    ),
+    "en": (
+        "train_en_inworld.jsonl",
+        "train_en_q3asr.jsonl",
+        "train_en_hifi_tts.jsonl",
+        "train_en_expresso.jsonl",
+        "train_en_anispeech.jsonl",
+        "train_en_commentary.jsonl",
+    ),
+    "hi": ("train_hi_q3asr.jsonl",),
+    "ml": ("train_ml_itn_punct.jsonl", "train_ml_itn_punct_r0_end.jsonl"),
+    "zh": ("train_zh_q3asr.jsonl",),
+}
 
-def _internal(lang: str, train_files: int = 0, eval_files: int = 0) -> DatasetSpec:
-    """The existing v7.6 manifest tree for one language.
 
-    What lives in the tree is defined by the training config
-    ``configs/v7.6/internal_ds_sources.yaml`` (``train_manifest``), which
-    stacks the LLM-cleaned v7.6 corpora this spec reads.
+def _internal(lang: str, eval_files: int = 0) -> DatasetSpec:
+    """The v7.6 manifest tree for one language, pinned to explicit files.
+
+    What lives in the tree is defined by the ingest contract
+    ``configs/corpus/internal_ingest.yaml`` (``train_manifest``). The paths
+    are the contract's basenames, not a glob: a glob would silently ingest
+    files the contract never named (that is how 19 v7.6-ar cleaned-q3asr
+    files entered a build that was told to exclude them).
 
     Patterns are RELATIVE TO ``INTERNAL_ROOT``, which callers pass as ``root``.
     They must not also contain the root: ``expand_paths`` joins the two, and an
@@ -73,26 +105,27 @@ def _internal(lang: str, train_files: int = 0, eval_files: int = 0) -> DatasetSp
     ``training_manifests/v7.6/training_manifests/v7.6/ar/*.jsonl`` and matches
     nothing. Preflight caught this; it is the reason ``--root`` is not optional.
 
-    ``*.jsonl*`` rather than ``*.jsonl`` so a gzipped shard is still found. The
-    tree is plain ``.jsonl`` today, but the directory branch of ``expand_paths``
-    matches on the ``.jsonl`` token anywhere in the name, and the two branches
-    disagreeing is how a source quietly returns zero rows.
+    ``max_samples=UNLIMITED_SAMPLES``: every row of every listed file is
+    ingested. The 10M Hub guardrail must never apply here -- it silently
+    truncated ar/en stage 1 before it was removed (user directive: strictly
+    all samples of the named files).
     """
+    files = _V76_FILES[lang]
     return DatasetSpec(
         name=f"internal_v76_{lang}",
         lang=lang,
         kind=Kind.LOCAL_JSONL,
         license="internal",
-        paths=(f"{lang}/*.jsonl*",),
+        paths=tuple(f"{lang}/{name}" for name in files),
         exclude=_INTERNAL_EXCLUDE,
         fields=_F_CANONICAL,
-        max_samples=DEFAULT_MAX_SAMPLES,
+        max_samples=UNLIMITED_SAMPLES,
         verified=True,
         notes=(
-            f"Already on disk in canonical form; {train_files} train + {eval_files} eval "
-            "file(s) measured. Some shards omit duration entirely -- the q3asr ar "
-            "shards were measured at 58.6% missing -- so run duration_coverage() "
-            "before trusting a full pass."
+            f"Already on disk in canonical form; {len(files)} train + {eval_files} eval "
+            "file(s) named by the ingest contract. Some shards omit duration -- "
+            "the q3asr ar shards were measured at 58.6% missing -- so run "
+            "duration_coverage() before trusting a full pass."
         ),
     )
 
@@ -105,21 +138,25 @@ def _sft(lang: str) -> DatasetSpec:
     root and these patterns resolve against ``SFT_ROOT`` instead
     (``local.effective_root`` is the single choke point).
 
-    The audio overlaps the v7.6 q3asr corpora on purpose -- the training
-    config stacks a cleaned and a verbatim target on the same clips -- and
+    The audio overlaps the v7.6 q3asr corpora on purpose -- the ingest
+    contract stacks a cleaned and a verbatim target on the same clips -- and
     ``audio_filepath`` is the ledger's identity key, so the shared paths
     compete at assemble and one transcript per clip ships; never two.
+
+    The path is explicit (one envelope file per language), not a glob, for the
+    same reason the v76 specs are: the contract, not the directory listing,
+    decides what is ingested.
     """
     return DatasetSpec(
         name=f"internal_sft_{lang}",
         lang=lang,
         kind=Kind.LOCAL_JSONL,
         license="internal",
-        paths=(f"{lang}/*.jsonl*",),
+        paths=(f"{lang}/train_{lang}_q3asr.jsonl",),
         exclude=_INTERNAL_EXCLUDE,
         fields=_F_CANONICAL,
         local_root=SFT_ROOT,
-        max_samples=DEFAULT_MAX_SAMPLES,
+        max_samples=UNLIMITED_SAMPLES,
         verified=True,
         notes=(
             "Raw (verbatim) q3asr envelopes, duration-complete. Same audio as the "
@@ -133,9 +170,10 @@ def _sft(lang: str) -> DatasetSpec:
 
 _SPECS: tuple[DatasetSpec, ...] = (
     # ============================ ARABIC =====================================
-    # 29 train files: 11 named corpora + the sharded and range-sliced q3asr
-    # passes (train_manifest in configs/v7.6/internal_ds_sources.yaml).
-    _internal("ar", train_files=29, eval_files=2),
+    # 11 train files: exactly the named corpora in the ingest contract -- the
+    # v7.6-ar cleaned-q3asr pass (train_ar_q3asr.jsonl + range shards) is a
+    # v7.6-TRAINING-only addition and is deliberately NOT ingested here.
+    _internal("ar", eval_files=2),
     _sft("ar"),
     DatasetSpec(
         name="masc_ar", lang="ar", kind=Kind.HF_STREAM, license="cc-by-4.0",
@@ -168,7 +206,7 @@ _SPECS: tuple[DatasetSpec, ...] = (
     # 153,724 unique paths across 7,851 distinct transcripts -- one batch of
     # dubious value, and below the diversity floor on its own. zh therefore
     # depends almost entirely on the external sources below.
-    _internal("zh", train_files=1, eval_files=1),
+    _internal("zh", eval_files=1),
     _sft("zh"),
     DatasetSpec(
         name="emilia_zh_local", lang="zh", kind=Kind.LOCAL_AUDIO, license="cc-by-4.0",
@@ -210,9 +248,9 @@ _SPECS: tuple[DatasetSpec, ...] = (
 
     # ============================ ENGLISH ====================================
     # v7.6 ships en as well (inworld, q3asr, hifi_tts, expresso, anispeech,
-    # commentary -- see internal_ds_sources.yaml), and the SFT tree adds the
+    # commentary -- see internal_ingest.yaml), and the SFT tree adds the
     # raw envelopes; external volume still dominates an en batch.
-    _internal("en", train_files=6, eval_files=2),
+    _internal("en", eval_files=2),
     _sft("en"),
     DatasetSpec(
         name="peoples_speech", lang="en", kind=Kind.HF_STREAM, license="cc-by-2.0",
@@ -249,7 +287,7 @@ _SPECS: tuple[DatasetSpec, ...] = (
     # v7.6 holds only the cleaned q3asr hi shard (the SFT tree carries hi's
     # eval sets); still far short of a 100k batch without the gated Indic
     # sources below.
-    _internal("hi", train_files=1, eval_files=0),
+    _internal("hi", eval_files=0),
     _sft("hi"),
     DatasetSpec(
         name="shrutilipi_hi", lang="hi", kind=Kind.HF_GATED, license="cc-by-4.0",
@@ -284,7 +322,7 @@ _SPECS: tuple[DatasetSpec, ...] = (
     # ml is the thinnest language: the internal pool holds 258,835 unique paths
     # -- about two batches -- and it was measured carrying two different
     # transcripts for the same audio across its two files.
-    _internal("ml", train_files=2, eval_files=1),
+    _internal("ml", eval_files=1),
     _sft("ml"),
     DatasetSpec(
         name="shrutilipi_ml", lang="ml", kind=Kind.HF_GATED, license="cc-by-4.0",

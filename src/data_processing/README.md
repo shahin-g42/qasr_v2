@@ -209,7 +209,7 @@ python3 -m data_processing.prepare \
 Key flags: `--jobs N` (spawned worker processes over this node's sources;
 default 1, drivers set 4 — one crashed source never kills the node) ·
 `--langs ar,zh` (default: all five) · `--only <name>` (repeatable) ·
-`--no-gated` (skip gated sources; first tokenless run) · `--no-probe` (don't
+`--no-gated` (skip gated sources; first tokenless run) · `--probe` (opt-in header probe for rows whose
 `soundfile.info` local clips missing a duration) · `--shard-size` · `--gzip` ·
 `--limit N` (smoke test) · `--min-richness` · `--gate-duration` · `--diacritic-policy`.
 

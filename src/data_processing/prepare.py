@@ -9,20 +9,23 @@ the nodes write disjoint files and never coordinate.
 Per source, one streaming pass
 ------------------------------
 For every raw row: derive the identity, normalize, run the text gates, score
-richness, tag the accent, and -- for a local source whose metadata omits it --
-probe the duration from the audio header. Survivors become :class:`~data_processing.candidate.PoolRecord`
+richness, tag the accent, and -- when ``probe_local`` is on (CLI ``--probe``;
+OFF by default) -- for a local source whose metadata omits it, probe the
+duration from the audio header. Survivors become :class:`~data_processing.candidate.PoolRecord`
 entries, buffered and flushed to ``<pool_dir>/<lang>/<source>/part-#####.jsonl``
 sorted by ``composite`` descending. That per-shard sort is what lets Stage 2 do a
 best-first k-way merge across the whole language.
 
 Duration is treated differently by locality, and the difference is the point
 ---------------------------------------------------------------------------
-* **Local** (internal v7.6 tree, already-extracted Emilia): the bytes are on
-  shared storage, so the duration is knowable now -- from metadata or a cheap
-  ``soundfile.info`` probe. A local row whose duration cannot be resolved is
-  dropped: its audio is unreadable, so it could never be trained on anyway. This
-  closes the gap where the old builder silently discarded the ~58.6% of internal
-  q3asr ``ar`` shards that carry no duration.
+* **Local** (internal v7.6 tree, already-extracted Emilia): the duration comes
+  from metadata when present; when absent the row is dropped unless
+  ``probe_local`` is on, in which case a ``soundfile.info`` header probe runs
+  first (slow on shared storage -- that is why it is opt-in now). A local row
+  whose duration cannot be resolved is dropped: its audio is unreadable, so it
+  could never be trained on anyway. The probe used to be the default; it
+  closed the gap where the old builder silently discarded the ~58.6% of
+  internal q3asr ``ar`` shards that carry no duration.
 * **External** (Hub): metadata duration is used when present; when absent the row
   is gated in *text-only* mode and its duration stays ``None``. Stage 2 fetches
   the clip inline at selection time, learns the true duration, and applies the
@@ -238,10 +241,16 @@ def prepare_source(
     gzipped: bool = False,
     limit: int | None = None,
     token: str | None = None,
-    probe_local: bool = True,
+    probe_local: bool = False,
     overwrite: bool = True,
 ) -> dict:
     """Stream one source, gate/score every row, write its sorted pool shards.
+
+    ``probe_local`` defaults to OFF (user directive: the header probe on
+    shared storage costs minutes per 100k rows and is not worth it during a
+    big ingest); pass ``probe_local=True`` (CLI ``--probe``) to restore the
+    header probe for local rows whose metadata omits duration -- such rows
+    are DROPPED, not defaulted, when the probe is off.
 
     Returns a per-source report. Never raises for a source-level failure (a Hub
     401, a missing ``datasets`` install): the error is recorded and the caller
@@ -340,7 +349,7 @@ def run_prepare(
     gzipped: bool = False,
     limit: int | None = None,
     token: str | None = None,
-    probe_local: bool = True,
+    probe_local: bool = False,
     jobs: int = 1,
 ) -> dict:
     """Prepare every source assigned to this node. Returns the run report.
@@ -441,8 +450,10 @@ def main(argv: list[str] | None = None) -> int:
                     help="records per sorted pool shard")
     ap.add_argument("--gzip", action="store_true", help="write gzipped pool shards")
     ap.add_argument("--limit", type=int, help="max rows read per source (smoke testing)")
-    ap.add_argument("--no-probe", action="store_true",
-                    help="do not probe local durations missing from metadata")
+    ap.add_argument("--probe", action="store_true",
+                    help="probe local durations missing from metadata (OFF by "
+                         "default: the header probe is slow on shared storage, "
+                         "and unprobeable rows are dropped)")
     ap.add_argument("--jobs", type=int, default=1,
                     help="worker processes over this node's sources "
                          "(spawn; one source per worker; 1 = serial)")
@@ -469,7 +480,7 @@ def main(argv: list[str] | None = None) -> int:
         only_sources=tuple(args.only or ()), include_gated=not args.no_gated,
         node_rank=args.node_rank, num_nodes=args.num_nodes, shard_size=args.shard_size,
         gzipped=args.gzip, limit=args.limit, token=os.environ.get("HF_TOKEN"),
-        probe_local=not args.no_probe, jobs=args.jobs,
+        probe_local=args.probe, jobs=args.jobs,
     )
     if args.report:
         Path(args.report).parent.mkdir(parents=True, exist_ok=True)

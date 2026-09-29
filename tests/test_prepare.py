@@ -113,13 +113,15 @@ class TestAssignSources(unittest.TestCase):
 
 
 class TestPrepareLocalSource(_Tmp):
-    def _run(self, rows, *, quality=None, shard_size=100_000, limit=None, spec=None):
+    def _run(self, rows, *, quality=None, shard_size=100_000, limit=None, spec=None,
+             probe_local=True):
         root = self.dir / "v7.6"
         _write_jsonl(root, "ar/train_0.jsonl", rows)
         spec = spec or _local_spec()
         return prepare_source(
             spec, pool_dir=self.pool, audio_root=self.audio_root, root=str(root),
             quality=quality or QualityConfig(), shard_size=shard_size, limit=limit,
+            probe_local=probe_local,
         )
 
     def test_keeps_local_path_verbatim_and_records_duration(self):
@@ -202,14 +204,17 @@ class TestPrepareLocalSource(_Tmp):
         self.assertEqual(report["emitted"], 0)
         self.assertEqual(report["counters"]["duration_missing"], 1)
 
-    def test_no_probe_flag_skips_probing_and_drops(self):
+    def test_probing_is_off_by_default_and_drops_unprobeable_rows(self):
+        """User directive: no duration probe by default -- the header probe on
+        shared storage costs minutes per 100k rows. Without it, a local row
+        with no metadata duration is dropped, never defaulted."""
         rows = [{"audio_filepath": "/data/a0.wav", "text": _AR_RICH}]
         root = self.dir / "v7.6"
         _write_jsonl(root, "ar/train_0.jsonl", rows)
         with mock.patch("data_processing.prepare.probe_duration") as probe:
             report = prepare_source(_local_spec(), pool_dir=self.pool,
                                     audio_root=self.audio_root, root=str(root),
-                                    quality=QualityConfig(), probe_local=False)
+                                    quality=QualityConfig())
         probe.assert_not_called()
         self.assertEqual(report["emitted"], 0)
         self.assertEqual(report["counters"]["duration_missing"], 1)

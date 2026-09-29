@@ -240,6 +240,37 @@ matched pair — change them together and rebuild. If the cluster needs a
 proxy for PyPI/Docker Hub, add the usual `-e https_proxy=…` passthroughs to
 both scripts.
 
+### Internal-only path (no Hub at all)
+
+When the external side is what is blocked — gated terms, the `datasets`
+dependency, a repo withdrawn from the Hub — the internal trees alone can be
+processed and corrected on **one node, in the plain conda env**: no `datasets`,
+no `HF_TOKEN`, no docker twin. `scripts/corpus/run_internal_only.sh` runs
+stage 1 over the ten internal specs (`internal_v76_*` + `internal_sft_*`)
+only, then stage 2 per language with the co-located corrector, health-gated
+like the campaign driver:
+
+```bash
+scripts/corpus/run_internal_only.sh                  # all five languages
+LIMIT=500 scripts/corpus/run_internal_only.sh        # smoke run first
+LANGS="ar ml" scripts/corpus/run_internal_only.sh    # subset
+```
+
+It writes to **separate roots** (`corpus/pool_internal`,
+`training_manifests/v8.0_internal`, `/scratch/corpus/ledgers_internal`) so it
+cannot touch the campaign's pools, claims or batches; the ledger stays
+node-local — resume on the same node or copy the `<lang>.sqlite3` files first.
+Stage 3 is not needed (`--no-materialize`: internal audio is read in place),
+and `--batches 0` drains, so each language gets one **partial** batch of
+whatever the gates admit. Every language has exactly two internal sources,
+so the script uses `--max-per-source-fraction 0.5` — at the campaign's 0.40
+two sources can fill at most 80% of a batch and nothing could ever close.
+Expect the diversity floor to bite **zh** (7.8k transcripts behind 153k
+paths — it may come out empty *by design*); ar/en/hi/ml land partial batches.
+`BUNDLE=1` additionally runs the stage-4 audit — expect exit 1 (reported,
+not fatal) while any language lacks a full 100k batch; the internal-only
+deliverable is the corrected manifests plus reports, not campaign bundles.
+
 ## Ship checklist
 
 Per bundle — all automated by stage 4's audit, so **the job's exit code is

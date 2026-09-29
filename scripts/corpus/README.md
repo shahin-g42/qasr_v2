@@ -65,7 +65,12 @@ sbatch --nodelist=gpu5,gpu6,gpu7,gpu8 scripts/corpus/stage2b_prewarm.slurm
    them), `wenet-e2e/wenetspeech` (zh) and `speechcolab/gigaspeech` (en,
    optional). `env.sh` warns if the token is unset; stage 0 fails on it.
 3. **Python deps** on every node: the `qasr` conda env (`datasets>=3.0`,
-   `huggingface-hub[hf_transfer]`, pyyaml, numpy/scipy, soundfile).
+   `huggingface-hub[hf_transfer]`, pyyaml, numpy/scipy, soundfile). If the
+   training conda env cannot take the `datasets` stack (it fights the pinned
+   torch/transformers), use the docker twin instead: run
+   `scripts/corpus/docker_build_env.sh` once on any node (builds a shared venv
+   at `$QASR/.hfenv` inside `python:3.12-slim`), then drive every stage with
+   `scripts/corpus/docker.sh -m …` — see *Docker path* under *Manual path*.
 4. **Storage**: ~16 GB per 100k external clips under `$AUDIO_ROOT` (16 kHz
    mono FLAC) — `en` is external-only, so ~16 GB per bundle for en alone.
 5. **Ledgers node-local**: `$LEDGER_DIR` (default `/scratch/corpus/ledgers`)
@@ -206,6 +211,34 @@ entire command (stage 2b drops `--out-dir` and uses `--prewarm`; stage 3 adds
 `--out-dir` and drops the corrector gate; stage 4 is a single foreground
 command whose exit code you check — keep its `--eval-root "$QASR_SFT_ROOT"`
 so the audit sees the SFT eval sets too).
+
+### Docker path (training env without `datasets`)
+
+When the conda env can't host the HF `datasets` stack, run the stages in a
+plain python container — every command below stays identical, only
+`python3 -m` becomes `scripts/corpus/docker.sh -m`. Source `env.sh` on the
+host as usual first (its conda activation is irrelevant — python runs in the
+container; the path vars it exports are forwarded by the wrapper):
+
+```bash
+# once per campaign, any node: builds the shared venv at $QASR/.hfenv
+scripts/corpus/docker_build_env.sh
+
+# then every stage, e.g. stage 0:
+scripts/corpus/docker.sh -m data_processing.build_corpus preflight \
+    --probe-fields --json --root "$INTERNAL_ROOT" \
+    > "$LOGS/preflight_manual.json"
+```
+
+`docker.sh` is `env.sh`'s docker twin (same path defaults — edit together).
+It mounts `$QASR`, `/scratch` (ledgers + **node-local** HF cache, so nine
+nodes never race one cache) and `/vast` (Emilia), runs as your uid so nothing
+on the shared filesystem ends up root-owned, and uses `--network host` so
+`localhost:8010` (the co-located corrector) stays reachable for stage 2. The
+venv's interpreter symlinks the image, so `IMAGE` in both scripts is a
+matched pair — change them together and rebuild. If the cluster needs a
+proxy for PyPI/Docker Hub, add the usual `-e https_proxy=…` passthroughs to
+both scripts.
 
 ## Ship checklist
 

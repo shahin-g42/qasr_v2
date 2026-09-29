@@ -111,8 +111,10 @@ build:
 # ----------------------------------------------------------------------------
 
 prepare:
-  # One worker process per source on this node (spawn); 96-core nodes.
-  jobs: 4
+  # Spawned workers on the 96-core nodes. More workers than the node has
+  # sources split each local source into byte-range chunks, so a
+  # single-source rank still fills its cores.
+  jobs: 80
   min_richness: 0.0
   gate_duration: false
 

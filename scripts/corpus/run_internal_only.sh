@@ -78,7 +78,9 @@ SCRIPTS_DIR="$(cd "$(dirname "$0")" && pwd)"
 source "${SCRIPTS_DIR}/env.sh"
 
 LANGS="${LANGS:-ar en zh hi ml}"
-JOBS="${JOBS:-4}"
+# 96-core nodes: with one internal source per rank, workers beyond the
+# source count split the source into parallel byte-range chunks.
+JOBS="${JOBS:-80}"
 BATCH_SIZE="${BATCH_SIZE:-100000}"
 MAX_PER_SOURCE_FRACTION="${MAX_PER_SOURCE_FRACTION:-0.5}"
 LIMIT="${LIMIT:-}"

@@ -723,7 +723,7 @@ class TestDispatcher(unittest.TestCase):
     def test_default_staged_config_is_the_shipped_corpus_yaml(self):
         with mock.patch("data_processing.prepare.main", return_value=0) as fake:
             main(["prepare", "--pool-dir", "/p"])
-        fake.assert_called_once_with(["--jobs", "4", "--min-richness", "0.0",
+        fake.assert_called_once_with(["--jobs", "80", "--min-richness", "0.0",
                                       "--pool-dir", "/p"])
 
 

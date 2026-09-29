@@ -9,6 +9,7 @@ backed by real audio, keeping the suite fast and dependency-light.
 
 from __future__ import annotations
 
+import itertools
 import json
 import multiprocessing
 import tempfile
@@ -28,6 +29,7 @@ from data_processing.datasets.base import (
 from data_processing.normalize import DiacriticPolicy
 from data_processing.prepare import (
     _clear_source_pool,
+    _plan_local_segments,
     _row_to_record,
     assign_sources,
     prepare_source,
@@ -218,6 +220,76 @@ class TestPrepareLocalSource(_Tmp):
         probe.assert_not_called()
         self.assertEqual(report["emitted"], 0)
         self.assertEqual(report["counters"]["duration_missing"], 1)
+
+
+class TestChunkedPrepare(_Tmp):
+    """Byte-range chunk parallelism: segments partition rows exactly, tagged
+    shards never collide, and the merged output equals the serial run's."""
+
+    ROWS = 9
+
+    def _plant(self) -> Path:
+        root = self.dir / "v7.6"
+        _write_jsonl(root, "ar/train_0.jsonl",
+                     [{"audio_filepath": f"/data/a{i}.wav", "text": f"{_AR_RICH} {i}",
+                       "duration": "4.0"} for i in range(self.ROWS)])
+        return root
+
+    def _serial(self, root: Path) -> dict:
+        return prepare_source(_local_spec(), pool_dir=self.pool,
+                              audio_root=self.audio_root, root=str(root),
+                              quality=QualityConfig())
+
+    def test_segments_partition_rows_exactly(self):
+        root = self._plant()
+        spec = _local_spec()
+        plans = _plan_local_segments(spec, str(root), 4)
+        self.assertEqual(sorted(plans), [0, 1, 2, 3])
+        seen: list[int] = []
+        for c, segs in plans.items():
+            report = prepare_source(spec, pool_dir=self.pool,
+                                    audio_root=self.audio_root, root=str(root),
+                                    quality=QualityConfig(), segments=segs,
+                                    shard_tag=f"c{c:02d}-", overwrite=False)
+            seen.append(report["read"])
+            for shard, _ in report["shards"]:
+                self.assertIn("part-c", Path(shard).name)
+        self.assertEqual(sum(seen), self.ROWS)
+        recs = _collect(self.pool, "ar", "internal_v76_ar")
+        self.assertEqual(len(recs), self.ROWS)
+        texts = sorted(r.normalized_text for r in recs)
+        self.assertEqual(len(set(texts)), self.ROWS)  # no row duplicated or lost
+
+    def test_chunked_run_matches_serial_output(self):
+        root = self._plant()
+        serial = self._serial(root)
+        fresh = self.dir / "pool2"
+        plans = _plan_local_segments(_local_spec(), str(root), 3)
+        merged_counter: Counter = Counter()
+        emitted = 0
+        for c, segs in plans.items():
+            report = prepare_source(_local_spec(), pool_dir=fresh,
+                                    audio_root=self.audio_root, root=str(root),
+                                    quality=QualityConfig(), segments=segs,
+                                    shard_tag=f"c{c:02d}-", overwrite=False)
+            emitted += report["emitted"]
+            merged_counter.update(report["counters"])
+        self.assertEqual(emitted, serial["emitted"])
+        self.assertEqual(merged_counter, Counter(serial["counters"]))
+        a = sorted(r.audio_filepath for r in _collect(self.pool, "ar", "internal_v76_ar"))
+        b = sorted(r.audio_filepath for r in _collect(fresh, "ar", "internal_v76_ar"))
+        self.assertEqual(a, b)
+
+    def test_single_file_chunk_boundaries_align_to_records(self):
+        root = self._plant()
+        path = root / "ar" / "train_0.jsonl"
+        size = path.stat().st_size
+        plans = _plan_local_segments(_local_spec(), str(root), 3)
+        spans = sorted((s, e) for segs in plans.values() for _, s, e in segs)
+        self.assertEqual(spans[0][0], 0)
+        self.assertEqual(spans[-1][1], size)
+        for (_, end), (start, _) in itertools.pairwise(spans):
+            self.assertEqual(end, start)
 
 
 class TestPrepareExternalSource(_Tmp):
@@ -503,6 +575,25 @@ class TestRunPrepareJobsRealSpawn(_Tmp):
         # The spawned children really wrote the shared pool directory.
         self.assertEqual(len(_collect(self.pool, "ar", "internal_v76_ar")), 3)
         self.assertEqual(len(_collect(self.pool, "ml", "internal_v76_ml")), 3)
+
+    def test_single_source_splits_into_byte_range_chunks(self):
+        """One source, many workers: the source is chunked, not serialized."""
+        root = self.dir / "v7.6"
+        _write_jsonl(root, "ar/train_ar_inworld_full.jsonl",
+                     [{"audio_filepath": f"/data/ar/a{i}.wav", "text": f"{_AR_RICH} {i}",
+                       "duration": "4.0"} for i in range(12)])
+        report = run_prepare(
+            langs=("ar",), only_sources=("internal_v76_ar",),
+            pool_dir=self.pool, audio_root=self.audio_root, root=str(root),
+            quality=QualityConfig(), probe_local=False, jobs=4,
+        )
+        self.assertEqual(report["parallel"]["jobs"], 4)
+        self.assertEqual(report["sources"][0]["chunks"], 4)
+        self.assertEqual(report["totals"]["read"], 12)
+        self.assertEqual(report["totals"]["emitted"], 12)
+        self.assertEqual(len(_collect(self.pool, "ar", "internal_v76_ar")), 12)
+        for path, _ in report["sources"][0]["shards"]:
+            self.assertIn("part-c", Path(path).name)
 
 
 if __name__ == "__main__":

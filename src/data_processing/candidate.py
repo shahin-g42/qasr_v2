@@ -174,14 +174,18 @@ def pool_shard_path(
     source: str,
     index: int,
     gzipped: bool = False,
+    tag: str = "",
 ) -> Path:
-    """``<pool_dir>/<lang>/<source>/part-<index>.jsonl[.gz]``.
+    """``<pool_dir>/<lang>/<source>/part-<tag><index>.jsonl[.gz]``.
 
     One directory per source keeps a source's shards together, so Stage 2 can
     glob a single language and still tell which source each shard came from.
+    ``tag`` namespaces shards from parallel chunk workers within one source
+    (e.g. ``c03``), so they never collide; it must sort cleanly and the empty
+    default preserves the serial layout exactly.
     """
     suffix = ".jsonl.gz" if gzipped else ".jsonl"
-    return Path(pool_dir) / lang / source / f"part-{index:05d}{suffix}"
+    return Path(pool_dir) / lang / source / f"part-{tag}{index:05d}{suffix}"
 
 
 def iter_pool_shards(pool_dir: str | Path, lang: str, source: str | None = None) -> list[Path]:

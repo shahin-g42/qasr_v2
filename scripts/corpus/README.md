@@ -256,6 +256,26 @@ LIMIT=500 scripts/corpus/run_internal_only.sh        # smoke run first
 LANGS="ar ml" scripts/corpus/run_internal_only.sh    # subset
 ```
 
+**Using more than one machine** — run one node per language (the script
+parallelizes by language, not within one):
+
+```bash
+# per node, following the campaign's rank map (0=zh 1=hi 2=ar 3=en 4=ml):
+LANGS="zh" nohup scripts/corpus/run_internal_only.sh \
+    > "$LOGS/internal_zh.out" 2>&1 &
+```
+
+Five languages is the parallelism ceiling: stage 2 is one ledger, one writer
+per language, and stage 1 holds only ten atomic source units
+(`internal_v76_*` + `internal_sft_*`) — two sources per language on five
+nodes is as wide as the split can get (`internal_v76_ar` is 29 files and
+indivisible). Spare nodes have nothing to take; keep them for the campaign's
+external stages. **Never run the same language on two nodes**: the ledgers
+are node-local and cannot see each other, so both nodes would claim the same
+paths and overwrite each other's batch files. Report names carry the language
+filter (`prepare_internal_<langs>.json`, `bundle_internal_<langs>.json`), so
+per-node reports never collide in the shared `$LOGS`.
+
 It writes to **separate roots** (`corpus/pool_internal`,
 `training_manifests/v8.0_internal`, `/scratch/corpus/ledgers_internal`) so it
 cannot touch the campaign's pools, claims or batches; the ledger stays

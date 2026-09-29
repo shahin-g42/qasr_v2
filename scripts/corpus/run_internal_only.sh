@@ -29,6 +29,14 @@
 # (also run the stage-4 audit -- expect exit 1 while any language lacks a
 # FULL batch; the report JSON is the point), and POOL_DIR_INT / OUT_DIR_INT /
 # LEDGER_DIR_INT to relocate the build.
+#
+# Multi-machine: run ONE node per language (LANGS="<lang>"), five nodes for
+# five languages -- that is the parallelism ceiling (one ledger, one writer
+# per language; stage 1 has ten atomic source units, >=2 per node either way).
+# NEVER point two nodes at the same language: the ledgers are node-local and
+# cannot see each other, so both would claim the same paths and overwrite
+# each other's batch files. Report names carry the language filter, so
+# per-node reports never collide in the shared $LOGS.
 set -euo pipefail
 SCRIPTS_DIR="$(cd "$(dirname "$0")" && pwd)"
 # shellcheck disable=SC1091
@@ -44,6 +52,9 @@ POOL_DIR_INT="${POOL_DIR_INT:-$QASR/corpus/pool_internal}"
 OUT_DIR_INT="${OUT_DIR_INT:-$QASR/training_manifests/v8.0_internal}"
 LEDGER_DIR_INT="${LEDGER_DIR_INT:-/scratch/corpus/ledgers_internal}"
 LANGS_CSV="${LANGS// /,}"
+# Report names carry the language filter so per-language nodes sharing one
+# $LOGS never overwrite each other's reports.
+LANGS_TAG="${LANGS// /_}"
 
 [ -n "$LANGS" ] || { echo "ERROR: LANGS is empty" >&2; exit 1; }
 mkdir -p "$POOL_DIR_INT" "$OUT_DIR_INT" "$LEDGER_DIR_INT"
@@ -76,7 +87,7 @@ python3 -m data_processing.build_corpus prepare \
     --root "$INTERNAL_ROOT" --langs "$LANGS_CSV" \
     "${ONLY_ARGS[@]}" ${LIMIT_ARGS[@]+"${LIMIT_ARGS[@]}"} \
     --jobs "$JOBS" \
-    --report "$LOGS/prepare_internal.json"
+    --report "$LOGS/prepare_internal_${LANGS_TAG}.json"
 
 # --- stage 2: assemble + correct each language, drain -------------------------
 for L in $LANGS; do
@@ -105,9 +116,9 @@ if [ "$BUNDLE" = "1" ]; then
         --langs "$LANGS_CSV" \
         --batch-size "$BATCH_SIZE" \
         --max-per-source-fraction "$MAX_PER_SOURCE_FRACTION" \
-        --report "$LOGS/bundle_internal.json" \
-        || echo "NOTE: internal-only audit not green (expected while any language lacks a full batch); see $LOGS/bundle_internal.json" >&2
+        --report "$LOGS/bundle_internal_${LANGS_TAG}.json" \
+        || echo "NOTE: internal-only audit not green (expected while any language lacks a full batch); see $LOGS/bundle_internal_${LANGS_TAG}.json" >&2
 fi
 
 echo "[$(date)] internal-only build done: $OUT_DIR_INT"
-echo "reports: $LOGS/prepare_internal.json, $LOGS/assemble_internal_<lang>.json"
+echo "reports: $LOGS/prepare_internal_${LANGS_TAG}.json, $LOGS/assemble_internal_<lang>.json"

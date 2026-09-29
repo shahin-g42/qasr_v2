@@ -29,6 +29,7 @@ from data_processing.itn import (
     normalize_digits_to_western,
     verify_itn,
 )
+from data_processing.llm_client import LLMResponseParseError, parse_json_response
 from data_processing.manifest_io import (
     CleanedRecord,
     collect_processed_keys,
@@ -1553,6 +1554,23 @@ class TestDateTimePrompts(unittest.TestCase):
         self.assertIn("hour above 23", VALIDATOR_SYSTEM_PROMPT)
         generic = build_generic_validator_messages("o", "p", "zh", [])[0]["content"]
         self.assertIn("hour above 23", generic)
+
+
+class TestParseJSONResponse(unittest.TestCase):
+    def test_valid_bare_array_parses(self) -> None:
+        self.assertEqual(parse_json_response('[{"i": 0}]'), [{"i": 0}])
+
+    def test_truncated_array_returns_the_complete_prefix(self) -> None:
+        content = '[{"i": 0, "text": "a"}, {"i": 1, "text": "b"}, {"i": 2, "te'
+        self.assertEqual(parse_json_response(content), [{"i": 0, "text": "a"}, {"i": 1, "text": "b"}])
+
+    def test_truncated_response_with_no_complete_item_raises(self) -> None:
+        with self.assertRaises(LLMResponseParseError):
+            parse_json_response('[{"i": 0, "te')
+
+    def test_brace_inside_a_string_does_not_fool_the_salvage(self) -> None:
+        content = '[{"i": 0, "text": "has } brace"}, {"i": 1, "te'
+        self.assertEqual(parse_json_response(content), [{"i": 0, "text": "has } brace"}])
 
 
 if __name__ == "__main__":

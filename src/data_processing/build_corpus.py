@@ -101,7 +101,10 @@ class BuildConfig:
     llm_batch: int = 16
     llm_concurrency: int = 64
     llm_timeout: float = 600.0
-    llm_max_tokens: int = 4096
+    #: Completion budget. Batched responses are a JSON array of full
+    #: transcripts, so 16 long podcast lines need well over 4k tokens; a cap
+    #: that truncates them costs a whole batch per warning.
+    llm_max_tokens: int = 12288
     #: Send only samples the deterministic stage flagged as needing judgement.
     #: Measured on 60k real records, this is ~18% of traffic.
     llm_triage_only: bool = True
@@ -230,6 +233,22 @@ class BatchCorrector:
             # exists to prevent. Every failure here is recoverable per sample;
             # losing the run is not. The exception type is logged so an
             # unexpected one stays diagnosable rather than silently absorbed.
+            if len(items) > 1:
+                # Output length scales with batch size, so the most common
+                # failure -- a response truncated at the token cap -- is
+                # deterministic, and retrying the same batch reproduces it.
+                # One halved retry usually fits; its tail keeps the fallback.
+                half = len(items) // 2
+                LOGGER.warning(
+                    "LLM batch failed (%s: %.200s); retrying %d of %d item(s)",
+                    type(exc).__name__, exc, half, len(items),
+                )
+                head = self._call(lang, items[:half])
+                tail = [{"text": t, "dialect": None, "confidence": 0.0}
+                        for t, _ in items[half:]]
+                with self._lock:
+                    self.failures += len(items) - half
+                return head + tail
             with self._lock:
                 self.failures += len(items)
             LOGGER.warning("LLM batch failed (%s: %s); keeping normalized text",

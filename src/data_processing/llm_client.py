@@ -284,6 +284,32 @@ def parse_json_response(content: str) -> Any:
         except json.JSONDecodeError:
             pass
 
+    # Truncated-array salvage. When the model hits the completion cap
+    # mid-list (long batches exceed ``max_tokens``), everything before the cut
+    # is still valid JSON. Walk ``}`` positions backwards and return the
+    # longest complete prefix; the caller's index alignment turns the missing
+    # tail into per-sample fallbacks instead of losing the whole batch. This
+    # MUST run before the naive boundary-slice below: on truncated input that
+    # slice can "succeed" by returning the first item alone as a bare object.
+    start = content.find("[")
+    if start != -1:
+        pos = content.rfind("}", start)
+        attempts = 0
+        while pos > start and attempts < 200:
+            attempts += 1
+            try:
+                salvaged = json.loads(content[start : pos + 1] + "]")
+            except json.JSONDecodeError:
+                pos = content.rfind("}", start, pos)
+                continue
+            if isinstance(salvaged, list) and salvaged:
+                LOGGER.warning(
+                    "Salvaged %d complete item(s) from a truncated JSON response",
+                    len(salvaged),
+                )
+                return salvaged
+            pos = content.rfind("}", start, pos)
+
     # Try finding JSON object or array boundaries
     for start_char, end_char in [("{", "}"), ("[", "]")]:
         start = content.find(start_char)

@@ -331,6 +331,26 @@ class TestBatchCorrector(unittest.TestCase):
             out = c._call("ar", [("واحد", None)])
         self.assertEqual(out[0]["text"], "واحد")
 
+    def test_truncated_json_response_salvages_the_complete_prefix(self):
+        # Simulates a response cut at the token cap mid-way through item 2.
+        truncated = '[{"i": 0, "text": "الأول", "dialect": null, "confidence": 0.9}, {"i": 1, "text": "الث'
+        c = BatchCorrector(self._cfg(llm_url="http://h/v1"))
+        with mock.patch.object(c, "_post", return_value={"choices": [{"message": {"content": truncated}}]}):
+            out = c._call("ar", [("واحد", None), ("اثنين", None)])
+        self.assertEqual(out[0]["text"], "الأول")      # salvaged
+        self.assertEqual(out[1]["text"], "اثنين")      # tail keeps fallback
+        self.assertEqual(c.failures, 0)                # salvage is a success, not a failure
+        self.assertEqual(c.samples, 2)
+
+    def test_a_parse_failure_retries_once_with_a_halved_batch(self):
+        c = BatchCorrector(self._cfg(llm_url="http://h/v1"))
+        with mock.patch.object(c, "_post", return_value={"choices": [{"message": {"content": "{"}}]}) as post:
+            out = c._call("ar", [("واحد", None), ("اثنين", None), ("ثلاثة", None), ("أربعة", None)])
+        self.assertEqual(post.call_count, 3)           # 4 -> 2 -> 1, then stops
+        self.assertEqual([o["text"] for o in out], ["واحد", "اثنين", "ثلاثة", "أربعة"])
+        self.assertEqual(c.failures, 4)
+        self.assertEqual(c.samples, 0)
+
     def test_correct_chunks_but_preserves_global_order(self):
         c = BatchCorrector(self._cfg(llm_url="http://h/v1", llm_batch=2, llm_concurrency=4))
         items = [(f"نص {i}", None) for i in range(7)]

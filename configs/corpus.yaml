@@ -153,6 +153,9 @@ paths:
   pool_dir: corpus/pool
   audio_root: corpus/audio
   out_dir: training_manifests/v8.0
-  # NODE-LOCAL: SQLite-WAL ledgers must never live on Lustre/NFS.
-  ledger_dir: /scratch/corpus/ledgers
+  # SQLite-WAL ledgers: one writer per ledger file, ever. Node-local disk is
+  # still preferred when the node has it (env.sh LEDGER_DIR mirrors this);
+  # /scratch is not creatable on this cluster, so the scratch area -- and
+  # this default -- lives in the workspace.
+  ledger_dir: scratch/corpus/ledgers
   logs: logs/corpus

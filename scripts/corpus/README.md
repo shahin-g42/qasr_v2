@@ -48,8 +48,8 @@ sbatch --nodelist=gpu5,gpu6,gpu7,gpu8 scripts/corpus/stage2b_prewarm.slurm
 1. **Environment** — every driver sources `scripts/corpus/env.sh`, which
    cds to the repo root (`$QASR`), sets `PYTHONPATH`, activates the conda env
    (`$CONDA_ENV`), exports the shared paths (`$INTERNAL_ROOT`, `$QASR_SFT_ROOT`,
-   `$POOL_DIR`, `$AUDIO_ROOT`, `$OUT_DIR`, `$LOGS`) and the node-local
-   `$LEDGER_DIR`, and enables `HF_HUB_ENABLE_HF_TRANSFER=1`. Every value is
+   `$POOL_DIR`, `$AUDIO_ROOT`, `$OUT_DIR`, `$LOGS`) and the scratch-area
+   `$LEDGER_DIR` (item 5), and enables `HF_HUB_ENABLE_HF_TRANSFER=1`. Every value is
    environment-overridable (`POOL_DIR=/tmp/pool sbatch …`); check them before
    the first run. `env.sh` mirrors the `paths:` section of
    `configs/corpus.yaml` — edit both together (the test suite pins the YAML
@@ -73,11 +73,12 @@ sbatch --nodelist=gpu5,gpu6,gpu7,gpu8 scripts/corpus/stage2b_prewarm.slurm
    `scripts/corpus/docker.sh -m …` — see *Docker path* under *Manual path*.
 4. **Storage**: ~16 GB per 100k external clips under `$AUDIO_ROOT` (16 kHz
    mono FLAC) — `en` is external-only, so ~16 GB per bundle for en alone.
-5. **Ledgers node-local**: `$LEDGER_DIR` (default `/scratch/corpus/ledgers`)
-   must be node-local disk, **never Lustre/NFS** — SQLite-WAL corrupts under
-   concurrent writers. One ledger per language, one writer (the assembling
-   node). If you must move a language to another node, copy its
-   `<lang>.sqlite3` first.
+5. **Ledgers**: `$LEDGER_DIR` (default `<repo>/scratch/corpus/ledgers` —
+   `/scratch` is not creatable on this cluster, so the scratch area lives in
+   the workspace). SQLite-WAL with **exactly one writer per ledger file,
+   ever**; the build never shares a ledger between processes. Node-local
+   disk is still preferred when the node has it (override `LEDGER_DIR`).
+   Never point two processes at one ledger.
 6. **Corrector containers up** on the nodes stage 2 will use
    (`curl -sf http://localhost:8010/health` on each — stage 2 gates on this
    itself and fails in 5 minutes, not mid-run).
@@ -231,8 +232,8 @@ scripts/corpus/docker.sh -m data_processing.build_corpus preflight \
 ```
 
 `docker.sh` is `env.sh`'s docker twin (same path defaults — edit together).
-It mounts `$QASR`, `/scratch` (ledgers + **node-local** HF cache, so nine
-nodes never race one cache) and `/vast` (Emilia), runs as your uid so nothing
+It mounts `$QASR` (the scratch area — ledgers + HF cache — lives inside it)
+and `/vast` (Emilia), runs as your uid so nothing
 on the shared filesystem ends up root-owned, and uses `--network host` so
 `localhost:8010` (the co-located corrector) stays reachable for stage 2. The
 venv's interpreter symlinks the image, so `IMAGE` in both scripts is a
@@ -287,7 +288,7 @@ What each rank does:
    rank. Slices are keyed by `blake2b(audio_filepath) % N`, so a clip's
    duplicate rows (the v7.6 cleaned and raw q3asr SFT copies share the same
    path) always land in ONE slice, where the per-slice ledger still dedups
-   them. Each slice keeps its own node-local ledger (`<lang>_p<k>.sqlite3`)
+   them. Each slice keeps its own ledger (`<lang>_p<k>.sqlite3`)
    and writes part `k` of every batch (`train_<lang>_bNNNN_p<KKKK>`) at
    `batch_size / N` rows per part, so the parts of one label compose one
    whole batch — the 100k-per-`bN` contract is unchanged. A language that
@@ -329,10 +330,10 @@ path set. Report names carry language, slice and node tags
 per-rank reports never collide in the shared `$LOGS`.
 
 It writes to **separate roots** (`corpus/pool_internal`,
-`training_manifests/v8.0_internal`, `/scratch/corpus/ledgers_internal`) so it
-cannot touch the campaign's pools, claims or batches; the ledgers stay
-node-local — resume on the same node or copy the `<lang>[_p<k>].sqlite3`
-files first.
+`training_manifests/v8.0_internal`, `scratch/corpus/ledgers_internal`) so it
+cannot touch the campaign's pools, claims or batches; the ledgers live in the
+workspace scratch area — resume from any node, but never point two processes
+at one ledger (one writer per file, ever).
 Stage 3 is not needed (`--no-materialize`: internal audio is read in place),
 and `--batches 0` drains, so each language gets one **partial** batch of
 whatever the gates admit. Every language has exactly two internal sources,

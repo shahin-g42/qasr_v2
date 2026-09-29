@@ -14,7 +14,8 @@
 #   0=zh  1=hi  2=ar  3=en  4=ml
 #
 # zh/hi ride the Flash-Next nodes (ranks 0-1); each language's ledger is
-# NODE-LOCAL under /scratch. No --gres: the corrector container owns the GPUs.
+# owned by exactly one process ($LEDGER_DIR -- workspace scratch by default,
+# override for node-local disk). No --gres: the container owns the GPUs.
 #
 # The LLM knobs (prompt family, batch, concurrency, fetch workers) come from
 # the assemble: section of configs/corpus.yaml via the dispatcher; identity,

@@ -45,10 +45,12 @@ entry point; each stage module can still be invoked directly as shown below.
 
 - The corrector is `localhost:8010` on **every** node → the LLM stage must run
   where the model is (Stage 2 is per-language, co-located).
-- `SeenLedger` is SQLite-WAL, which is unsafe with 9 concurrent writers on
-  Lustre/NFS → **one local ledger per language slice** (slices have disjoint,
-  hash-defined path sets; languages have disjoint audio pools); cross-language
-  overlap is audited to zero afterwards.
+- `SeenLedger` is SQLite-WAL, which corrupts under concurrent writers → **one
+  ledger file per language slice, one writer ever** (slices have disjoint,
+  hash-defined path sets; languages have disjoint audio pools); ledgers live
+  in the workspace scratch area (`$QASR/scratch/corpus/ledgers`) by default,
+  with node-local disk preferred. Cross-language overlap is audited to zero
+  afterwards.
 - Source caps (`max_per_source_fraction=0.40`) and the diversity floor
   (`min_distinct_text_fraction=0.50`, the "zh guard") need a whole-language pool
   view → assembly is per-language, not per-source.
@@ -65,7 +67,7 @@ $AUDIO_ROOT/<lang>/<source>/<blake2b16>.flac        # Stage 2/3: materialized ex
 $OUT_DIR/<lang>/train_<lang>_b0000_p0000.jsonl      # Stage 2: batch manifest (canonical 4-key)
 $OUT_DIR/<lang>/train_<lang>_b0000_p0000.meta.jsonl # Stage 2: sidecar (provenance, quality, richness)
 $OUT_DIR/MANIFEST.json                              # Stage 4: shipping doc (green audits only)
-$LEDGER_DIR/<lang>[_p<k>].sqlite3                   # per-language slice ledger — NODE-LOCAL, one writer
+$LEDGER_DIR/<lang>[_p<k>].sqlite3                   # per-language slice ledger — one writer per file
 ```
 
 - `<blake2b16>` = `blake2b(native_id, digest_size=8).hexdigest()` (16 hex chars).
@@ -134,8 +136,9 @@ export POOL_DIR="$QASR/corpus/pool"
 export AUDIO_ROOT="$QASR/corpus/audio"
 export OUT_DIR="$QASR/training_manifests/v8.0"
 export LOGS="$QASR/logs/corpus"; mkdir -p "$LOGS"
-# Per-language ledgers: NODE-LOCAL disk (NOT shared Lustre). One writer per lang.
-export LEDGER_DIR=/scratch/corpus/ledgers; mkdir -p "$LEDGER_DIR"
+# Per-language ledgers: one writer per file, ever. Workspace scratch by
+# default; point at node-local disk when the node has it.
+export LEDGER_DIR="$QASR/scratch/corpus/ledgers"; mkdir -p "$LEDGER_DIR"
 ```
 
 - Build nodes need `pip install 'datasets>=3.0' 'huggingface-hub[hf_transfer]'`.
@@ -234,7 +237,7 @@ actually land, so nothing is over-downloaded), and fills sequential batches
 every batch (`train_<lang>_bNNNN_p<KKKK>` on disk). The hash keys on
 `audio_filepath`, so a clip's duplicate rows (the v7.6 cleaned and raw q3asr
 SFT copies share the path) always land in one slice, where the slice's own
-ledger still dedups them. Each slice keeps its own node-local ledger
+ledger still dedups them. Each slice keeps its own ledger
 (`<lang>_p<k>.sqlite3`); `N` must divide `--batch-size`, and with `N` slices
 each writing `batch_size / N` rows per part the parts of one label compose
 one whole batch — the 100k-per-`bN` bundle contract is unchanged. Keep
@@ -260,8 +263,8 @@ python3 -m data_processing.assemble \
 ```
 
 Key flags:
-- `--ledger` — **per-language or per-slice, node-local.** Never point two
-  processes at one ledger.
+- `--ledger` — **per-language or per-slice**, one writer per file. Never
+  point two processes at one ledger.
 - `--pool-part K/N`, `--batch-part K` — assemble one hash slice of a language
   across N nodes (see *Multi-node slicing*). `K/N` outside `0 <= K < N` is
   rejected, `N > 1` must divide `--batch-size`, and `--batch-part` defaults
@@ -439,9 +442,11 @@ srun bash -c '
 
 Manual (run the Stage-2 command from that stage on each of the 5 nodes, with `L`
 set to the node's language from the table). Because ledgers are per-language and
-node-local, the five processes never contend. **`$LEDGER_DIR` must be node-local
-disk (e.g. `/scratch`), never shared Lustre/NFS** — SQLite-WAL corrupts under
-concurrent writers, and Stage 2 additionally needs `$OUT_DIR` forwarded.
+each file has exactly one writer, the five processes never contend. **One writer
+per ledger file, ever** — never share a ledger between processes (SQLite-WAL
+corrupts under concurrent writers). Ledgers default to the workspace scratch
+area (`$QASR/scratch/corpus/ledgers`), and Stage 2 additionally needs `$OUT_DIR`
+forwarded.
 
 ### Stage 3 — verify (any nodes, in parallel by language)
 
@@ -517,10 +522,10 @@ guard); `max_per_source_fraction 0.40` keeps a batch mixed across ≥3 sources.
   not stranded, so the next run can reuse it. A sliced run resumes per slice —
   each slice's ledger continues its own label sequence.
 - **Materialize** is idempotent: existing correct-duration files are skipped.
-- **Ledger**: one per language (or per slice), one writer each. Keep it on the
-  node that assembles that language/slice; if you must move a language to
-  another node, copy its `<lang>[_p<k>].sqlite3` first. Never share one ledger
-  file across processes (WAL on Lustre/NFS corrupts under concurrent writers).
+- **Ledger**: one per language (or per slice), one writer each. The default
+  lives under the workspace scratch area, so any node can resume — but never
+  share one ledger file across processes (WAL corrupts under concurrent
+  writers).
 
 ---
 

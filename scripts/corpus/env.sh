@@ -44,9 +44,11 @@ export AUDIO_ROOT="${AUDIO_ROOT:-$QASR/corpus/audio}"
 export OUT_DIR="${OUT_DIR:-$QASR/training_manifests/v8.0}"
 export LOGS="${LOGS:-$QASR/logs/corpus}"
 
-# NODE-LOCAL: the per-language SQLite-WAL ledgers must never live on
-# Lustre/NFS (WAL corrupts under concurrent writers). /scratch is node-local.
-export LEDGER_DIR="${LEDGER_DIR:-/scratch/corpus/ledgers}"
+# SQLite-WAL ledgers: exactly one writer per ledger file, ever. Node-local
+# disk is preferred when the node has it (override LEDGER_DIR); this cluster
+# cannot create /scratch, so the default scratch area lives in the workspace
+# (one writer per file is what keeps shared storage safe here).
+export LEDGER_DIR="${LEDGER_DIR:-$QASR/scratch/corpus/ledgers}"
 
 mkdir -p "$POOL_DIR" "$AUDIO_ROOT" "$OUT_DIR" "$LOGS" "$LEDGER_DIR"
 

@@ -23,7 +23,7 @@ Slicing one language across nodes
 still holds -- but on its own it caps Stage 2 at five nodes. ``--pool-part K/N``
 lifts that cap without sharing the ledger: each of the N processes owns a hash
 slice of the pool (blake2b over ``audio_filepath``, see :func:`in_pool_part`),
-keeps its own node-local ledger, and writes part ``K`` of every batch label at
+keeps its own ledger, and writes part ``K`` of every batch label at
 ``batch_size // N`` rows per part -- so the N parts compose one whole batch,
 which is exactly what the manifest layout already expresses
 (``train_<lang>_b####_p####``) and the bundle stage already sums and audits as

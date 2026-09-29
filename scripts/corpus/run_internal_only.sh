@@ -8,10 +8,11 @@
 #
 # How it differs from the full campaign, and why:
 #   * Separate pool/out/ledger by default ($QASR/corpus/pool_internal,
-#     $QASR/training_manifests/v8.0_internal, /scratch/corpus/ledgers_internal)
-#     so this build cannot touch the campaign's pools, claims or batches.
-#     The ledger is node-local: resume on the SAME node, or copy the
-#     <lang>.sqlite3 files first (SQLite-WAL must not live on Lustre).
+#     $QASR/training_manifests/v8.0_internal,
+#     $QASR/scratch/corpus/ledgers_internal) so this build cannot touch the
+#     campaign's pools, claims or batches. Each ledger is SQLite-WAL with
+#     exactly one writer and lives under the workspace (any node can resume);
+#     point LEDGER_DIR_INT at node-local disk when the cluster offers one.
 #   * --max-per-source-fraction 0.5 (env MAX_PER_SOURCE_FRACTION): every
 #     language has exactly TWO internal sources (internal_v76_<lang> +
 #     internal_sft_<lang>); at the campaign's 0.40 cap two sources can fill at
@@ -46,7 +47,7 @@
 # assembles its own (language, slice) assignments. Slices are keyed by
 # blake2b(audio_filepath), so a clip's duplicate rows (the v7.6 cleaned and
 # q3asr SFT copies share the path) always land in ONE slice; each slice keeps
-# its own node-local ledger (<lang>_p<k>.sqlite3) and writes part k of every
+# its own ledger (<lang>_p<k>.sqlite3) and writes part k of every
 # batch at batch_size / slices rows per part, so the parts of a label compose
 # one whole batch. Single-node (NUM_NODES=1, the default) runs the same flow
 # with one whole-language writer per language -- the legacy shape.
@@ -65,7 +66,7 @@
 # OUT_DIR_INT/LEDGER_DIR_INT for a new layout.
 #
 # NOT the planner: NEVER point two processes at the same language AND the same
-# ledger. The ledgers are node-local and cannot see each other, so both would
+# ledger. A ledger file is owned by exactly one process -- two writers would
 # claim the same paths and overwrite each other's batches/shards. One language
 # per node still works (five nodes, no slicing):
 #   NUM_NODES=1 LANGS="zh" scripts/corpus/run_internal_only.sh
@@ -90,7 +91,7 @@ PREPARE_ONLY="${PREPARE_ONLY:-0}"
 SKIP_PREPARE="${SKIP_PREPARE:-0}"
 POOL_DIR_INT="${POOL_DIR_INT:-$QASR/corpus/pool_internal}"
 OUT_DIR_INT="${OUT_DIR_INT:-$QASR/training_manifests/v8.0_internal}"
-LEDGER_DIR_INT="${LEDGER_DIR_INT:-/scratch/corpus/ledgers_internal}"
+LEDGER_DIR_INT="${LEDGER_DIR_INT:-$QASR/scratch/corpus/ledgers_internal}"
 LANGS_CSV="${LANGS// /,}"
 # Report/marker names carry the language filter so per-language nodes sharing
 # one $LOGS never overwrite each other's reports.

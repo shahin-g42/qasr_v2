@@ -256,8 +256,10 @@ LIMIT=500 scripts/corpus/run_internal_only.sh        # smoke run first
 LANGS="ar ml" scripts/corpus/run_internal_only.sh    # subset
 ```
 
-**Using more than one machine** — run one node per language (the script
-parallelizes by language, not within one):
+**Using more than one machine** — two shapes:
+
+*Simplest: one node per language* — five nodes, each prepares and assembles
+only its language (no barrier, no ordering):
 
 ```bash
 # per node, following the campaign's rank map (0=zh 1=hi 2=ar 3=en 4=ml):
@@ -265,16 +267,36 @@ LANGS="zh" nohup scripts/corpus/run_internal_only.sh \
     > "$LOGS/internal_zh.out" 2>&1 &
 ```
 
-Five languages is the parallelism ceiling: stage 2 is one ledger, one writer
-per language, and stage 1 holds only ten atomic source units
-(`internal_v76_*` + `internal_sft_*`) — two sources per language on five
-nodes is as wide as the split can get (`internal_v76_ar` is 29 files and
-indivisible). Spare nodes have nothing to take; keep them for the campaign's
-external stages. **Never run the same language on two nodes**: the ledgers
-are node-local and cannot see each other, so both nodes would claim the same
-paths and overwrite each other's batch files. Report names carry the language
-filter (`prepare_internal_<langs>.json`, `bundle_internal_<langs>.json`), so
-per-node reports never collide in the shared `$LOGS`.
+*All nine nodes: split stage 1, then assemble on five.* Phase A shards the
+ten internal `(lang, source)` pairs round-robin across nine ranks
+(`--node-rank`/`--num-nodes`), which can roughly halve the lane of a single
+dominating source (e.g. `internal_sft_ar`, whose 58.6% duration-less rows
+force header probes); phase B still assembles on five nodes, one language
+each:
+
+```bash
+# phase A -- on EVERY node, R = that node's rank 0..8 (keep the default LANGS
+# so every rank slices the same (lang, source) list -- and don't reuse a rank):
+PREPARE_ONLY=1 NODE_RANK=$R NUM_NODES=9 nohup scripts/corpus/run_internal_only.sh \
+    > "$LOGS/internal_prepare_node${R}.out" 2>&1 &
+
+# barrier: all nine prepare reports must exist before phase B starts:
+ls "$LOGS"/prepare_internal_ar_en_zh_hi_ml_node*.json   # expect 9 files
+
+# phase B -- on the five assemble nodes, after the barrier:
+SKIP_PREPARE=1 LANGS="zh" nohup scripts/corpus/run_internal_only.sh \
+    > "$LOGS/internal_zh.out" 2>&1 &
+```
+
+Stage 2 is the ceiling either way — one ledger, one writer per language; the
+spare nodes have nothing to take there. **Never point two nodes at the same
+language** (and never reuse a rank in phase A): the ledgers are node-local
+and cannot see each other, so both nodes would claim the same paths and
+overwrite each other's batches. Report names carry language and node tags
+(`prepare_internal_<langs>[_nodeR].json`, `bundle_internal_<langs>.json`), so
+per-node reports never collide in the shared `$LOGS`. Phase B warns per
+language when a pool source has no shards — the sign that phase A has not
+finished everywhere yet.
 
 It writes to **separate roots** (`corpus/pool_internal`,
 `training_manifests/v8.0_internal`, `/scratch/corpus/ledgers_internal`) so it

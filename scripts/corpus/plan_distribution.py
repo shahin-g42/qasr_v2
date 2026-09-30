@@ -11,7 +11,13 @@ what stage 1 actually produced:
 * how many slices each language gets -- N must divide the batch size and stay
   within ``--max-slices``; a language is only sliced when its measured pools
   hold at least half a batch per slice, so a thin language stays whole -- and
-* which rank runs which slice (greedy least-loaded by measured bytes).
+* which rank runs which slice (greedy least-loaded by estimated work).
+
+Work is ``est_rows * needs_llm_fraction``, not bytes: stage-2 wall-clock is
+dominated by corrector traffic, and byte-balancing puts a huge but mostly
+already-clean pool (low needs_llm) on too many ranks while a smaller pool with
+nearly every row flagged starves. When a language's sample yields no usable
+row estimate, its byte size is the fallback weight.
 
 It is a pure function of the pool directory: every node runs it after the
 stage-1 barrier, computes the same plan, and keeps only its own rows
@@ -47,6 +53,20 @@ DEFAULT_SAMPLE_ROWS = 400
 def divisors(n: int) -> list[int]:
     """All divisors of ``n``, ascending."""
     return [d for d in range(1, n + 1) if n % d == 0]
+
+
+def work_units(info: dict) -> float:
+    """Estimated stage-2 effort for one language's pool.
+
+    Corrector calls dominate the run, so the honest currency is flagged rows
+    (``est_rows * needs_llm_fraction``). Bytes are the fallback when the pool
+    sample produced no row estimate.
+    """
+    rows = info.get("est_rows")
+    frac = info.get("needs_llm_fraction")
+    if rows and frac is not None:
+        return float(rows) * float(frac)
+    return float(info.get("bytes") or 0.0)
 
 
 def _shard_files(pool_dir: Path, lang: str) -> list[Path]:
@@ -127,7 +147,7 @@ def plan_slices(
 
     Every language starts at one slice (that is today's whole-language build).
     Each step hands the next divisor step to the language with the largest
-    ``bytes / next_count`` ratio, while ``nodes`` allows it. A language with no
+    ``work / next_count`` ratio, while ``nodes`` allows it. A language with no
     pool shards is planned at zero slices.
     """
     candidate_divs = [d for d in divisors(batch_size) if d <= max_slices]
@@ -151,7 +171,8 @@ def plan_slices(
             step = next((d for d in allowed.get(lang, []) if d > current), None)
             if step is None or step - current > budget:
                 continue
-            score = (info["bytes"] / step, info["bytes"], lang)
+            lang_work = work_units(info)
+            score = (lang_work / step, lang_work, lang)
             if best is None or score > best[0]:
                 best = (score, lang, step)
         if best is None:
@@ -171,19 +192,20 @@ def assign_slices(
         if count < 1:
             continue
         info = inv[lang]
+        weight = work_units(info) / count
         for part in range(count):
             slices.append({
                 "lang": lang, "part": part, "slices": count,
-                "weight_bytes": info["bytes"] / count,
+                "weight": weight,
                 "est_rows": (info["est_rows"] // count) if info["est_rows"] else None,
                 "batch_size": batch_size // count,
             })
-    slices.sort(key=lambda s: (-s["weight_bytes"], s["lang"], s["part"]))
+    slices.sort(key=lambda s: (-s["weight"], s["lang"], s["part"]))
     loads = [0.0] * nodes
     for entry in slices:
         rank = min(range(nodes), key=lambda i: (loads[i], i))
         entry["rank"] = rank
-        loads[rank] += entry["weight_bytes"]
+        loads[rank] += entry["weight"]
     return slices
 
 
@@ -201,7 +223,7 @@ def build_payload(
         }
     loads = [0.0] * nodes
     for entry in slices:
-        loads[entry["rank"]] += entry["weight_bytes"]
+        loads[entry["rank"]] += entry["weight"]
     return {
         "nodes": nodes, "batch_size": batch_size,
         "languages": per_lang,
@@ -214,12 +236,13 @@ def build_payload(
         "assignment": [{"rank": s["rank"], "lang": s["lang"], "part": s["part"],
                         "slices": s["slices"], "batch_size": s["batch_size"]}
                        for s in slices],
-        "rank_load_bytes": [round(x) for x in loads],
+        "rank_load_work": [round(x, 1) for x in loads],
     }
 
 
-def _mib(n: float) -> str:
-    return f"{n / 1024 / 1024:.1f}"
+def _work(n: float) -> str:
+    """Work units are flagged rows (or bytes when rows are unknown)."""
+    return f"{n / 1e6:.1f}M"
 
 
 def describe(inv: dict[str, dict], slices: list[dict], *, nodes: int, batch_size: int) -> str:
@@ -230,14 +253,14 @@ def describe(inv: dict[str, dict], slices: list[dict], *, nodes: int, batch_size
                if info["needs_llm_fraction"] is not None else "?")
         lines.append(
             f"  {lang}: {info['shards']} shard(s) from {len(info['sources'])} source(s), "
-            f"{_mib(info['bytes'])} MiB, est {info['est_rows'] or 0:,} rows, "
+            f"{info['bytes'] / 1048576:.1f} MiB, est {info['est_rows'] or 0:,} rows, "
             f"needs_llm {llm} -> {len(parts)} slice(s)"
             + (f", batch_size {batch_size // len(parts)}" if parts else " (skipped)"))
     for rank in range(nodes):
         mine = [s for s in slices if s["rank"] == rank]
-        load = _mib(sum(s["weight_bytes"] for s in mine))
+        load = _work(sum(s["weight"] for s in mine))
         what = ", ".join(f"{s['lang']} p{s['part']}/{s['slices']}" for s in mine)
-        lines.append(f"  rank {rank}: {load} MiB  {what or '(idle)'}")
+        lines.append(f"  rank {rank}: {load} work  {what or '(idle)'}")
     return "\n".join(lines)
 
 

@@ -23,13 +23,13 @@ sys.modules["plan_distribution"] = planner
 spec.loader.exec_module(planner)
 
 
-def _inv(entries: dict[str, tuple[int, int]]) -> dict[str, dict]:
-    """Synthetic inventory: ``lang -> (est_rows, bytes)``."""
+def _inv(entries: dict[str, tuple[int, int]], *, needs_llm: float | None = None) -> dict[str, dict]:
+    """Synthetic inventory: ``lang -> (est_rows, bytes)``, same needs_llm for all."""
     return {
         lang: {
             "shards": 2, "bytes": nbytes,
             "sources": {"s1": {"shards": 1, "bytes": nbytes // 2}},
-            "mean_row_bytes": 200.0, "est_rows": rows, "needs_llm_fraction": None,
+            "mean_row_bytes": 200.0, "est_rows": rows, "needs_llm_fraction": needs_llm,
         }
         for lang, (rows, nbytes) in entries.items()
     }
@@ -94,6 +94,42 @@ class TestAllocation(unittest.TestCase):
         plan = planner.plan_slices(inv, nodes=9, batch_size=100_000, max_slices=8)
         self.assertEqual(plan, {"zh": 0})
 
+    def test_work_units_prefer_flagged_rows_over_raw_bytes(self):
+        # Regression for the live-run imbalance: ar has the biggest pool but
+        # only 46% needs_llm; en is half the size but 96% flagged. Corrector
+        # traffic must win the rank budget, so en out-slices ar.
+        inv = _inv({
+            "ar": (54_000_000, 46_868_000_000),
+            "en": (31_600_000, 24_350_000_000),
+            "hi": (7_200_000, 5_317_000_000),
+            "ml": (1_300_000, 1_091_000_000),
+            "zh": (600_000, 369_000_000),
+        }, needs_llm=None)
+        inv["ar"]["needs_llm_fraction"] = 0.46
+        inv["en"]["needs_llm_fraction"] = 0.96
+        inv["hi"]["needs_llm_fraction"] = 0.84
+        inv["ml"]["needs_llm_fraction"] = 0.99
+        inv["zh"]["needs_llm_fraction"] = 1.0
+        plan = planner.plan_slices(inv, nodes=9, batch_size=100_000, max_slices=8)
+        self.assertGreaterEqual(plan["en"], plan["ar"])
+        slices = planner.assign_slices(inv, plan, nodes=9, batch_size=100_000)
+        per_rank = {}
+        for s in slices:
+            per_rank.setdefault(s["rank"], 0.0)
+            per_rank[s["rank"]] += s["weight"]
+        # No rank carries more than ~1.75x the average slice load (divisor
+        # granularity makes perfect balance impossible; bytes-balancing gave
+        # this pool a ~2x spread).
+        avg = sum(per_rank.values()) / len(per_rank)
+        self.assertLessEqual(max(per_rank.values()), avg * 1.75)
+
+    def test_bytes_fallback_when_the_row_estimate_is_missing(self):
+        inv = _inv({"ar": (1_000_000, 500_000_000), "zh": (1_000_000, 100_000_000)},
+                   needs_llm=None)
+        # No needs_llm anywhere: bytes decide, ar is heavier.
+        plan = planner.plan_slices(inv, nodes=3, batch_size=100_000, max_slices=8)
+        self.assertEqual((plan["ar"], plan["zh"]), (2, 1))
+
 
 class TestAssignment(unittest.TestCase):
     def test_every_slice_assigned_once_and_loads_balanced(self):
@@ -109,8 +145,8 @@ class TestAssignment(unittest.TestCase):
             self.assertIn(entry["rank"], range(9))
             self.assertEqual(entry["slices"], plan[entry["lang"]])
             self.assertEqual(entry["batch_size"], 100_000 // plan[entry["lang"]])
-        loads = [sum(s["weight_bytes"] for s in slices if s["rank"] == r) for r in range(9)]
-        biggest = max(s["weight_bytes"] for s in slices)
+        loads = [sum(s["weight"] for s in slices if s["rank"] == r) for r in range(9)]
+        biggest = max(s["weight"] for s in slices)
         self.assertLessEqual(max(loads) - min(loads), biggest)
 
     def test_more_languages_than_nodes_still_covers_everything(self):

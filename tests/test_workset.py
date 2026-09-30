@@ -291,7 +291,9 @@ def test_ties_exact_paths_safe_normalization_and_repairable_flags(tmp_path):
     assert inv['eligible'] == 3 and inv['blocked'] == 0
     assert next(item for item in items if item['audio_filepath'] == '/same.wav')['text'] == 'الأول'
     flagged = next(item for item in items if item['audio_filepath'] == '/exact/../a.wav')
-    assert 'ٱ' in flagged['normalized_text'] and '111111' in flagged['normalized_text']
+    # Alef Wasla folds to plain alef (it is a letter, never deleted); the
+    # spoken digit run stays intact.
+    assert 'الله' in flagged['normalized_text'] and '111111' in flagged['normalized_text']
     assert flagged['repairable_flags'] and flagged['quality'] == 0
 
 

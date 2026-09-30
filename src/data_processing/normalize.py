@@ -57,7 +57,10 @@ class DiacriticPolicy(str, Enum):
 ARABIC_SHADDA = "\u0651"
 ARABIC_TANWEEN = "\u064b\u064c\u064d"
 ARABIC_CRITICAL = set(ARABIC_SHADDA + ARABIC_TANWEEN)
-ARABIC_OTHER_MARKS = set("\u064e\u064f\u0650\u0652\u0653\u0670\u0654\u0655\u0656\u0671")
+ARABIC_OTHER_MARKS = set("\u064e\u064f\u0650\u0652\u0653\u0670\u0654\u0655\u0656")
+# U+0671 (Alef Wasla) is a LETTER, not a mark: it sits in the letter block and
+# deleting it corrupts words (ٱللَّٰه). It folds to plain alef below instead.
+ALEF_WASLA = "\u0671"
 ARABIC_TATWEEL = "\u0640"
 ARABIC_LETTER = re.compile(r"[\u0621-\u064a\u0671-\u06d3]")
 
@@ -197,6 +200,14 @@ def _normalize_arabic(text: str, policy: DiacriticPolicy) -> tuple[str, list[str
     if text != before:
         applied.append("fold_persian_letters")
 
+    # Alef Wasla is the same letter as plain alef; folding (never deleting)
+    # keeps the word intact. Done before mark stripping so the marks filter
+    # can never see it.
+    before = text
+    text = text.replace(ALEF_WASLA, "\u0627")
+    if text != before:
+        applied.append("fold_alef_wasla")
+
     before = text
     text = "".join(LATIN_TO_ARABIC_PUNCT.get(c, c) for c in text)
     if text != before:
@@ -307,6 +318,8 @@ def dedup_key(text: str, lang: str) -> str:
         return ""
     folded = unicodedata.normalize("NFKC", text).casefold()
     if lang == "ar":
+        # Fold the letter first; the marks filter below must never see it.
+        folded = folded.replace(ALEF_WASLA, "\u0627")
         folded = "".join(c for c in folded if c not in ARABIC_OTHER_MARKS and c not in ARABIC_CRITICAL)
         folded = folded.replace(ARABIC_TATWEEL, "")
     return "".join(c for c in folded if unicodedata.category(c)[0] in ("L", "N"))

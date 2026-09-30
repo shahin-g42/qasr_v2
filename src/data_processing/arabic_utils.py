@@ -22,6 +22,8 @@ WESTERN_DIGITS = "0123456789"
 CONTROL_CHARS = re.compile(r"[\x00-\x08\x0b\x0c\x0e-\x1f\x7f-\x9f]")
 HTML_TAGS = re.compile(r"<[^>]+>")
 REPEATED_CHARS = re.compile(r"(.)\1{4,}")  # 5+ repeated chars
+#: Same, but digits are excluded: repeated digits are spoken content.
+REPEATED_NON_DIGITS = re.compile(r"(\D)\1{4,}", re.UNICODE)
 FILLER_MARKERS = re.compile(
     r"\[(?:noise|music|laughter|applause|silence|inaudible|crosstalk)\]",
     re.IGNORECASE,
@@ -75,8 +77,13 @@ def strip_filler_markers(text: str) -> str:
 
 
 def collapse_repeated_chars(text: str) -> str:
-    """Collapse runs of 5+ identical characters to 3."""
-    return REPEATED_CHARS.sub(r"\1\1\1", text)
+    """Collapse runs of 5+ identical NON-DIGIT characters to 3.
+
+    Letter/punctuation runs are elongation or ASR stutter artifacts. Digit
+    runs are CONTENT: "111111" is six spoken digits (an ID, a phone number,
+    a code) and collapsing it silently changes what the speaker said.
+    """
+    return REPEATED_NON_DIGITS.sub(r"\1\1\1", text)
 
 
 def normalize_whitespace(text: str) -> str:

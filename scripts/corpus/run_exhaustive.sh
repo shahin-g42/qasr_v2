@@ -122,8 +122,9 @@ for slice in ${SLICES//;/ }; do
 done
 
 # ---- stage 3: LLM-judge every accepted transcript of this rank's slices -----
-# Rejected sources (degenerate loops, garbled fragments, semantic nonsense)
-# are excluded from the vetted output root; the audit reconciles them.
+# Aggressive curation: repetition loops, cutoffs, non-words, and incoherence
+# are excluded from the vetted output root (issue-tagged for a later repair
+# pass); the audit reconciles them.
 for slice in ${SLICES//;/ }; do
     lang="${slice% *}"; part="${slice#* }"
     log "stage 3: vet slice $lang p$part (concurrency=$CONCURRENCY batch=$BATCH)"

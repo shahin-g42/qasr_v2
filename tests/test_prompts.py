@@ -18,12 +18,14 @@ import unittest
 from data_processing.accent import preservation_block
 from data_processing.build_corpus import BatchCorrector, BuildConfig
 from data_processing.generic_prompts import (
+    GENERIC_JUDGE_BATCH_SYSTEM_PROMPT,
     build_generic_batch_cleaner_messages,
     build_generic_cleaner_system_prompt,
 )
 from data_processing.prompts import (
     _RULE_ITN,
     _RULE_VERBATIM,
+    JUDGE_BATCH_SYSTEM_PROMPT,
     build_batch_cleaner_messages,
     build_cleaner_system_prompt,
 )
@@ -177,6 +179,56 @@ class TestBatchCorrectorPromptModes(unittest.TestCase):
     def test_unknown_mode_is_rejected(self):
         with self.assertRaises(ValueError):
             BatchCorrector(BuildConfig(llm_url="http://x/v1", llm_prompt="bogus"))
+
+
+class TestJudgePromptPolicy(unittest.TestCase):
+    """Stage 3 is an aggressive filter: doubt defaults to rejection, and
+    every rejection carries a machine-readable tag so a later repair pass
+    can triage. Surface variety (dialect, code-switching) stays protected."""
+
+    _SYSTEMS = (JUDGE_BATCH_SYSTEM_PROMPT, GENERIC_JUDGE_BATCH_SYSTEM_PROMPT)
+    _TAGS = ("repetition", "cutoff", "nonword", "incoherent",
+             "nonsense", "hallucination", "other")
+
+    def test_doubt_defaults_to_rejection(self):
+        for system in self._SYSTEMS:
+            with self.subTest(prompt="arabic" if system is
+                              JUDGE_BATCH_SYSTEM_PROMPT else "generic"):
+                self.assertIn("When in doubt, REJECT", system)
+                self.assertNotIn("When in doubt, keep", system)
+
+    def test_reject_classes_cover_the_observed_failures(self):
+        for system in self._SYSTEMS:
+            with self.subTest(prompt="arabic" if system is
+                              JUDGE_BATCH_SYSTEM_PROMPT else "generic"):
+                for needle in ("repetition", "cutoff", "nonword",
+                               "incoherent", "hallucination",
+                               "a single clearly corrupted word"):
+                    self.assertIn(needle, system)
+
+    def test_surface_variety_stays_protected(self):
+        for system in self._SYSTEMS:
+            with self.subTest(prompt="arabic" if system is
+                              JUDGE_BATCH_SYSTEM_PROMPT else "generic"):
+                self.assertIn("code-switching", system)
+                self.assertIn("short but complete", system)
+
+    def test_rejections_carry_issue_tags_for_the_repair_pass(self):
+        for system in self._SYSTEMS:
+            with self.subTest(prompt="arabic" if system is
+                              JUDGE_BATCH_SYSTEM_PROMPT else "generic"):
+                self.assertIn('"issues"', system)
+                for tag in self._TAGS:
+                    self.assertIn(tag, system)
+
+    def test_no_template_markers_in_judge_prompts(self):
+        # <<< >>> belongs to the user templates only; a stray marker in a
+        # system prompt would leak into every batch and corrupt parsing.
+        for system in self._SYSTEMS:
+            with self.subTest(prompt="arabic" if system is
+                              JUDGE_BATCH_SYSTEM_PROMPT else "generic"):
+                self.assertNotIn("<<<", system)
+                self.assertNotIn(">>>", system)
 
 
 if __name__ == "__main__":

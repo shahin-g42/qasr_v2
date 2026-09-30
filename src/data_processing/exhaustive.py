@@ -10,8 +10,11 @@ the exhaustive internal build:
     run_exhaustive_slice   -- stage 2: one (lang, part) slice: continuous
                               80-request correction -> review -> publication
     run_vet_slice          -- stage 3: LLM judge over every stage-2 accepted
-                              transcript; degenerate sources are rejected and
-                              excluded from the vetted output
+                              transcript; unfit sources (repetition, cutoffs,
+                              non-words, incoherence) are rejected under an
+                              aggressive curation bar and excluded from the
+                              vetted output (rejections carry issue tags so a
+                              later repair pass can revisit them)
     audit_run              -- exact accounting: every input row is accepted,
                               quarantined, rejected, or structurally excluded
 

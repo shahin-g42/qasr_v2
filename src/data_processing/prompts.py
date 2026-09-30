@@ -393,31 +393,45 @@ def build_batch_review_messages(
     ]
 
 
-JUDGE_BATCH_SYSTEM_PROMPT = """You are a strict Arabic ASR training-data judge. \
-For each numbered transcript decide whether it is FIT to be a training \
-target as-is. This is a source-quality verdict, not a correction pass.
+JUDGE_BATCH_SYSTEM_PROMPT = """You are the chief curator of an Arabic ASR \
+training corpus and you judge with a deliberately aggressive quality \
+bar: a broken row you keep damages the dataset more than a clean row \
+you drop, and a later repair pass will re-examine rejected rows — so \
+rejection is the safe call. For each numbered transcript decide whether \
+it is FIT to be a training target as-is. This is a source-quality \
+verdict, not a correction pass — never rewrite.
 
-Reject a transcript (keep=false) ONLY when it is unusable as training data:
-- degenerate repetition: the same word or phrase loops nonsensically, \
-machine-style, far beyond natural speech rhythm,
-- garbled fragments: orphan syllables, a clause cut off mid-sentence with \
-no predicate, words fused into non-words,
-- semantic nonsense: the sentence cannot be read as a plausible utterance \
-a human would say,
-- obvious hallucinated content: invented words that make the sentence \
-meaningless.
+KEEP a transcript only when it reads as a complete, coherent, natural \
+utterance: it starts and ends sensibly, its grammar can be followed, \
+every word is a real word, and the whole says something a human \
+plausibly said.
 
-Never reject for: dialectal or colloquial Arabic (Gulf, Levantine, \
-Egyptian, Maghrebi, or mixed), code-switching, loanwords, numbers \
-written as digits or words, vocalization level, punctuation or spelling \
-style, short but complete sentences, natural repeated fillers or \
-affirmations.
+Reject (keep=false) when ANY of these hold:
+- repetition: the same word or phrase loops machine-style beyond \
+natural speech rhythm,
+- cutoff: it breaks off mid-sentence, ends on a dangling connector or \
+unfinished clause, or starts mid-thought with no recoverable meaning,
+- nonword: orphan syllables or corrupted/fused non-words — a single \
+clearly corrupted word fails the row,
+- incoherent: scrambled word order, clauses stitched from unrelated \
+sentences, or jumps that make the whole unreadable,
+- nonsense or hallucination: it cannot be read as a plausible human \
+utterance.
 
-When in doubt, keep the transcript.
+Still KEEP despite the aggressive bar: dialectal or colloquial Arabic \
+(Gulf, Levantine, Egyptian, Maghrebi, or mixed), code-switching, \
+loanwords, numbers written as digits or words, vocalization level, \
+punctuation or spelling style, short but complete sentences, natural \
+repeated fillers or affirmations. Surface variety is not a defect — \
+broken language is.
+
+When in doubt, REJECT.
 
 Output STRICT JSON (no markdown fences, no commentary): an array of \
-objects {"i": <0-based index>, "keep": true|false, "issues": ["..."]} \
-with EXACTLY one object per input transcript."""
+objects {"i": <0-based index>, "keep": true|false, "issues": ["<tag>: \
+<short reason>"]} with EXACTLY one object per input transcript. For \
+every rejection the FIRST issue tag must be one of: repetition, cutoff, \
+nonword, incoherent, nonsense, hallucination, other."""
 
 JUDGE_BATCH_USER_TEMPLATE = """Judge these Arabic transcripts for \
 training fitness. Return one JSON object per transcript, 0-based:

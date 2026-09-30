@@ -393,10 +393,13 @@ every eligible unique clip from the 26-file contract
 reviewed; only review-passed text is accepted, and everything else lands in a
 durable quarantine (never silently published as fallback text). Outputs are
 commit-descriptor segments; restarts replay descriptors and never duplicate
-accepted rows. A stage-3 vet pass then LLM-judges every accepted transcript:
-degenerate sources (machine-style phrase loops, garbled fragments, semantic
-nonsense — the failure mode the arithmetic gates cannot see) are rejected and
-excluded from the final vetted corpus.
+accepted rows. A stage-3 vet pass then LLM-judges every accepted transcript
+under an aggressive curation bar: repetition loops, mid-sentence cutoffs,
+corrupted non-words, incoherent stitching, and nonsense are rejected — a
+wrongly kept row damages the dataset more than a wrongly dropped one, and
+rejected rows are recoverable (a later stage-4 repair pass can triage them by
+issue tag). Dialect, colloquial speech, and code-switching stay protected
+from the aggressive default.
 
 Run once per node (all nine nodes, same `$RUN_ID`, after `git pull`):
 
@@ -423,7 +426,9 @@ python -m data_processing.exhaustive audit  --root $RUN_ROOT --state-root $RUN_R
 
 Stage-3 layout: state in `$RUN_ROOT/state_vet/slice_<lang>_p<part>.sqlite3`,
 kept rows published under `$RUN_ROOT/vetted/<lang>/segments/`, rejected rows
-recorded in `segments/*.rejected.jsonl` with the judge's issues. A vet pass is
+recorded in `segments/*.rejected.jsonl` with the judge's issues (first issue
+is a machine-readable tag: repetition, cutoff, nonword, incoherent, nonsense,
+hallucination, other). A vet pass is
 resumable: the durable cursor skips already-judged rows, so a crashed pass
 re-runs the same command. Judge rejections are terminal decisions (never
 silently retried); an unreachable judge quarantines the unjudged rows instead

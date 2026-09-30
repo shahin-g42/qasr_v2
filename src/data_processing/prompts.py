@@ -361,8 +361,8 @@ the smallest repair that fixes the issues, or the candidate verbatim when no \
 repair is possible."""
 
 REVIEW_BATCH_USER_TEMPLATE = """Review these Arabic transcript pairs \
-(original <<< >>> vs cleaned --- >>>). Return one JSON object per pair, \
-0-based:{numbered_pairs}
+(first line of each pair is the ORIGINAL, second is the CLEANED \
+candidate). Return one JSON object per pair, 0-based:{numbered_pairs}
 """
 
 

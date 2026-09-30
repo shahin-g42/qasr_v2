@@ -177,11 +177,22 @@ class CorrectionScheduler:
     def process(self, items: list[dict], *, lang: str, stage: str = "correct") -> list[dict]:
         """Correct/review every item; return one result dict per input item.
 
-        Results carry ``index``, ``ok`` and, on success, the response payload;
-        exhausted items carry ``reason`` and are the caller's quarantine input.
+        Items are packed into ``batch_size`` requests submitted concurrently
+        through the shared pool (the semaphore caps aggregate in-flight
+        requests). Results carry ``index``, ``ok`` and, on success, the
+        response payload; exhausted items carry ``reason`` and are the
+        caller's quarantine input.
         """
+        assert self._pool
         results: dict[int, dict] = {}
-        self._run(items, list(range(len(items))), lang, stage, results)
+        futures = []
+        for lo in range(0, len(items), self.cfg.batch_size):
+            chunk = items[lo:lo + self.cfg.batch_size]
+            indices = list(range(lo, lo + len(chunk)))
+            futures.append(self._pool.submit(
+                self._run, chunk, indices, lang, stage, results))
+        for fut in futures:
+            fut.result()
         out = [results.get(i, {"index": i, "ok": False, "reason": "internal"})
                for i in range(len(items))]
         self._progress(self.snapshot())

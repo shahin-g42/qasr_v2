@@ -339,9 +339,9 @@ GENERIC_REVIEW_BATCH_SYSTEM_PROMPT = (
 )
 
 GENERIC_REVIEW_BATCH_USER_TEMPLATE = (
-    "Review these {language_name} transcript pairs (original <<< >>> vs "
-    "cleaned --- >>>). Return one JSON object per pair, "
-    "0-based:\n{numbered_pairs}\n"
+    "Review these {language_name} transcript pairs (first line of each pair "
+    "is the ORIGINAL, second is the CLEANED candidate). Return one JSON "
+    "object per pair, 0-based:\n{numbered_pairs}\n"
 )
 
 

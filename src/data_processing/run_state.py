@@ -28,6 +28,7 @@ import json
 import os
 import socket
 import sqlite3
+import threading
 from collections.abc import Iterator
 from pathlib import Path
 from typing import Any
@@ -283,7 +284,11 @@ class SliceState:
         self.state_dir.mkdir(parents=True, exist_ok=True)
         self.output_dir.mkdir(parents=True, exist_ok=True)
         self.db_path = self.state_dir / f"slice_{lang}_p{part:04d}.sqlite3"
-        self._conn = sqlite3.connect(str(self.db_path), isolation_level=None)
+        # The scheduler's worker threads deliver events on this connection;
+        # every use is serialized through ``self._lock``.
+        self._lock = threading.Lock()
+        self._conn = sqlite3.connect(str(self.db_path), isolation_level=None,
+                                     check_same_thread=False)
         self._conn.execute("PRAGMA journal_mode=DELETE")
         self._conn.execute("PRAGMA synchronous=FULL")
         self._conn.executescript(_SCHEMA)
@@ -317,13 +322,14 @@ class SliceState:
 
     def _tx(self, fn) -> None:
         """One bounded explicit transaction; rollback-journal, FULL sync."""
-        self._conn.execute("BEGIN IMMEDIATE")
-        try:
-            fn(self._conn)
-        except BaseException:
-            self._conn.execute("ROLLBACK")
-            raise
-        self._conn.execute("COMMIT")
+        with self._lock:
+            self._conn.execute("BEGIN IMMEDIATE")
+            try:
+                fn(self._conn)
+            except BaseException:
+                self._conn.execute("ROLLBACK")
+                raise
+            self._conn.execute("COMMIT")
 
     def close(self) -> None:
         self._conn.close()

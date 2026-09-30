@@ -318,11 +318,67 @@ def build_generic_validator_messages(
     ]
 
 
+
+
+GENERIC_REVIEW_BATCH_SYSTEM_PROMPT = (
+    "You are a senior linguistics QA reviewer specializing in ASR training "
+    "data quality. For each numbered PAIR you are given an ORIGINAL "
+    "transcript and its CLEANED candidate. Judge whether the cleaning "
+    "preserved the speaker's words with publication-quality formatting.\n\n"
+    "A pair FAILS review when the candidate dropped, added, or reordered "
+    "words (fillers, false starts, and meaningful repetitions must "
+    "survive), altered numbers, dates, or currencies, translated or "
+    "erased code-switching, or invented words to complete a cut-off "
+    "sentence. Spelling and punctuation polish alone never fails a pair.\n\n"
+    "Output STRICT JSON (no markdown fences, no commentary): an array of "
+    'objects {"i": <0-based index>, "review": true|false, "text": "<the '
+    'candidate text, unchanged unless you supply a minimal repair>", '
+    '"issues": ["..."]} with EXACTLY one object per input pair. When review '
+    'is false, "text" must carry the smallest repair that fixes the issues, '
+    'or the candidate verbatim when no repair is possible.'
+)
+
+GENERIC_REVIEW_BATCH_USER_TEMPLATE = (
+    "Review these {language_name} transcript pairs (original <<< >>> vs "
+    "cleaned --- >>>). Return one JSON object per pair, "
+    "0-based:\n{numbered_pairs}\n"
+)
+
+
+def build_generic_batch_review_messages(
+    pairs: list[tuple[str, str]],
+    language: str,
+    accent_label: str | None = None,
+) -> list[dict[str, str]]:
+    """Build chat messages for a generic batch review request.
+
+    Mirrors ``build_batch_review_messages`` for non-Arabic languages;
+    numbering is 0-based and matches the scheduler's strict ``i`` contract.
+    """
+    language_name = LANGUAGE_NAMES.get(language, language)
+    numbered = "\n\n".join(
+        f"{i}. ORIGINAL: <<<{o}>>>\n   CLEANED:  <<<{c}>>>"
+        for i, (o, c) in enumerate(pairs)
+    )
+    system = GENERIC_REVIEW_BATCH_SYSTEM_PROMPT
+    block = preservation_block(language, accent_label)
+    if block:
+        system = system.rstrip() + "\n\n" + block
+    return [
+        {"role": "system", "content": system},
+        {"role": "user", "content": GENERIC_REVIEW_BATCH_USER_TEMPLATE.format(
+            language_name=language_name, numbered_pairs=numbered)},
+    ]
+
+
 __all__ = [
     "GENERIC_CLEANER_BATCH_USER_TEMPLATE",
     "GENERIC_CLEANER_USER_TEMPLATE",
+    "GENERIC_REVIEW_BATCH_SYSTEM_PROMPT",
+    "GENERIC_REVIEW_BATCH_USER_TEMPLATE",
     "GENERIC_VALIDATOR_USER_TEMPLATE",
     "build_generic_batch_cleaner_messages",
+    "build_generic_batch_review_messages",
     "build_generic_cleaner_messages",
     "build_generic_cleaner_system_prompt",
     "build_generic_validator_messages",

@@ -339,6 +339,60 @@ def build_batch_cleaner_messages(
     ]
 
 
+REVIEW_BATCH_SYSTEM_PROMPT = """You are a senior Arabic linguistics QA reviewer \
+specializing in ASR training data quality. For each numbered PAIR you are \
+given an ORIGINAL transcript and its CLEANED candidate. Judge whether the \
+cleaning preserved the speaker's words with publication-quality formatting.
+
+A pair FAILS review when the candidate:
+- dropped, added, or reordered words (filler words and meaningful repetitions \
+must survive),
+- altered numbers, dates, or the counted noun of a number phrase,
+- normalized dialect to MSA or erased code-switching,
+- over-vocalized diacritics or removed critical ones (shadda, tanween).
+
+Spelling/punctuation polish alone never fails a pair.
+
+Output STRICT JSON (no markdown fences, no commentary): an array of objects \
+{"i": <0-based index>, "review": true|false, "text": "<the candidate text, \
+unchanged unless you supply a minimal repair>", "issues": ["..."]} with \
+EXACTLY one object per input pair. When review is false, "text" must carry \
+the smallest repair that fixes the issues, or the candidate verbatim when no \
+repair is possible."""
+
+REVIEW_BATCH_USER_TEMPLATE = """Review these Arabic transcript pairs \
+(original <<< >>> vs cleaned --- >>>). Return one JSON object per pair, \
+0-based:{numbered_pairs}
+"""
+
+
+def build_batch_review_messages(
+    pairs: list[tuple[str, str]],
+    *,
+    accent_label: str | None = None,
+) -> list[dict[str, str]]:
+    """Build chat messages for a batch review request.
+
+    ``pairs`` are (original, cleaned) transcripts; numbering is 0-based and
+    matches the scheduler's strict ``i`` contract. When ``accent_label`` is
+    given, its preservation block is appended so the reviewer names the variety
+    it must protect.
+    """
+    numbered = "\n\n".join(
+        f"{i}. ORIGINAL: <<<{o}>>>\n   CLEANED:  <<<{c}>>>"
+        for i, (o, c) in enumerate(pairs)
+    )
+    system = REVIEW_BATCH_SYSTEM_PROMPT
+    block = preservation_block("ar", accent_label)
+    if block:
+        system = system.rstrip() + "\n\n" + block
+    return [
+        {"role": "system", "content": system},
+        {"role": "user", "content": REVIEW_BATCH_USER_TEMPLATE.format(
+            numbered_pairs=numbered)},
+    ]
+
+
 def build_cleaner_system_prompt(
     *,
     preserve_dialects: bool = True,
@@ -505,9 +559,12 @@ __all__ = [
     "CLEANER_USER_TEMPLATE",
     "CORRECTOR_SYSTEM_PROMPT",
     "CORRECTOR_USER_TEMPLATE",
+    "REVIEW_BATCH_SYSTEM_PROMPT",
+    "REVIEW_BATCH_USER_TEMPLATE",
     "VALIDATOR_SYSTEM_PROMPT",
     "VALIDATOR_USER_TEMPLATE",
     "build_batch_cleaner_messages",
+    "build_batch_review_messages",
     "build_cleaner_messages",
     "build_cleaner_system_prompt",
     "build_corrector_messages",

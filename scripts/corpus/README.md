@@ -393,7 +393,10 @@ every eligible unique clip from the 26-file contract
 reviewed; only review-passed text is accepted, and everything else lands in a
 durable quarantine (never silently published as fallback text). Outputs are
 commit-descriptor segments; restarts replay descriptors and never duplicate
-accepted rows.
+accepted rows. A stage-3 vet pass then LLM-judges every accepted transcript:
+degenerate sources (machine-style phrase loops, garbled fragments, semantic
+nonsense — the failure mode the arithmetic gates cannot see) are rejected and
+excluded from the final vetted corpus.
 
 Run once per node (all nine nodes, same `$RUN_ID`, after `git pull`):
 
@@ -401,21 +404,42 @@ Run once per node (all nine nodes, same `$RUN_ID`, after `git pull`):
 # rank 0 only: prepare + workset + partition (idempotent; ranks 1-8 skip in)
 NODE_RANK=0 NUM_NODES=9 RUN_ID=v8int scripts/corpus/run_exhaustive.sh
 # then every rank: process its (lang, part) slices at 80 concurrent requests
+#                  and vet every accepted transcript (stage 3)
 ```
 
 Manual stages, for recovery or inspection (run from the repo root so
 `configs/corpus.yaml` resolves):
 
 ```bash
+# stage 2: correct -> review -> publish one slice
 python -m data_processing.exhaustive slice  --root $RUN_ROOT --lang en --part 3 \
     --run-id v8int --concurrency 80 --batch-size 16 --max-tokens 12288
+# stage 3: LLM-judge that slice's accepted transcripts (run AFTER the slice)
+python -m data_processing.exhaustive vet   --root $RUN_ROOT --lang en --part 3 \
+    --run-id v8int --concurrency 80 --batch-size 16 --max-tokens 12288
+# reconcile the whole run (auto-detects and accounts vetted slices)
 python -m data_processing.exhaustive audit  --root $RUN_ROOT --state-root $RUN_ROOT/state
 ```
 
-Exit codes: `0` every unique clip accepted, `2` unresolved quarantine (retry
-with `SliceState.start_retry_generation` after fixing the cause), `1` fatal or
-integrity error (a corrupt published segment fails loudly — never resume past
-it). A request carrying 16 transcripts is ONE vLLM sequence; `--concurrency`
-is the aggregate in-flight request ceiling per node, not a CPU worker count.
-Quarantine records live in `segments/*.quarantine.jsonl` with the original
-text, candidate, failure stage/reason, and attempt counts for the retry pass.
+Stage-3 layout: state in `$RUN_ROOT/state_vet/slice_<lang>_p<part>.sqlite3`,
+kept rows published under `$RUN_ROOT/vetted/<lang>/segments/`, rejected rows
+recorded in `segments/*.rejected.jsonl` with the judge's issues. A vet pass is
+resumable: the durable cursor skips already-judged rows, so a crashed pass
+re-runs the same command. Judge rejections are terminal decisions (never
+silently retried); an unreachable judge quarantines the unjudged rows instead
+of rejecting them, so `keep=false` always means the LLM actually said so.
+
+Exit codes: `0` every unique clip accepted (and, in vet mode, kept), `2`
+unresolved quarantine (retry with `SliceState.start_retry_generation` after
+fixing the cause — it requeues both quarantined and judge-rejected rows when
+you decide a rejection was wrong), `1` fatal or integrity error (a corrupt
+published segment fails loudly — never resume past it). In vet mode the audit
+requires every slice to have a complete vet pass: kept + rejected +
+vet-quarantined must equal that slice's stage-2 accepted count; the reported
+`accepted` becomes the vetted (kept) count and `rejected` is listed per
+language. Rejections do not affect the exit code — they are decisions, not
+unresolved items. A request carrying 16 transcripts is ONE vLLM sequence;
+`--concurrency` is the aggregate in-flight request ceiling per node, not a CPU
+worker count. Quarantine records live in `segments/*.quarantine.jsonl` with
+the original text, candidate, failure stage/reason, and attempt counts for
+the retry pass.

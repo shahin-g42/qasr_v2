@@ -446,8 +446,9 @@ class SliceState:
         """Persist one terminal outcome durably (not yet published).
 
         Accepted results are immutable once published. A published quarantine
-        can be superseded only by a later-generation ACCEPTED result (that is
-        how a retry generation records resolution); it can never be demoted.
+        or rejection can be superseded only by a later-generation ACCEPTED
+        result (that is how a retry generation records resolution); neither
+        can ever be demoted.
         """
         id_ = result["id"]
         self._tx(lambda c: c.execute(
@@ -455,7 +456,7 @@ class SliceState:
             "ON CONFLICT(id) DO UPDATE SET result=excluded.result, "
             "generation=excluded.generation, published=0 "
             "WHERE results.published=0 "
-            "OR json_extract(results.result, '$.status')='quarantined'",
+            "OR json_extract(results.result, '$.status') IN ('quarantined','rejected')",
             (id_, int(result.get("generation", 0)),
              json.dumps(result, ensure_ascii=False, sort_keys=True))))
 
@@ -484,9 +485,15 @@ class SliceState:
         n = self._next_segment()
         base = f"{self.lang}_p{self.part:04d}_seg{n:05d}"
 
-        accepted, quarantined = [], []
+        accepted, quarantined, rejected = [], [], []
         for r in results:
-            (accepted if r.get("status") == "accepted" else quarantined).append(r)
+            status = r.get("status")
+            if status == "accepted":
+                accepted.append(r)
+            elif status == "rejected":
+                rejected.append(r)
+            else:
+                quarantined.append(r)
         files: dict[str, dict] = {}
 
         if accepted:
@@ -525,12 +532,24 @@ class SliceState:
             qpath = seg_dir / f"{base}.quarantine.jsonl"
             qmeta = atomic_jsonl(qpath, quarantined)
             files["quarantine"] = qmeta
+        if rejected:
+            # Stage-3 judge rejections: decided-excluded rows, recorded with
+            # their issues for the audit trail (never retried implicitly).
+            rpath = seg_dir / f"{base}.rejected.jsonl"
+            files["rejected"] = atomic_jsonl(rpath, rejected)
+
+        # Full result payloads: the replay authority. Manifest/sidecar rows
+        # carry no id, so only this file can rebuild an accepted row caught
+        # in the after-descriptor crash window losslessly.
+        files["results"] = atomic_jsonl(
+            seg_dir / f"{base}.results.jsonl", results)
 
         self._checkpoint("after_files")
         descriptor = {
             "run_id": self.run_id, "lang": self.lang, "part": self.part,
             "segment": n, "base": base, "files": files,
             "accepted": len(accepted), "quarantined": len(quarantined),
+            "rejected": len(rejected),
             "ids": [r["id"] for r in results],
             "fingerprint": self.fingerprint,
         }
@@ -586,7 +605,11 @@ class SliceState:
                     raise RuntimeError(
                         f"published segment file missing/corrupt: {role} {p}")
             rows: list[dict] = []
-            for role in ("manifest", "sidecar", "quarantine"):
+            # "results" last: it carries the full payload for every id, so it
+            # wins over the id-less manifest/sidecar rows and the legacy
+            # roles remain a fallback for descriptors written before it
+            # existed.
+            for role in ("manifest", "sidecar", "quarantine", "rejected", "results"):
                 meta = desc.get("files", {}).get(role)
                 if not meta:
                     continue
@@ -630,7 +653,7 @@ class SliceState:
             picked = []
             for id_, blob in rows:
                 r = json.loads(blob)
-                if r.get("status") != "quarantined":
+                if r.get("status") not in ("quarantined", "rejected"):
                     continue
                 if reasons and r.get("reason") not in reasons:
                     continue
@@ -665,5 +688,8 @@ class SliceState:
             "quarantine_published": one(
                 "SELECT COUNT(*) FROM results WHERE published=1 AND "
                 "json_extract(result,'$.status')='quarantined'"),
+            "rejected_published": one(
+                "SELECT COUNT(*) FROM results WHERE published=1 AND "
+                "json_extract(result,'$.status')='rejected'"),
             "replayed": self._replayed,
         }

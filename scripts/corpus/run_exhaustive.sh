@@ -121,5 +121,18 @@ for slice in ${SLICES//;/ }; do
         2>&1 | tee "$LOGS/exhaustive_${lang}_p${part}_rank${NODE_RANK}.log"
 done
 
+# ---- stage 3: LLM-judge every accepted transcript of this rank's slices -----
+# Rejected sources (degenerate loops, garbled fragments, semantic nonsense)
+# are excluded from the vetted output root; the audit reconciles them.
+for slice in ${SLICES//;/ }; do
+    lang="${slice% *}"; part="${slice#* }"
+    log "stage 3: vet slice $lang p$part (concurrency=$CONCURRENCY batch=$BATCH)"
+    $PY -m data_processing.exhaustive vet --root "$RUN_ROOT" --lang "$lang" \
+        --part "$part" --run-id "$RUN_ID" --url "$URL" \
+        --concurrency "$CONCURRENCY" --batch-size "$BATCH" --max-tokens "$MAX_TOKENS" \
+        2>&1 | tee "$LOGS/vet_${lang}_p${part}_rank${NODE_RANK}.log"
+done
+
 log "rank $NODE_RANK done; run the audit to reconcile coverage:"
 log "  $PY -m data_processing.exhaustive audit --root $RUN_ROOT"
+log "final vetted corpus: $RUN_ROOT/vetted/<lang>/segments (stage-3 kept rows)"

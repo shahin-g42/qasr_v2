@@ -74,7 +74,8 @@ def _messages(lang: str, stage: str, items: list[dict]) -> list[dict[str, str]]:
     """Build the request body. Delegates to the rich prompt families.
 
     Correct batches carry just the normalized transcripts; review batches
-    carry (original, cleaned) pairs so the reviewer can compare them.
+    carry (original, cleaned) pairs so the reviewer can compare them; judge
+    batches (stage 3) carry the FINAL corrected text under ``candidate``.
     """
     from . import generic_prompts, prompts
 
@@ -87,20 +88,34 @@ def _messages(lang: str, stage: str, items: list[dict]) -> list[dict[str, str]]:
         if lang == "ar":
             return prompts.build_batch_review_messages(pairs)
         return generic_prompts.build_generic_batch_review_messages(pairs, lang)
+    if stage == "judge":
+        texts = [it.get("candidate") or it.get("text")
+                 or it.get("normalized_text") or "" for it in items]
+        if lang == "ar":
+            return prompts.build_batch_judge_messages(texts)
+        return generic_prompts.build_generic_batch_judge_messages(texts, lang)
     texts = [it.get("normalized_text") or it.get("text") or "" for it in items]
     if lang == "ar":
         return prompts.build_batch_cleaner_messages(texts)
     return generic_prompts.build_generic_batch_cleaner_messages(texts, lang)
 
 
-def parse_batch_response(content: str, n: int) -> tuple[dict[int, dict], set[int]]:
+def parse_batch_response(content: str, n: int, *,
+                         verdict_key: str = "review",
+                         verdict_required: bool = False,
+                         require_text: bool = True) -> tuple[dict[int, dict], set[int]]:
     """Strictly parse one batch response into (valid by index, unresolved).
 
     Enforces: items sit in a JSON array (optionally under ``"items"``); ``i``
-    is a unique int in ``[0, n)``; ``text`` is a nonempty string; ``review``
-    when present is a literal boolean. The truncated-array salvage in
-    ``llm_client`` is deliberately NOT used here: a fabricated or duplicated
-    index is an unresolved item for the split-retry path, never accepted data.
+    is a unique int in ``[0, n)``; ``text`` is a nonempty string unless
+    ``require_text=False`` (the judge stage returns verdicts only, so its
+    responses carry no text); the verdict named by ``verdict_key``
+    (``review`` for the review stage, ``keep`` for the judge stage) is a
+    literal boolean when present -- and must be present when
+    ``verdict_required`` is set, so a judge cannot stay silent on an item.
+    The truncated-array salvage in ``llm_client`` is deliberately NOT used
+    for verdicts: a fabricated or duplicated index is an unresolved item for
+    the split-retry path, never accepted data.
     """
     from .llm_client import _THINK_BLOCK_RE, parse_json_response
 
@@ -122,10 +137,13 @@ def parse_batch_response(content: str, n: int) -> tuple[dict[int, dict], set[int
                 or idx in valid:
             continue
         text = raw.get("text")
-        if not isinstance(text, str) or not text.strip():
+        if require_text and (not isinstance(text, str) or not text.strip()):
             continue
-        review = raw.get("review", None)
-        if review is not None and not isinstance(review, bool):
+        verdict = raw.get(verdict_key, None)
+        if verdict is None:
+            if verdict_required:
+                continue
+        elif not isinstance(verdict, bool):
             continue
         valid[idx] = raw
     return valid, set(range(n)) - set(valid)
@@ -214,10 +232,31 @@ class CorrectionScheduler:
         if payload is None:  # transport exhausted or truncated response
             self._split(items, indices, lang, stage, results)
             return
-        valid, unresolved = parse_batch_response(payload.get("content", ""), n)
+        judge = stage == "judge"
+        valid, unresolved = parse_batch_response(
+            payload.get("content", ""), n,
+            verdict_key="keep" if judge else "review",
+            verdict_required=judge, require_text=not judge)
         for k, raw in valid.items():
-            idx, review = indices[k], raw.get("review")
-            if stage == "review" and review is not True:
+            idx, item = indices[k], items[k]
+            if judge:
+                if raw.get("keep") is not True:
+                    results[idx] = {"index": idx, "ok": False,
+                                    "reason": "judge_rejected",
+                                    "issues": raw.get("issues")}
+                    with self._lock:
+                        self.failed_items += 1
+                else:
+                    # The judge returns a verdict, not a rewrite: the kept
+                    # text is the final text it was shown (same fallback
+                    # chain as the judge prompt builder).
+                    results[idx] = {"index": idx, "ok": True,
+                                    "text": item.get("candidate")
+                                    or item.get("text")
+                                    or item.get("normalized_text") or ""}
+                    with self._lock:
+                        self.ok_items += 1
+            elif stage == "review" and raw.get("review") is not True:
                 results[idx] = {"index": idx, "ok": False, "reason": "review_failed",
                                 "issues": raw.get("issues")}
                 with self._lock:
@@ -228,7 +267,7 @@ class CorrectionScheduler:
                                 "dialect": raw.get("dialect")}
                 with self._lock:
                     self.ok_items += 1
-            self._event({"type": "stage_result", "id": items[k]["id"], "stage": stage,
+            self._event({"type": "stage_result", "id": item["id"], "stage": stage,
                          "data": results[idx]})
         retry = sorted(unresolved)
         if retry:

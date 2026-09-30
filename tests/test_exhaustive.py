@@ -15,6 +15,7 @@ from data_processing.exhaustive import (
     EXIT_QUARANTINE,
     audit_run,
     run_exhaustive_slice,
+    run_vet_slice,
 )
 from tests.test_workset import _fixture, _row
 
@@ -48,6 +49,29 @@ def _echo_transport():
             "message": {"content": json.dumps(items), "finish_reason": "stop"}}]})
 
     return httpx.MockTransport(handler)
+
+
+def _judge_transport(keep):
+    """Mock judge: one keep verdict per transcript line, decided by predicate."""
+    def handler(request: httpx.Request) -> httpx.Response:
+        body = json.loads(request.content)
+        texts = [ln.split("<<<")[1].split(">>>")[0]
+                 for ln in body["messages"][1]["content"].splitlines()
+                 if "<<<" in ln]
+        items = [{"i": i, "keep": bool(keep(t)),
+                  "issues": [] if keep(t) else ["degenerate repetition"]}
+                 for i, t in enumerate(texts)]
+        return httpx.Response(200, json={"choices": [{
+            "message": {"content": json.dumps(items), "finish_reason": "stop"}}]})
+
+    return httpx.MockTransport(handler)
+
+
+def _run_slice(root, st, out):
+    return run_exhaustive_slice(root, lang="en", part=0, run_id="test",
+                                url="http://t/v1", concurrency=2, batch_size=2,
+                                state_dir=st, output_dir=out,
+                                transport=_echo_transport())
 
 
 def test_slice_accepts_corrects_reviews_and_audits_clean(tmp_path):
@@ -105,6 +129,80 @@ def test_resume_never_duplicates_accepted_rows(tmp_path):
     assert stats["accepted_published"] == 6
     code, report = audit_run(root, state_root=st)
     assert code == EXIT_OK and report["languages"]["en"]["accepted"] == 6
+
+
+def test_vet_filters_judge_rejected_rows(tmp_path):
+    rows = [_row(f"/audio/{i}.wav", f"sentence {i}", 2, quality=0.9)
+            for i in range(4)]
+    root = _build_root(tmp_path, rows)
+    st, out = tmp_path / "st", tmp_path / "out"
+    _run_slice(root, st, out)
+    reject_ones = _judge_transport(lambda t: "1" not in t)
+    stats = run_vet_slice(root, lang="en", part=0, run_id="test",
+                          url="http://t/v1", concurrency=2, batch_size=2,
+                          state_dir=tmp_path / "stv", output_dir=tmp_path / "outv",
+                          stage2_state_dir=st, transport=reject_ones)
+    assert stats["accepted_published"] == 3
+    assert stats["rejected_published"] == 1
+    # Vetted manifests hold only the kept rows.
+    manifest = next((tmp_path / "outv" / "segments").glob("*.manifest.jsonl"))
+    texts = sorted(json.loads(ln)["text"] for ln in
+                   manifest.read_text().splitlines() if ln.strip())
+    assert texts == sorted(f"SENTENCE {i}" for i in (0, 2, 3))
+    # Rejections are recorded with their issues.
+    rej = list((tmp_path / "outv" / "segments").glob("*.rejected.jsonl"))
+    assert len(rej) == 1
+    rejected = [json.loads(ln) for ln in
+                rej[0].read_text().splitlines() if ln.strip()]
+    assert len(rejected) == 1 and rejected[0]["status"] == "rejected"
+    assert rejected[0]["reason"] == "judge_rejected"
+    # Re-running the vet pass replays (including the rejected file) and is
+    # a no-op.
+    stats = run_vet_slice(root, lang="en", part=0, run_id="test",
+                          url="http://t/v1", concurrency=2, batch_size=2,
+                          state_dir=tmp_path / "stv", output_dir=tmp_path / "outv",
+                          stage2_state_dir=st, transport=reject_ones)
+    assert stats["accepted_published"] == 3
+    assert stats["rejected_published"] == 1
+    code, report = audit_run(root, state_root=st, vet_state_root=tmp_path / "stv")
+    assert code == EXIT_OK
+    assert report["vetted"] is True
+    assert report["languages"]["en"]["accepted"] == 3
+    assert report["languages"]["en"]["rejected"] == 1
+    assert report["languages"]["en"]["exact"] is True
+
+
+def test_vet_quarantines_when_judge_unreachable(tmp_path):
+    rows = [_row(f"/audio/{i}.wav", f"sentence {i}", 2, quality=0.9)
+            for i in range(4)]
+    root = _build_root(tmp_path, rows)
+    st, out = tmp_path / "st", tmp_path / "out"
+    _run_slice(root, st, out)
+    dead = httpx.MockTransport(lambda request: httpx.Response(500, text="boom"))
+    stats = run_vet_slice(root, lang="en", part=0, run_id="test",
+                          url="http://t/v1", concurrency=2, batch_size=2,
+                          state_dir=tmp_path / "stv", output_dir=tmp_path / "outv",
+                          stage2_state_dir=st, transport=dead)
+    # Unjudgeable rows quarantine (retryable), never silently kept/rejected.
+    assert stats["quarantine_published"] == 4
+    assert stats["accepted_published"] == 0
+    code, report = audit_run(root, state_root=st, vet_state_root=tmp_path / "stv")
+    assert code == EXIT_QUARANTINE
+    assert report["languages"]["en"]["quarantined"] == 4
+    assert report["languages"]["en"]["exact"] is True
+
+
+def test_audit_without_vet_dbs_unchanged(tmp_path):
+    rows = [_row(f"/audio/{i}.wav", f"sentence {i}", 2, quality=0.9)
+            for i in range(3)]
+    root = _build_root(tmp_path, rows)
+    st, out = tmp_path / "st", tmp_path / "out"
+    _run_slice(root, st, out)
+    code, report = audit_run(root, state_root=st)
+    assert code == EXIT_OK
+    assert report["vetted"] is False
+    assert report["languages"]["en"]["accepted"] == 3
+    assert report["languages"]["en"]["rejected"] == 0
 
 
 def test_blocked_metadata_rows_quarantine_without_llm(tmp_path):

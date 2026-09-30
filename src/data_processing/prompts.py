@@ -393,6 +393,63 @@ def build_batch_review_messages(
     ]
 
 
+JUDGE_BATCH_SYSTEM_PROMPT = """You are a strict Arabic ASR training-data judge. \
+For each numbered transcript decide whether it is FIT to be a training \
+target as-is. This is a source-quality verdict, not a correction pass.
+
+Reject a transcript (keep=false) ONLY when it is unusable as training data:
+- degenerate repetition: the same word or phrase loops nonsensically, \
+machine-style, far beyond natural speech rhythm,
+- garbled fragments: orphan syllables, a clause cut off mid-sentence with \
+no predicate, words fused into non-words,
+- semantic nonsense: the sentence cannot be read as a plausible utterance \
+a human would say,
+- obvious hallucinated content: invented words that make the sentence \
+meaningless.
+
+Never reject for: dialectal or colloquial Arabic (Gulf, Levantine, \
+Egyptian, Maghrebi, or mixed), code-switching, loanwords, numbers \
+written as digits or words, vocalization level, punctuation or spelling \
+style, short but complete sentences, natural repeated fillers or \
+affirmations.
+
+When in doubt, keep the transcript.
+
+Output STRICT JSON (no markdown fences, no commentary): an array of \
+objects {"i": <0-based index>, "keep": true|false, "issues": ["..."]} \
+with EXACTLY one object per input transcript."""
+
+JUDGE_BATCH_USER_TEMPLATE = """Judge these Arabic transcripts for \
+training fitness. Return one JSON object per transcript, 0-based:
+{numbered_transcripts}
+"""
+
+
+def build_batch_judge_messages(
+    transcripts: list[str],
+    *,
+    accent_label: str | None = None,
+) -> list[dict[str, str]]:
+    """Build chat messages for a batch source-quality judgment.
+
+    Numbering is 0-based and matches the scheduler's strict ``i`` contract;
+    the verdict field is ``keep``. ``accent_label`` appends the preservation
+    block so the judge knows which variety it is looking at.
+    """
+    numbered = "\n".join(
+        f"{i}. <<<{t}>>>" for i, t in enumerate(transcripts)
+    )
+    system = JUDGE_BATCH_SYSTEM_PROMPT
+    block = preservation_block("ar", accent_label)
+    if block:
+        system = system.rstrip() + "\n\n" + block
+    return [
+        {"role": "system", "content": system},
+        {"role": "user", "content": JUDGE_BATCH_USER_TEMPLATE.format(
+            numbered_transcripts=numbered)},
+    ]
+
+
 def build_cleaner_system_prompt(
     *,
     preserve_dialects: bool = True,
@@ -559,6 +616,8 @@ __all__ = [
     "CLEANER_USER_TEMPLATE",
     "CORRECTOR_SYSTEM_PROMPT",
     "CORRECTOR_USER_TEMPLATE",
+    "JUDGE_BATCH_SYSTEM_PROMPT",
+    "JUDGE_BATCH_USER_TEMPLATE",
     "REVIEW_BATCH_SYSTEM_PROMPT",
     "REVIEW_BATCH_USER_TEMPLATE",
     "VALIDATOR_SYSTEM_PROMPT",

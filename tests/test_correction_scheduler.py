@@ -96,6 +96,21 @@ class TestParseBatchResponse(unittest.TestCase):
         self.assertEqual(set(valid), {0})
         self.assertEqual(unresolved, {1})
 
+    def test_judge_verdict_required(self) -> None:
+        # The judge must answer every item: a missing keep would silently
+        # read as a rejection, which is exactly the coercion we forbid.
+        valid, unresolved = parse_batch_response(
+            _reply([{"i": 0, "keep": True}, {"i": 1}]), 2,
+            verdict_key="keep", verdict_required=True, require_text=False)
+        self.assertEqual(set(valid), {0})
+        self.assertEqual(unresolved, {1})
+
+    def test_judge_non_boolean_keep_is_unresolved(self) -> None:
+        valid, unresolved = parse_batch_response(
+            _reply([{"i": 0, "keep": "yes"}]), 1,
+            verdict_key="keep", verdict_required=True, require_text=False)
+        self.assertEqual((valid, unresolved), ({}, {0}))
+
 
 class TestScheduler(unittest.TestCase):
     def _cfg(self, **kw) -> SchedulerConfig:
@@ -158,6 +173,37 @@ class TestScheduler(unittest.TestCase):
         self.assertFalse(out[1]["ok"])
         self.assertEqual(out[1]["reason"], "review_failed")
         self.assertEqual(out[1]["issues"], ["dropped word"])
+
+    def test_judge_stage_verdicts(self) -> None:
+        def handler(request: httpx.Request) -> httpx.Response:
+            content = _reply([
+                {"i": 0, "keep": True},
+                {"i": 1, "keep": False, "issues": ["degenerate repetition"]},
+            ])
+            return httpx.Response(200, json={"choices": [{
+                "message": {"content": content, "finish_reason": "stop"}}]})
+        with CorrectionScheduler(self._cfg(), transport=httpx.MockTransport(handler)) as s:
+            out = s.process(_items(2), lang="en", stage="judge")
+        self.assertTrue(out[0]["ok"])
+        # The judge returns a verdict, not a rewrite: the kept text is the
+        # final text it was shown.
+        self.assertEqual(out[0]["text"], "line 0")
+        self.assertFalse(out[1]["ok"])
+        self.assertEqual(out[1]["reason"], "judge_rejected")
+        self.assertEqual(out[1]["issues"], ["degenerate repetition"])
+
+    def test_judge_silence_quarantines_neither_keeps_nor_rejects(self) -> None:
+        def handler(request: httpx.Request) -> httpx.Response:
+            # Verdicts omitted entirely: unresolved, split down to singles,
+            # and finally exhausted -- never a silent rejection.
+            return httpx.Response(200, json={"choices": [{
+                "message": {"content": _reply([{"i": 0}]),
+                             "finish_reason": "stop"}}]})
+        with CorrectionScheduler(self._cfg(max_transport_attempts=1),
+                                 transport=httpx.MockTransport(handler)) as s:
+            out = s.process(_items(2), lang="en", stage="judge")
+        self.assertEqual([r["ok"] for r in out], [False, False])
+        self.assertEqual({r["reason"] for r in out}, {"exhausted"})
 
     def test_results_keep_positions_when_splitting(self) -> None:
         seen: list[int] = []

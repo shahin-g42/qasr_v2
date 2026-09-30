@@ -371,13 +371,77 @@ def build_generic_batch_review_messages(
     ]
 
 
+GENERIC_JUDGE_BATCH_SYSTEM_PROMPT = (
+    "You are a strict ASR training-data judge. For each numbered "
+    "transcript decide whether it is FIT to be a training target as-is. "
+    "This is a source-quality verdict, not a correction pass.\n\n"
+    "Reject a transcript (keep=false) ONLY when it is unusable as training "
+    "data:\n"
+    "- degenerate repetition: the same word or phrase loops nonsensically, "
+    "machine-style, far beyond natural speech rhythm,\n"
+    "- garbled fragments: orphan syllables, a clause cut off mid-sentence "
+    "with no predicate, words fused into non-words,\n"
+    "- semantic nonsense: the sentence cannot be read as a plausible "
+    "utterance a human would say,\n"
+    "- obvious hallucinated content: invented words that make the sentence "
+    "meaningless.\n\n"
+    "Never reject for: dialect, colloquial or casual speech, "
+    "code-switching, loanwords, numbers written as digits or words, "
+    "punctuation or spelling style, short but complete sentences, natural "
+    "repeated fillers or affirmations.\n\n"
+    "When in doubt, keep the transcript.\n\n"
+    "Output STRICT JSON (no markdown fences, no commentary): an array of "
+    'objects {"i": <0-based index>, "keep": true|false, "issues": ["..."]} '
+    "with EXACTLY one object per input transcript."
+)
+
+GENERIC_JUDGE_BATCH_USER_TEMPLATE = (
+    "Judge these {language_name} transcripts for training fitness. Return "
+    "one JSON object per transcript, 0-based:\n{numbered_transcripts}\n"
+)
+
+
+def build_generic_batch_judge_messages(
+    transcripts: list[str],
+    language: str,
+    accent_label: str | None = None,
+) -> list[dict[str, str]]:
+    """Build chat messages for a generic batch source-quality judgment.
+
+    Mirrors ``build_batch_judge_messages`` for non-Arabic languages;
+    numbering is 0-based and the verdict field is ``keep``, matching the
+    scheduler's strict judge-stage contract.
+    """
+    language_name = LANGUAGE_NAMES.get(language, language)
+    numbered = "\n".join(f"{i}. <<<{t}>>>" for i, t in enumerate(transcripts))
+    system = GENERIC_JUDGE_BATCH_SYSTEM_PROMPT
+    block = preservation_block(language, accent_label)
+    if block:
+        system = system.rstrip() + "\n\n" + block
+    return [
+        {
+            "role": "system",
+            "content": system,
+        },
+        {
+            "role": "user",
+            "content": GENERIC_JUDGE_BATCH_USER_TEMPLATE.format(
+                language_name=language_name, numbered_transcripts=numbered
+            ),
+        },
+    ]
+
+
 __all__ = [
     "GENERIC_CLEANER_BATCH_USER_TEMPLATE",
     "GENERIC_CLEANER_USER_TEMPLATE",
+    "GENERIC_JUDGE_BATCH_SYSTEM_PROMPT",
+    "GENERIC_JUDGE_BATCH_USER_TEMPLATE",
     "GENERIC_REVIEW_BATCH_SYSTEM_PROMPT",
     "GENERIC_REVIEW_BATCH_USER_TEMPLATE",
     "GENERIC_VALIDATOR_USER_TEMPLATE",
     "build_generic_batch_cleaner_messages",
+    "build_generic_batch_judge_messages",
     "build_generic_batch_review_messages",
     "build_generic_cleaner_messages",
     "build_generic_cleaner_system_prompt",

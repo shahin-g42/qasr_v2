@@ -384,3 +384,38 @@ and **CLI flags still win**. Identity (language, ledger), paths and drain mode
 are deliberately explicit in the drivers, so a YAML accident cannot change
 *what* gets built — only how fast. The test suite enforces that every YAML
 key is a flag its stage actually reads.
+
+## Exhaustive internal build (fresh run)
+
+The exhaustive pipeline replaces the balanced stage-2 for internal-only runs:
+every eligible unique clip from the 26-file contract
+(`configs/corpus/internal_ingest.yaml`) is LLM-corrected, then independently
+reviewed; only review-passed text is accepted, and everything else lands in a
+durable quarantine (never silently published as fallback text). Outputs are
+commit-descriptor segments; restarts replay descriptors and never duplicate
+accepted rows.
+
+Run once per node (all nine nodes, same `$RUN_ID`, after `git pull`):
+
+```bash
+# rank 0 only: prepare + workset + partition (idempotent; ranks 1-8 skip in)
+NODE_RANK=0 NUM_NODES=9 RUN_ID=v8int scripts/corpus/run_exhaustive.sh
+# then every rank: process its (lang, part) slices at 80 concurrent requests
+```
+
+Manual stages, for recovery or inspection (run from the repo root so
+`configs/corpus.yaml` resolves):
+
+```bash
+python -m data_processing.exhaustive slice  --root $RUN_ROOT --lang en --part 3 \
+    --run-id v8int --concurrency 80 --batch-size 16 --max-tokens 12288
+python -m data_processing.exhaustive audit  --root $RUN_ROOT --state-root $RUN_ROOT/state
+```
+
+Exit codes: `0` every unique clip accepted, `2` unresolved quarantine (retry
+with `SliceState.start_retry_generation` after fixing the cause), `1` fatal or
+integrity error (a corrupt published segment fails loudly — never resume past
+it). A request carrying 16 transcripts is ONE vLLM sequence; `--concurrency`
+is the aggregate in-flight request ceiling per node, not a CPU worker count.
+Quarantine records live in `segments/*.quarantine.jsonl` with the original
+text, candidate, failure stage/reason, and attempt counts for the retry pass.

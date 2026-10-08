@@ -63,6 +63,8 @@ def main(argv: list[str] | None = None) -> int:
     k.add_argument("--run-root", required=True)
     k.add_argument("-n", type=int, default=5, help="records per language")
     k.add_argument("--rejects", action="store_true", help="show rejected records instead")
+    k.add_argument("--review", action="store_true",
+                   help="show agree-guard overrules: the LLM version that was NOT written")
     k.add_argument("--only-changed", action="store_true", help="skip records where text == org_text")
 
     a = sub.add_parser("assemble", help="one manifest per source from finished chunks")
@@ -147,18 +149,21 @@ def main(argv: list[str] | None = None) -> int:
         import random
 
         root = Path(args.run_root)
-        base = root / "_rejects" if args.rejects else root
+        base = root / "_rejects" if args.rejects else root / "_review" if args.review else root
         for lang_dir in sorted(p for p in base.iterdir() if p.is_dir() and not p.name.startswith("_")):
             rows = [json.loads(line) for f in sorted(lang_dir.rglob("part-*.jsonl"))
                     for line in f.read_text(encoding="utf-8").splitlines() if line.strip()]
             if args.only_changed:
                 rows = [r for r in rows if r.get("text") != r.get("org_text")]
-            print(f"===== {lang_dir.name}: {len(rows):,} {'rejected' if args.rejects else 'written'}")
+            kind = "rejected" if args.rejects else "overruled (kept ORG)" if args.review else "written"
+            print(f"===== {lang_dir.name}: {len(rows):,} {kind}")
             for r in random.Random(0).sample(rows, min(args.n, len(rows))):
                 print(f"[{r.get('duration')}s] {r['audio_filepath']}")
                 print(f"  ORG : {r.get('org_text')}")
                 print(f"  ASR : {r.get('asr_text')}")
-                if args.rejects:
+                if args.review:
+                    print(f"  LLM : {r.get('llm_text')}   <- not written")
+                elif args.rejects:
                     print(f"  WHY : {r.get('reason')} {r.get('detail', '')}")
                     if r.get("llm_output"):
                         print(f"  LLM : {r['llm_output']}")

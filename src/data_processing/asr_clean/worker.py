@@ -70,7 +70,10 @@ class WorkerConfig:
     format_max_tokens: int = 4096
     adjudicate_max_tokens: int = 6144
     max_divergence: float = 0.5      # guard: output must be this close to org or asr
-    agree_max_added: int = 1         # format lane: letters the LLM may insert/substitute
+    # Format lane (ORIGINAL == ASR): letters the LLM may insert/substitute before
+    # its rewrite is overruled in favour of the agreed words. -1 turns the guard
+    # off. Every overrule is logged to _review/ for inspection either way.
+    agree_max_added: int = 1
     # A real transcript of the longest (35 s) clips is ~100-300 tokens; hitting
     # this cap means the ASR looped. 1024 keeps a looping-but-long transcript's
     # real tail; test3 had 57 caps in 51.5k requests at 512.
@@ -107,6 +110,9 @@ class RunPaths:
 
     def rejects(self, c: dict) -> Path:
         return self.root / "_rejects" / c["lang"] / c["stem"] / f"part-{c['part']:05d}.jsonl"
+
+    def review(self, c: dict) -> Path:
+        return self.root / "_review" / c["lang"] / c["stem"] / f"part-{c['part']:05d}.jsonl"
 
     def progress_of(self, c: dict) -> dict | None:
         p = self.progress / f"{c['id']}.json"
@@ -341,10 +347,12 @@ class ChunkProcessor:
                 reason = "follows_truncated_asr"
             if reason:
                 it.reject, it.detail, it.llm_raw = f"guard_{reason}", "", res["text"]
-            elif lane == "format" and added_letters(it.org_text, res["text"], lang) > self.cfg.agree_max_added:
-                # Both independent transcripts agree on these words; an LLM that
-                # still rewrites them (test1: 60% of Malayalam) is overruled.
-                it.text, it.choice, it.detail = it.org_text, "original", "agree_guard"
+            elif (self.cfg.agree_max_added >= 0 and lane == "format"
+                  and added_letters(it.org_text, res["text"], lang) > self.cfg.agree_max_added):
+                # Both transcripts agree on these words; an LLM that still rewrites
+                # them (test3: ml 55%, hi 13%) is overruled. Its version is kept in
+                # _review/ so the decision can be audited.
+                it.text, it.choice, it.detail, it.llm_raw = it.org_text, "original", "agree_guard", res["text"]
                 self.tel.add(agree_guard_overrules=1)
             else:
                 it.text = res["text"]
@@ -417,6 +425,8 @@ class ChunkProcessor:
     def _submit_diac(self, window: Window, lang: str) -> None:
         if lang == "ar" and self.cfg.ar_diacritics in ("critical", "full"):
             ready = [it for it in window.items if not it.reject and it.text]
+            for it in ready:  # the original's shadda/tanween onto unchanged words
+                it.text = diacritics.transfer_marks(it.org_text, it.text)
             for k in range(0, len(ready), self.cfg.diac_batch):
                 window.diac_futs.append(self.llm_pool.submit(self._diacritize, ready[k:k + self.cfg.diac_batch]))
         window.diac_submitted = True
@@ -428,22 +438,22 @@ class ChunkProcessor:
             "out_bytes": 0, "rej_bytes": 0, "counts": {}, "started": time.time(), "prompt": PROMPT_VERSION}
         if prog.get("status") == "done":
             return True
-        part, rej = paths.part(chunk), paths.rejects(chunk)
-        for f in (part, rej):
+        part, rej, rev = paths.part(chunk), paths.rejects(chunk), paths.review(chunk)
+        for f in (part, rej, rev):
             f.parent.mkdir(parents=True, exist_ok=True)
         with contextlib.ExitStack() as files:
             out_fh = files.enter_context(open(part, "ab"))
             rej_fh = files.enter_context(open(rej, "ab"))
-            return self._drive(chunk, prog, out_fh, rej_fh, paths, claims, stop_after_windows)
+            rev_fh = files.enter_context(open(rev, "ab"))
+            return self._drive(chunk, prog, out_fh, rej_fh, rev_fh, paths, claims, stop_after_windows)
 
-    def _drive(self, chunk: dict, prog: dict, out_fh, rej_fh, paths: RunPaths, claims: Claims,
+    def _drive(self, chunk: dict, prog: dict, out_fh, rej_fh, rev_fh, paths: RunPaths, claims: Claims,
                stop_after_windows: int | None) -> bool:
         cfg, lang = self.cfg, chunk["lang"]
         # Roll back anything written after the last commit.
-        out_fh.truncate(prog["out_bytes"])
-        rej_fh.truncate(prog["rej_bytes"])
-        out_fh.seek(0, os.SEEK_END)
-        rej_fh.seek(0, os.SEEK_END)
+        for fh, key in ((out_fh, "out_bytes"), (rej_fh, "rej_bytes"), (rev_fh, "rev_bytes")):
+            fh.truncate(prog.get(key, 0))
+            fh.seek(0, os.SEEK_END)
         counts = Counter(prog["counts"])
         mask = load_dup_mask(cfg.run_root, chunk)
 
@@ -495,7 +505,7 @@ class ChunkProcessor:
             if head.diac_submitted and all(f.done() for f in head.diac_futs):
                 for f in head.diac_futs:
                     f.result()
-                self._commit(head, chunk, prog, counts, out_fh, rej_fh, paths, claims)
+                self._commit(head, chunk, prog, counts, out_fh, rej_fh, rev_fh, paths, claims)
                 inflight.popleft()
                 windows_done += 1
                 if stop_after_windows and windows_done >= stop_after_windows:
@@ -515,8 +525,8 @@ class ChunkProcessor:
         return True
 
     def _commit(self, w: Window, chunk: dict, prog: dict, counts: Counter,
-                out_fh, rej_fh, paths: RunPaths, claims: Claims) -> None:
-        out_lines, rej_lines = [], []
+                out_fh, rej_fh, rev_fh, paths: RunPaths, claims: Claims) -> None:
+        out_lines, rej_lines, rev_lines = [], [], []
         for it in w.items:
             counts["lines"] += 1
             if it.reject:
@@ -533,6 +543,10 @@ class ChunkProcessor:
                 counts["asr_truncated"] += 1
             if it.detail == "agree_guard":
                 counts["agree_guard"] += 1
+                rev_lines.append(json.dumps({
+                    "audio_filepath": it.audio_filepath, "duration": it.duration, "org_text": it.org_text,
+                    "asr_text": it.asr_text, "llm_text": it.llm_raw, "kept": "org_text",
+                    "reason": "agree_guard"}, ensure_ascii=False))
             if it.diac:
                 counts["diac:" + it.diac] += 1
             if chunk["lang"] == "ar":
@@ -545,13 +559,13 @@ class ChunkProcessor:
                    "text": it.text, "org_text": it.org_text, "asr_text": it.asr_text}
             out_lines.append(json.dumps(rec, ensure_ascii=False))
         counts["duplicates"] += w.skipped_dups
-        for fh, rows in ((out_fh, out_lines), (rej_fh, rej_lines)):
+        for fh, rows in ((out_fh, out_lines), (rej_fh, rej_lines), (rev_fh, rev_lines)):
             if rows:
                 fh.write(("\n".join(rows) + "\n").encode("utf-8"))
             fh.flush()
             os.fsync(fh.fileno())
         prog.update(offset=w.last_offset, line=w.last_line + 1, out_bytes=out_fh.tell(),
-                    rej_bytes=rej_fh.tell(), counts=dict(counts), updated=time.time())
+                    rej_bytes=rej_fh.tell(), rev_bytes=rev_fh.tell(), counts=dict(counts), updated=time.time())
         _atomic_json(paths.progress / f"{chunk['id']}.json", prog)
         claims.heartbeat(chunk)
 

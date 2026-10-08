@@ -314,6 +314,21 @@ class EndToEndTest(unittest.TestCase):
         self.assertEqual([p.name for p in finals], ["eval_ar_x.jsonl", "train_ar_x.jsonl"])
         self.assertEqual(sum(len(p.read_text().splitlines()) for p in finals), 43)
 
+    def test_overrules_are_logged_and_the_guard_can_be_switched_off(self) -> None:
+        run_worker(self._cfg("h:0"))
+        review = [json.loads(line) for p in (Path(self.root) / "_review").rglob("*.jsonl")
+                  for line in p.read_text(encoding="utf-8").splitlines()]
+        self.assertEqual(len(review), 1)
+        self.assertIn("جملتان", review[0]["llm_text"])  # the rewrite that was NOT written
+        self.assertEqual(review[0]["kept"], "org_text")
+
+    def test_guard_off_writes_the_llm_version(self) -> None:
+        run_worker(self._cfg("h:0", agree_max_added=-1))
+        out, _ = self._outputs()
+        mutated = [r for r in out if "MUTATE" in r["org_text"]]
+        self.assertEqual(len(mutated), 1)
+        self.assertIn("جملتان", strip_marks(mutated[0]["text"]))
+
     def test_crash_mid_chunk_then_resume(self) -> None:
         run_worker(self._cfg("h:0"), stop_after_windows=2)  # dies after 2 commits
         part = next((Path(self.root) / "ar").rglob("part-*.jsonl"))
@@ -339,6 +354,22 @@ class DiacriticsTest(unittest.TestCase):
         self.assertEqual(check("رقم 3", "رَقَمٌ 3\u064e"), "mark_not_on_letter")
         self.assertEqual(check("في campus", "فِي c\u064eampus"), "mark_not_on_letter")
         self.assertEqual(check("علم", "عَ\u0651\u064e\u064bلم"), "stacked_marks")
+
+    def test_shadda_and_tanween_are_never_dropped(self) -> None:
+        self.assertEqual(check("مرّة", "مرة"), "dropped_shadda_or_tanween")
+        self.assertEqual(check("شكرًا", "شكرا"), "dropped_shadda_or_tanween")
+        self.assertIsNone(check("شكرًا", "شُكْرًا"))  # adding around them is fine
+        self.assertIsNone(check("بِيِعْمِل", "بيعمل"))  # plain vowels may still be removed
+
+    def test_original_marks_carried_onto_unchanged_words_only(self) -> None:
+        from data_processing.asr_clean.diacritics import transfer_marks
+
+        org = "شكرًا يا أستاذ، المدرّسة كبيرةٌ جدًا"
+        text = "شكرا يا استاذ، المدرسة كبيرة جدا."
+        out = transfer_marks(org, text)
+        self.assertEqual(out, "شكرًا يا استاذ، المدرّسة كبيرةٌ جدًا.")
+        self.assertIsNone(check(text, out))  # still a marks-only edit
+        self.assertEqual(transfer_marks("قال كذا", "قال كذا."), "قال كذا.")  # nothing to carry
 
     def test_density(self) -> None:
         self.assertEqual(density("قال"), 0.0)

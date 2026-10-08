@@ -132,5 +132,32 @@ class EndToEndTest(unittest.TestCase):
         self.assertIn("projection", report)
 
 
+class ConfigParseTest(unittest.TestCase):
+    def test_fallback_parser_matches_pyyaml_on_every_v76_config(self) -> None:
+        import builtins
+
+        import yaml
+
+        real_import = builtins.__import__
+
+        def no_yaml(name, *args, **kwargs):
+            if name == "yaml":
+                raise ImportError(name)
+            return real_import(name, *args, **kwargs)
+
+        configs = sorted((SCRIPTS.parent / "configs" / "v7.6").glob("*.yaml"))
+        self.assertTrue(configs)
+        for cfg in configs:
+            data = yaml.safe_load(cfg.read_text()) or {}
+            for key in ("train_manifest", "eval_manifest"):
+                builtins.__import__ = no_yaml
+                try:
+                    parsed = alt.config_manifests(str(cfg), key)
+                finally:
+                    builtins.__import__ = real_import
+                expected = {k: list(v) for k, v in (data.get(key) or {}).items()}
+                self.assertEqual(parsed, expected, f"{cfg.name}:{key}")
+
+
 if __name__ == "__main__":
     unittest.main()

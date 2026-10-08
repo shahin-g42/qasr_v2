@@ -113,15 +113,40 @@ def parse_row(line: str, lang: str, source: str) -> dict | None:
     return {"path": path, "ref": ref, "lang": lang, "duration": duration, "source": Path(source).name}
 
 
+def config_manifests(config: str, key: str) -> dict[str, list[str]]:
+    """``{lang: [paths]}`` under ``key`` of a training YAML.
+
+    Uses PyYAML when present; otherwise reads the fixed shape every config
+    uses (``key:`` / two-space ``lang:`` / ``- path`` items), so the base
+    python on any node is enough.
+    """
+    try:
+        import yaml
+    except ImportError:
+        yaml = None
+    with open(config, encoding="utf-8") as fh:
+        if yaml is not None:
+            return {k: list(v) for k, v in ((yaml.safe_load(fh) or {}).get(key) or {}).items()}
+        out: dict[str, list[str]] = {}
+        inside, lang = False, None
+        for raw in fh:
+            line = raw.split("#", 1)[0].rstrip()
+            if not line.strip():
+                continue
+            if not line.startswith(" "):
+                inside, lang = line == f"{key}:", None
+            elif inside and re.fullmatch(r"  [A-Za-z_]+:", line):
+                lang = line.strip()[:-1]
+            elif inside and lang and line.lstrip().startswith("- "):
+                out.setdefault(lang, []).append(line.lstrip()[2:].strip().strip("'\""))
+        return out
+
+
 def load_sources(args: argparse.Namespace) -> dict[str, list[str]]:
     sources: dict[str, list[str]] = {}
     if args.config:
-        import yaml  # only needed for --config
-
-        with open(args.config, encoding="utf-8") as fh:
-            cfg = yaml.safe_load(fh)
         key = "eval_manifest" if args.split == "eval" else "train_manifest"
-        for lang, paths in (cfg.get(key) or {}).items():
+        for lang, paths in config_manifests(args.config, key).items():
             sources.setdefault(lang, []).extend(paths)
     for spec in args.manifest or []:
         lang, _, path = spec.partition("=")
@@ -332,8 +357,10 @@ def main() -> int:
     print(f"=== sweep over {levels} ({len(args.url)} server(s), {len(pool)} clips) ===\n{hdr}")
     for c in levels:
         n = args.requests or max(len(pool), 4 * c)
+        t_start = time.time()
         records, wall = run_level(pool, args.url, c, n, args.timeout, args.max_tokens)
         s = summarize(records, wall, c)
+        s["t_start"], s["t_end"] = round(t_start, 1), round(time.time(), 1)  # for GPU/CPU monitors
         s["accuracy"] = score(records)
         report["levels"].append(s)
         with open(out / f"requests_c{c}.jsonl", "w", encoding="utf-8") as fh:

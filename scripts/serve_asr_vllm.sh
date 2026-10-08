@@ -35,10 +35,17 @@ GPU_UTIL="${GPU_UTIL:-0.85}"
 # 35 s audio -> 438 encoder tokens + ~30 prompt tokens + transcript.
 MAX_MODEL_LEN="${MAX_MODEL_LEN:-2048}"
 MAX_NUM_SEQS="${MAX_NUM_SEQS:-512}"
-# Mel extraction and audio decoding run in the API-server processes.
-API_SERVERS="${API_SERVERS:-8}"
+# Audio decode, resampling and mel extraction run in the API-server processes,
+# each a single-threaded event loop: the first load test on hpc-029 (8 servers)
+# capped at ~2,500 RTFx with the GPUs at ~60% and the container at ~20 cores
+# (8 API servers + 8 engines, each pegged at one core). Size for a 96-core,
+# 8-GPU node: 8 engines + 24 API servers, leaving headroom for the client/OS.
+API_SERVERS="${API_SERVERS:-24}"
 # Audio decode threads per API server (vLLM default is 2).
-AUDIO_WORKERS="${AUDIO_WORKERS:-8}"
+AUDIO_WORKERS="${AUDIO_WORKERS:-4}"
+# CPU threads per process for torch (mel STFT) and BLAS. Unset, every one of
+# the API servers would start a 96-thread pool and thrash the cores.
+TORCH_THREADS="${TORCH_THREADS:-2}"
 # vLLM's [audio] extra (setup.py v0.26.0), missing from the image.
 AUDIO_PKGS="${AUDIO_PKGS:-soundfile av soxr scipy}"
 # 1 = batch-invariant decoder kernels (vLLM): a clip's transcript no longer
@@ -89,6 +96,7 @@ docker run -d --name ${CONTAINER} --restart unless-stopped \\
   -v ${HF_CACHE}:/root/.cache/huggingface \\
   -e VLLM_MAX_AUDIO_PREPROCESS_WORKERS=${AUDIO_WORKERS} \\
   -e VLLM_BATCH_INVARIANT=${BATCH_INVARIANT} \\
+  -e OMP_NUM_THREADS=${TORCH_THREADS} -e MKL_NUM_THREADS=${TORCH_THREADS} \\
   $(compat_env)--entrypoint bash ${IMAGE} -c '
     set -e
     $(compat_prelude)

@@ -91,6 +91,8 @@ cleanup() { for p in "${MON_PIDS[@]:-}"; do [ -n "$p" ] && kill "$p" 2>/dev/null
 trap cleanup EXIT
 if command -v docker >/dev/null && docker ps -q -f name="^${CONTAINER}$" 2>/dev/null | grep -q .; then
   log "server container is local: recording GPU and CPU use"
+  docker inspect --format '{{join .Args " "}}' "$CONTAINER" \
+    | grep -oE -- '--(api-server-count|data-parallel-size) [0-9]+' > "$OUT/topology.txt" || true
   ( while :; do
       ts=$(date +%s)
       nvidia-smi --query-gpu=index,utilization.gpu,memory.used --format=csv,noheader,nounits \
@@ -111,50 +113,105 @@ ARGS=("${URL_ARGS[@]}" --config "$CONFIG" --split "$SPLIT" --per-lang "$PER_LANG
       --concurrency "$CONCURRENCY" --min-level-seconds "$MIN_LEVEL_S" --out "$OUT")
 [ -n "$LANGS" ] && ARGS+=(--langs "$LANGS")
 [ "$PROJECT_HOURS" != 0 ] && ARGS+=(--project-hours "$PROJECT_HOURS")
+# Engine-side queue, from vLLM's own Prometheus gauges (summed over the DP
+# engines of the first server): requests the client has in flight but the
+# engines do not see are queued in the API-server (front-end) processes.
+FIRST_URL="${URLS%% *}"
+( while :; do
+    printf '%s, %s\n' "$(date +%s)" "$(curl -sf --max-time 2 "${FIRST_URL}/metrics" \
+      | awk '/^vllm:num_requests_running/{r+=$NF} /^vllm:num_requests_waiting/{w+=$NF} END{printf "%d, %d", r, w}')"
+    sleep 3
+  done ) > "$OUT/engine.csv" 2>/dev/null &
+MON_PIDS+=($!)
+
 log "$PY scripts/asr_load_test.py ${ARGS[*]}"
-"$PY" scripts/asr_load_test.py "${ARGS[@]}"
+"$PY" scripts/asr_load_test.py "${ARGS[@]}" &
+CLIENT_PID=$!
+# The client's own CPU: one Python process, so ~100% means the GIL is the cap.
+( while kill -0 "$CLIENT_PID" 2>/dev/null; do
+    printf '%s, %s\n' "$(date +%s)" "$(ps -o %cpu= -p "$CLIENT_PID" | tr -d ' ')"
+    sleep 3
+  done ) > "$OUT/client.csv" 2>/dev/null &
+MON_PIDS+=($!)
+wait "$CLIENT_PID"
 
 cleanup
-if [ -s "$OUT/gpu.csv" ]; then
+if [ -s "$OUT/report.json" ]; then
   "$PY" - "$OUT" "$(nproc 2>/dev/null || echo 0)" <<'PY' | tee "$OUT/monitors.txt"
-import csv, json, sys
+import csv, json, re, sys
 from pathlib import Path
+
 out = Path(sys.argv[1])
-report = json.loads((out / "report.json").read_text())
-gpu = [(float(r[0]), float(r[2]), float(r[3])) for r in csv.reader(open(out / "gpu.csv")) if len(r) == 4]
-cpu = []
-for r in csv.reader(open(out / "cpu.csv")):
-    try:
-        cpu.append((float(r[0]), float(r[1])))
-    except (ValueError, IndexError):
-        pass
-print("\n=== server utilisation per level (GPU mean over all GPUs; CPU = container, 100% = 1 core) ===")
-print(f"{'conc':>5} {'RTFx':>7} {'GPU util':>9} {'GPU mem GiB':>12} {'CPU cores':>10}")
-for lv in report["levels"]:
-    g = [u for t, u, _ in gpu if lv["t_start"] <= t <= lv["t_end"]]
-    m = [mem for t, _, mem in gpu if lv["t_start"] <= t <= lv["t_end"]]
-    c = [v for t, v in cpu if lv["t_start"] <= t <= lv["t_end"]]
-    fmt = lambda xs, f: f(sum(xs) / len(xs)) if xs else "-"
-    print(f"{lv['concurrency']:>5} {lv['rtfx']:>7} {fmt(g, lambda v: f'{v:.0f}%'):>9} "
-          f"{fmt(m, lambda v: f'{v / 1024:.1f}'):>12} {fmt(c, lambda v: f'{v / 100:.1f}'):>10}")
-# Verdict at the highest level, from what was measured (not a fixed hint).
 cores = int(sys.argv[2]) or None
-top = report["levels"][-1]
-g = [u for t, u, _ in gpu if top["t_start"] <= t <= top["t_end"]]
-c = [v / 100 for t, v in cpu if top["t_start"] <= t <= top["t_end"]]
-gu, cu = (sum(g) / len(g) if g else None), (sum(c) / len(c) if c else None)
-rising = len(report["levels"]) > 1 and top["rtfx"] > 1.10 * report["levels"][-2]["rtfx"]
+report = json.loads((out / "report.json").read_text())
+
+
+def series(name: str, cols: int) -> list[tuple[float, ...]]:
+    path = out / name
+    rows = []
+    if path.exists():
+        for r in csv.reader(open(path)):
+            try:
+                vals = tuple(float(x) for x in r)
+            except ValueError:
+                continue
+            if len(vals) == cols:
+                rows.append(vals)
+    return rows
+
+
+gpu, cpu = series("gpu.csv", 4), series("cpu.csv", 2)
+eng, cli = series("engine.csv", 3), series("client.csv", 2)
+topo = dict(re.findall(r"--([a-z-]+) (\d+)", (out / "topology.txt").read_text())) if (out / "topology.txt").exists() else {}
+api, dp = int(topo.get("api-server-count", 0)), int(topo.get("data-parallel-size", 0))
+
+
+def mean(rows, col, lv):
+    xs = [r[col] for r in rows if lv["t_start"] <= r[0] <= lv["t_end"]]
+    return sum(xs) / len(xs) if xs else None
+
+
+def f(v, fmt):
+    return "-" if v is None else fmt.format(v)
+
+
+print("\n=== where requests are and who is busy, per level ===")
+print("(GPU = mean over GPUs; server CPU = container cores; engine run/wait = vLLM gauges summed over engines;")
+print(" client CPU = the load-test process, 100% = one core)")
+print(f"{'conc':>5} {'RTFx':>7} {'GPU':>5} {'srv cores':>9} {'eng run':>8} {'eng wait':>8} {'client':>7}")
+rows = []
+for lv in report["levels"]:
+    m = dict(gpu=mean(gpu, 2, lv), mem=mean(gpu, 3, lv), cpu=mean(cpu, 1, lv),
+             run=mean(eng, 1, lv), wait=mean(eng, 2, lv), cli=mean(cli, 1, lv))
+    rows.append((lv, m))
+    print(f"{lv['concurrency']:>5} {lv['rtfx']:>7} {f(m['gpu'], '{:.0f}%'):>5} "
+          f"{f(m['cpu'] and m['cpu'] / 100, '{:.1f}'):>9} {f(m['run'], '{:.0f}'):>8} "
+          f"{f(m['wait'], '{:.0f}'):>8} {f(m['cli'], '{:.0f}%'):>7}")
+
+# Verdict at the highest level, from measurements.
+lv, m = rows[-1]
+conc = lv["concurrency"]
+in_engines = (m["run"] or 0) + (m["wait"] or 0)
+rising = len(rows) > 1 and lv["rtfx"] > 1.10 * rows[-2][0]["rtfx"]
+fixed_procs = api + dp
 print()
-if gu is not None and gu >= 85:
-    print(f"verdict: GPU-bound at concurrency {top['concurrency']} ({gu:.0f}% util) -- this is the server's capacity")
-elif cu is not None and cores and cu >= 0.7 * cores:
-    print(f"verdict: CPU-bound ({cu:.0f} of {cores} cores) -- audio decode/mel: restart with API_SERVERS=16 AUDIO_WORKERS=16")
+if m["gpu"] is not None and m["gpu"] >= 85:
+    print(f"verdict: GPU-bound at concurrency {conc} ({m['gpu']:.0f}% util) -- this is the server's capacity")
+elif m["cli"] is not None and m["cli"] >= 90:
+    print(f"verdict: CLIENT-bound (load-test process at {m['cli']:.0f}% CPU, one GIL) -- run more clients, "
+          "e.g. on other nodes, and add their RTFx")
+elif m["run"] is not None and in_engines < 0.5 * conc:
+    msg = (f"verdict: FRONT-END bound -- the client holds {conc} requests but the engines see only "
+           f"{in_engines:.0f}; the rest queue in the {api or '?'} API-server processes (audio decode + mel run there)")
+    if m["cpu"] is not None and fixed_procs and m["cpu"] / 100 >= 0.8 * fixed_procs:
+        msg += f"; server CPU {m['cpu'] / 100:.0f} cores ~= {api} API servers + {dp} engines each pegged at 1 core"
+    print(msg + f". Restart with API_SERVERS={max(2 * (api or 8), 16)} (node has {cores or '?'} cores).")
+elif m["cpu"] is not None and cores and m["cpu"] / 100 >= 0.7 * cores:
+    print(f"verdict: CPU-bound ({m['cpu'] / 100:.0f} of {cores} cores) -- audio decode/mel")
 elif rising:
-    print(f"verdict: NOT saturated (GPU {gu or 0:.0f}%, CPU {cu or 0:.0f}/{cores} cores, RTFx still rising "
-          f">10% per step) -- raise CONCURRENCY or run a second client on another node")
+    print(f"verdict: NOT saturated (RTFx still rising >10% per step) -- raise CONCURRENCY")
 else:
-    print(f"verdict: throughput flat with GPU {gu or 0:.0f}% and CPU {cu or 0:.0f}/{cores} cores -- the client may be "
-          "the limit: run a second client on another node and compare")
+    print("verdict: throughput flat but no resource saturated -- check engine.csv / docker logs")
 PY
 fi
 log "done: $OUT/report.json"

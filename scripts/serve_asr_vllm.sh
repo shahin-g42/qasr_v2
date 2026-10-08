@@ -192,12 +192,14 @@ smoke() {
 }
 
 # One-GPU check that the image really computes on this driver: a cuBLAS
+# (Triton reads kernel source from a file, hence the script is written to /tmp.)
+#
 # matmul and a freshly compiled Triton kernel (the paths a version mismatch
 # breaks first). Runs in ~1 minute once the image is pulled.
 gpu_test() {
   log "=== gpu-test: ${IMAGE} on GPU ${GPUS%%,*} (CUDA compat=$(cuda_compat)) ==="
   docker run --rm -i --gpus "\"device=${GPUS%%,*}\"" $(compat_env)--entrypoint bash "$IMAGE" -c \
-    "$(compat_prelude)python3 -" <<'PY'
+    "$(compat_prelude)cat > /tmp/gpu_test.py && python3 /tmp/gpu_test.py" <<'PY'
 import ctypes, os, torch, triton, triton.language as tl
 print(f"  torch {torch.__version__} (CUDA {torch.version.cuda}), triton {triton.__version__}")
 print(f"  LD_LIBRARY_PATH head: {os.environ.get('LD_LIBRARY_PATH', '').split(':')[0] or '-'}")

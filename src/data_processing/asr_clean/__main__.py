@@ -1,7 +1,7 @@
 """CLI: python -m data_processing.asr_clean {plan,run,status,assemble}.
 
     # once, any node
-    python -m data_processing.asr_clean plan --run-root $ROOT --config configs/v7.6/02_full_8node.yaml
+    python -m data_processing.asr_clean plan --run-root $ROOT --data-dir data
 
     # on each LLM node (stable worker ids host:0..N-1, so a restart resumes its chunks)
     python -m data_processing.asr_clean run --run-root $ROOT --procs 16 \\
@@ -22,7 +22,7 @@ import sys
 from dataclasses import fields
 from pathlib import Path
 
-from .plan import build_plan, config_sources
+from .plan import build_plan, config_sources, data_dir_sources
 from .worker import WorkerConfig, assemble, run_child, status
 
 
@@ -33,6 +33,8 @@ def main(argv: list[str] | None = None) -> int:
 
     p = sub.add_parser("plan", help="chunk + dedup every manifest (run once)")
     p.add_argument("--run-root", required=True)
+    p.add_argument("--data-dir", action="append", default=[],
+                   help="flat folder of <split>_<lang>_<name>.json manifests (e.g. data/)")
     p.add_argument("--config", action="append", default=[], help="training YAML(s) to take manifests from")
     p.add_argument("--manifest", action="append", default=[], help="extra LANG:SPLIT:PATH")
     p.add_argument("--splits", default="eval,train")
@@ -71,7 +73,8 @@ def main(argv: list[str] | None = None) -> int:
 
     if args.cmd == "plan":
         splits = tuple(args.splits.split(","))
-        sources = [src for cfg in args.config for src in config_sources(cfg, splits)]
+        sources = [src for d in args.data_dir for src in data_dir_sources(d) if src["split"] in splits]
+        sources += [src for cfg in args.config for src in config_sources(cfg, splits)]
         for spec in args.manifest:
             lang, split, path = spec.split(":", 2)
             sources.append({"lang": lang, "split": split, "path": path})
@@ -81,7 +84,7 @@ def main(argv: list[str] | None = None) -> int:
         seen: set[str] = set()
         sources = [s_ for s_ in sources if not (s_["path"] in seen or seen.add(s_["path"]))]
         if not sources:
-            ap.error("no sources: pass --config and/or --manifest")
+            ap.error("no sources: pass --data-dir, --config and/or --manifest")
         build_plan(args.run_root, sources, chunk_mb=args.chunk_mb, dedup=not args.no_dedup, jobs=args.jobs,
                    limit=args.limit)
         return 0

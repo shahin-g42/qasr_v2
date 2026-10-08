@@ -17,7 +17,12 @@ import wave
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 
-from data_processing.asr_clean.plan import build_plan, config_sources, load_dup_mask
+from data_processing.asr_clean.plan import (
+    build_plan,
+    config_sources,
+    data_dir_sources,
+    load_dup_mask,
+)
 from data_processing.asr_clean.prompts import guard, parse_response, system_prompt
 from data_processing.asr_clean.worker import OUTPUT_KEYS, WorkerConfig, assemble, run_worker, status
 
@@ -177,6 +182,38 @@ class PlanTest(unittest.TestCase):
             self.assertEqual(sorted(c["stem"] for c in plan["chunks"]),
                              ["q3asr_sft_manifests/train_ar_q3asr", "v7.6/train_ar_q3asr"])
             self.assertEqual(len({c["id"] for c in plan["chunks"]}), 2)
+
+    def test_data_dir_sources_from_the_real_file_names(self) -> None:
+        # `ls data/` on the cluster, 2026-10-09.
+        names = ["eval_ar_inworld", "train_zh_q3asr", "eval_ar_ar_ae", "eval_en_inworld", "eval_en_expresso", "eval_ml_inworld_2", "eval_zh_inworld", "train_hi_q3asr", "train_ml_itn_punct", "train_en_q3asr", "train_en_commentary", "train_ar_q3asr", "train_ar_ar_ae", "train_ar_camel_race", "train_en_inworld", "train_ar_inworld_full", "train_ar_qudratech_batch2", "train_ar_qudratech_phase4", "train_ar_khalid_msa", "train_ar_el_gen_v5", "train_ar_el_ar_v1", "train_ar_se_v1", "train_ar_spotify_v1", "train_ar_dialect_gulf", "train_ar_ar_ae_train", "train_en_expresso", "train_en_anispeech", "train_en_hifi_tts", "eval_ml_inworld", "eval_hi_inworld"]
+        with tempfile.TemporaryDirectory() as t:
+            data = Path(t) / "data"
+            data.mkdir()
+            for n in names:
+                (data / f"{n}.json").write_text(json.dumps({"audio_filepath": f"/{n}.wav", "text": "x"}) + "\n")
+            srcs = data_dir_sources(str(data))
+            self.assertEqual(len(srcs), 30)
+            evals = [s_ for s_ in srcs if s_["split"] == "eval"]
+            self.assertEqual(srcs[:len(evals)], evals)  # eval first: the dedup priority
+            langs = {}
+            for s_ in srcs:
+                langs[s_["lang"]] = langs.get(s_["lang"], 0) + 1
+            self.assertEqual(langs, {"ar": 15, "en": 8, "hi": 2, "ml": 3, "zh": 2})
+            plan = build_plan(str(Path(t) / "run"), srcs, jobs=1)
+            self.assertEqual(len({c["stem"] for c in plan["chunks"]}), 30)
+            self.assertTrue(all(c["stem"].startswith("data/") for c in plan["chunks"]))
+
+    def test_json_array_files_are_refused(self) -> None:
+        with tempfile.TemporaryDirectory() as t:
+            data = Path(t) / "data"
+            data.mkdir()
+            (data / "train_ar_x.json").write_text('[{"audio_filepath": "/a.wav", "text": "x"}]')
+            with self.assertRaises(SystemExit) as ctx:
+                build_plan(str(Path(t) / "run"), data_dir_sources(str(data)), jobs=1)
+            self.assertIn("JSON Lines", str(ctx.exception))
+            (data / "notes_x.json").write_text("{}\n")
+            with self.assertRaises(SystemExit):
+                data_dir_sources(str(data))
 
     def test_limit_takes_the_first_n_records_of_every_manifest(self) -> None:
         with tempfile.TemporaryDirectory() as t:

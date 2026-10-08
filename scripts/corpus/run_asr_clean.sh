@@ -29,7 +29,11 @@ export PYTHONPATH="$REPO/src${PYTHONPATH:+:$PYTHONPATH}"
 
 RUN_ID="${RUN_ID:?set RUN_ID (one id per cleaning run, the same on every node)}"
 ROOT="${ROOT:-$REPO/asr_cleaned_manifests/$RUN_ID}"
-CONFIG="${CONFIG:-configs/v7.6/02_full_8node.yaml}"
+# Source manifests: the flat data/ folder (<split>_<lang>_<name>.json) by
+# default. The v7.6 training_manifests tree is NOT used (corrupted, per user
+# 2026-10-09); set CONFIG=<training yaml> to take a config's manifests instead.
+DATA_DIR="${DATA_DIR:-$REPO/data}"
+CONFIG="${CONFIG:-}"
 ASR_URLS="${ASR_URLS:-http://inception-H100-hpc-029.inception.ai:8020}"
 LLM_URL="${LLM_URL:-http://localhost:8010}"
 PROCS="${PROCS:-16}"
@@ -43,8 +47,9 @@ die() { printf 'ERROR: %s\n' "$*" >&2; exit 1; }
 case "${1:-}" in
   plan)
     "$PY" -c 'import numpy' 2>/dev/null || die "plan needs numpy for the dedup ($PY)"
-    log "planning $CONFIG -> $ROOT"
-    exec "$PY" -m data_processing.asr_clean plan --run-root "$ROOT" --config "$CONFIG" \
+    if [ -n "$CONFIG" ]; then SRC=(--config "$CONFIG"); else SRC=(--data-dir "$DATA_DIR"); fi
+    log "planning ${SRC[*]} -> $ROOT"
+    exec "$PY" -m data_processing.asr_clean plan --run-root "$ROOT" "${SRC[@]}" \
       --jobs "${JOBS:-64}" ${EXTRA[@]+"${EXTRA[@]}"}
     ;;
   run)

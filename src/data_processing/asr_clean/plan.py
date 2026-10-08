@@ -60,6 +60,49 @@ def config_sources(config: str, splits: tuple[str, ...] = ("eval", "train")) -> 
     return out
 
 
+_DATA_NAME_RE = re.compile(r"^(eval|train)_([a-z]{2})_(.+)\.jsonl?$")
+
+
+def data_dir_sources(data_dir: str) -> list[dict]:
+    """Sources from a flat manifest folder named ``<split>_<lang>_<name>.json[l]``.
+
+    The repo's ``data/`` folder (the validated manifests) is the source of
+    truth; split and language come from the file name. Eval files sort first,
+    which is the dedup priority (a clip in both splits stays in eval).
+    """
+    from .text import LANGUAGE_NAMES
+
+    out, bad = [], []
+    for f in sorted(Path(data_dir).iterdir()):
+        if not f.is_file() or f.suffix not in (".json", ".jsonl"):
+            continue
+        m = _DATA_NAME_RE.match(f.name)
+        if not m or m.group(2) not in LANGUAGE_NAMES:
+            bad.append(f.name)
+            continue
+        out.append({"lang": m.group(2), "split": m.group(1), "path": str(f.resolve())})
+    if bad:
+        raise SystemExit(f"cannot tell split/language of: {', '.join(bad)} "
+                         "(expected <eval|train>_<ar|en|zh|hi|ml>_<name>.json)")
+    out.sort(key=lambda s_: (s_["split"] != "eval", s_["path"]))
+    return out
+
+
+def check_jsonl(path: str) -> None:
+    """Refuse a file that is not one JSON object per line (e.g. a single JSON array)."""
+    with open(path, "rb") as fh:
+        first = fh.readline(1 << 20).strip()
+    if not first:
+        return
+    try:
+        obj = json.loads(first)
+    except json.JSONDecodeError:
+        obj = None
+    if not isinstance(obj, dict):
+        raise SystemExit(f"{path}: first line is not a JSON object -- expected JSON Lines "
+                         f"(one record per line), got: {first[:80]!r}")
+
+
 def _stem(path: str) -> str:
     return Path(path).name.removesuffix(".jsonl").removesuffix(".json")
 
@@ -160,6 +203,8 @@ def build_plan(run_root: str, sources: list[dict], *, chunk_mb: int = 64, dedup:
     missing = [s["path"] for s in sources if not os.path.exists(s["path"])]
     if missing:
         raise SystemExit("missing manifests:\n  " + "\n  ".join(missing))
+    for s in sources:
+        check_jsonl(s["path"])
     stems: dict[tuple[str, str], str] = {}
     chunks: list[dict] = []
     for s in sources:

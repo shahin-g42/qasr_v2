@@ -31,6 +31,7 @@ import json
 import logging
 import os
 import socket
+import threading
 import time
 from collections import Counter, deque
 from concurrent.futures import FIRST_COMPLETED, Future, ThreadPoolExecutor, wait
@@ -161,6 +162,37 @@ class Claims:
         return None
 
 
+# --------------------------------------------------------------- telemetry --
+
+class Telemetry:
+    """Process-wide request statistics, snapshotted to ``_state/workers/<id>.json``.
+
+    Answers "where does the time go": per LLM lane the request count, items,
+    latency, prompt/completion tokens, how often generation hit max_tokens
+    (a thinking run that never reached its answer) and how many items the
+    model left out; per ASR call the latency and audio seconds.
+    """
+
+    def __init__(self) -> None:
+        self._lock = threading.Lock()
+        self.started = time.time()
+        self.c: Counter = Counter()
+
+    def add(self, **kv: float) -> None:
+        with self._lock:
+            self.c.update(kv)
+
+    def snapshot(self) -> dict:
+        with self._lock:
+            return {"started": self.started, "updated": time.time(), "counters": dict(self.c)}
+
+
+def _snapshot_loop(tel: Telemetry, path: Path, stop: threading.Event, every: float = 30.0) -> None:
+    while not stop.wait(every):
+        _atomic_json(path, tel.snapshot())
+    _atomic_json(path, tel.snapshot())
+
+
 # ---------------------------------------------------------------- pipeline --
 
 @dataclass
@@ -192,9 +224,11 @@ class Window:
 
 class ChunkProcessor:
     def __init__(self, cfg: WorkerConfig, asr: ASRClient, llm: LLMClient,
-                 asr_pool: ThreadPoolExecutor, llm_pool: ThreadPoolExecutor) -> None:
+                 asr_pool: ThreadPoolExecutor, llm_pool: ThreadPoolExecutor,
+                 tel: Telemetry | None = None) -> None:
         self.cfg, self.asr, self.llm = cfg, asr, llm
         self.asr_pool, self.llm_pool = asr_pool, llm_pool
+        self.tel = tel or Telemetry()
 
     # -- stage A: record -> ASR ------------------------------------------------
     def _parse(self, raw: bytes, item: Item) -> None:
@@ -228,9 +262,11 @@ class ChunkProcessor:
         if not self.cfg.min_duration <= item.duration <= self.cfg.max_duration:
             item.reject, item.detail = "duration_out_of_range", f"{item.duration:.2f}s"
             return
+        t0 = time.perf_counter()
         while True:
             try:
                 res = self.asr.transcribe(item.audio_filepath, lang)
+                self.tel.add(asr_requests=1, asr_seconds=time.perf_counter() - t0, asr_audio_s=item.duration)
                 break
             except PermanentError as exc:
                 item.reject, item.detail = "asr_error", str(exc)[:500]
@@ -247,15 +283,18 @@ class ChunkProcessor:
     def _think(self, lane: str) -> bool:
         return self.cfg.thinking == "always" or (self.cfg.thinking == "auto" and lane == "adjudicate")
 
-    def _correct(self, items: list[Item], lang: str, lane: str, attempt: int = 1) -> None:
+    def _correct(self, items: list[Item], lang: str, lane: str, attempt: int = 1,
+                 think: bool | None = None) -> None:
+        think = self._think(lane) if think is None else think
         payload = [{"org_text": it.org_text, "asr_text": it.asr_text} for it in items]
         msgs = messages(payload, lang)
         budget = self.cfg.adjudicate_max_tokens if lane == "adjudicate" else self.cfg.format_max_tokens
         est_prompt = sum(len(m["content"]) for m in msgs) // 2 + 64  # conservative chars/token
         max_tokens = max(256, min(budget, self.cfg.llm_context - est_prompt))
+        t0 = time.perf_counter()
         while True:
             try:
-                content, meta = self.llm.chat(msgs, thinking=self._think(lane), max_tokens=max_tokens)
+                content, meta = self.llm.chat(msgs, thinking=think, max_tokens=max_tokens)
                 break
             except PermanentError as exc:  # e.g. context overflow: shrink the batch
                 content, meta = "", {"error": str(exc)[:500]}
@@ -263,6 +302,13 @@ class ChunkProcessor:
             except TransientError as exc:
                 _wait_healthy([self.llm.client], f"LLM ({exc})")
         parsed = parse_response(content, len(items))
+        key = f"llm_{lane}{'_think' if think else ''}"
+        truncated = meta.get("finish_reason") == "length"
+        self.tel.add(**{f"{key}_requests": 1, f"{key}_items": len(items), f"{key}_answered": len(parsed),
+                        f"{key}_seconds": time.perf_counter() - t0,
+                        f"{key}_prompt_tokens": meta.get("prompt_tokens", 0),
+                        f"{key}_completion_tokens": meta.get("completion_tokens", 0),
+                        f"{key}_truncated": int(truncated), f"{key}_errors": int("error" in meta)})
         missing = []
         for i, it in enumerate(items):
             res = parsed.get(i)
@@ -286,12 +332,17 @@ class ChunkProcessor:
                 it.detail = (meta.get("error") or f"no valid answer after {attempt} attempts")[:500]
                 it.llm_raw = content[:2000]
             return
-        if len(missing) == 1 or len(missing) < len(items):
-            self._correct(missing, lang, lane, attempt + 1)  # retry just the unanswered ones
+        if think and truncated:
+            # The reasoning ate the whole budget before the answer began:
+            # retrying with thinking would burn the same tokens again.
+            self.tel.add(llm_think_fallbacks=len(missing))
+            self._correct(missing, lang, lane, attempt + 1, think=False)
+        elif len(missing) == 1 or len(missing) < len(items):
+            self._correct(missing, lang, lane, attempt + 1, think)  # retry just the unanswered ones
         else:  # nothing usable at all: halve the batch
             half = len(missing) // 2
-            self._correct(missing[:half], lang, lane, attempt + 1)
-            self._correct(missing[half:], lang, lane, attempt + 1)
+            self._correct(missing[:half], lang, lane, attempt + 1, think)
+            self._correct(missing[half:], lang, lane, attempt + 1, think)
 
     def _submit_llm(self, window: Window, lang: str) -> None:
         ready = [it for it in window.items if not it.reject]
@@ -448,9 +499,27 @@ def run_worker(cfg: WorkerConfig, stop_after_windows: int | None = None) -> None
     for clients, what in ((asr.clients, "ASR"), ([llm.client], "LLM")):
         if not all(c.healthy() for c in clients):
             _wait_healthy(clients, what)
+    tel = Telemetry()
+    (paths.state / "workers").mkdir(exist_ok=True)
+    stop = threading.Event()
+    snap = threading.Thread(target=_snapshot_loop, daemon=True,
+                            # One file per incarnation: a restarted worker keeps its id, and
+                            # must add to the totals, not overwrite its earlier counters.
+                            args=(tel, paths.state / "workers" /
+                                  f"{cfg.worker_id.replace(':', '_')}_{int(tel.started * 1000)}.json", stop))
+    snap.start()
+    try:
+        _work(cfg, plan, paths, claims, asr, llm, tel, stop_after_windows)
+    finally:
+        stop.set()
+        snap.join(timeout=10)
+
+
+def _work(cfg: WorkerConfig, plan: dict, paths: RunPaths, claims: Claims, asr: ASRClient, llm: LLMClient,
+          tel: Telemetry, stop_after_windows: int | None) -> None:
     with ThreadPoolExecutor(cfg.asr_concurrency, thread_name_prefix="asr") as asr_pool, \
             ThreadPoolExecutor(cfg.llm_concurrency, thread_name_prefix="llm") as llm_pool:
-        proc = ChunkProcessor(cfg, asr, llm, asr_pool, llm_pool)
+        proc = ChunkProcessor(cfg, asr, llm, asr_pool, llm_pool, tel)
         while (chunk := claims.next_chunk(plan["chunks"])) is not None:
             t0 = time.time()
             LOG.info("[%s] chunk %s (%s lines)", cfg.worker_id, chunk["id"], chunk["lines"])
@@ -481,6 +550,39 @@ def status(run_root: str) -> dict:
         total.update(p.get("counts", {}))
         first = min(first or p["started"], p["started"])
         last = max(last or 0, p.get("updated", p["started"]))
+    tel = Counter()
+    t_first = t_last = None
+    for f in (paths.state / "workers").glob("*.json") if (paths.state / "workers").exists() else []:
+        try:
+            snap = json.loads(f.read_text())
+        except (OSError, json.JSONDecodeError):
+            continue
+        tel.update(snap["counters"])
+        t_first = min(t_first or snap["started"], snap["started"])
+        t_last = max(t_last or 0, snap["updated"])
+    wall = max((t_last or 0) - (t_first or 0), 1.0)
+    lanes_tel = {}
+    for key in sorted({k.rsplit("_requests", 1)[0] for k in tel if k.startswith("llm_") and k.endswith("_requests")}):
+        n = tel[f"{key}_requests"]
+        lanes_tel[key[4:]] = {
+            "requests": int(n),
+            "items_per_request": round(tel[f"{key}_items"] / n, 1),
+            "items_answered_pct": round(100 * tel[f"{key}_answered"] / max(tel[f"{key}_items"], 1), 1),
+            "mean_latency_s": round(tel[f"{key}_seconds"] / n, 1),
+            "mean_prompt_tokens": int(tel[f"{key}_prompt_tokens"] / n),
+            "mean_completion_tokens": int(tel[f"{key}_completion_tokens"] / n),
+            "hit_max_tokens_pct": round(100 * tel[f"{key}_truncated"] / n, 1),
+            "errors": int(tel[f"{key}_errors"]),
+        }
+    llm_tokens = sum(v for k, v in tel.items() if k.endswith("_completion_tokens"))
+    telemetry = {
+        "llm": lanes_tel,
+        "llm_output_tok_per_s": round(llm_tokens / wall, 1),
+        "think_fallback_items": int(tel["llm_think_fallbacks"]),
+        "asr_requests": int(tel["asr_requests"]),
+        "asr_mean_latency_s": round(tel["asr_seconds"] / max(tel["asr_requests"], 1), 2),
+        "asr_rtfx": round(tel["asr_audio_s"] / wall, 1),
+    }
     to_clean = plan["lines"] - plan["duplicates"]
     processed = total["lines"]
     rate = processed / max((last or 0) - (first or 0), 1) if processed else 0.0
@@ -492,6 +594,7 @@ def status(run_root: str) -> dict:
         "lanes": {k[5:]: v for k, v in total.items() if k.startswith("lane:")},
         "choices": {k[7:]: v for k, v in total.items() if k.startswith("choice:")},
         "asr_truncated": total["asr_truncated"],
+        "telemetry": telemetry,
         "records_per_s": round(rate, 1),
         "eta_hours": round((to_clean - processed) / rate / 3600, 1) if rate else None,
     }

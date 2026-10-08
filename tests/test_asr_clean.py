@@ -62,6 +62,11 @@ class _Fakes:
                         "content": f"language {body['messages'][0]['content']}<asr_text>{text}"},
                         "finish_reason": "stop"}]})
                 # LLM request: follow ORIGINAL, add a full stop; misbehave on markers.
+                if body["chat_template_kwargs"]["enable_thinking"] and "LONGTHINK" in content:
+                    # Reasoning that never reaches the answer (27B node, 8k context).
+                    return self._send(200, {"choices": [{"message": {"content": "<think>hmm " * 50},
+                                                         "finish_reason": "length"}],
+                                            "usage": {"prompt_tokens": 10, "completion_tokens": 6000}})
                 out = []
                 for i, org, asr in ITEM_RE.findall(content):
                     i = int(i)
@@ -116,6 +121,8 @@ def _dataset(tmp: Path) -> tuple[Path, Path, list[str]]:
             org = "DROPME " + org
         if i == 13:
             org = "LATIN " + org
+        if i == 16:  # disagrees with ASR -> adjudication lane, with thinking
+            org = org + " وكلام إضافي طويل بالعربية LONGTHINK"  # Arabic-dominant, or the script guard fires
         asr = org if i % 2 else f"جملة رقمي {i}"  # half agree, half need adjudication
         wav.with_suffix(".asr").write_text(asr, encoding="utf-8")
         row = {"audio_filepath": str(wav), "text": f"language Arabic<asr_text>{org}" if i % 5 == 0 else org}
@@ -201,7 +208,7 @@ class EndToEndTest(unittest.TestCase):
                for line in p.read_text(encoding="utf-8").splitlines()]
         return out, rej
 
-    def _check_complete(self) -> None:
+    def _check_complete(self, resumed: bool = False) -> None:
         out, rej = self._outputs()
         for r in out:
             self.assertEqual(tuple(r), OUTPUT_KEYS)  # exactly the 5 columns, in order
@@ -218,6 +225,12 @@ class EndToEndTest(unittest.TestCase):
         self.assertEqual(st["written"], 43)
         self.assertEqual(st["processed"], st["to_clean"])
         self.assertEqual(st["lanes"]["format"] + st["lanes"]["adjudicate"], 43)
+        tel = st["telemetry"]
+        self.assertGreaterEqual(tel["think_fallback_items"], 1)  # LONGTHINK recovered without thinking
+        self.assertGreater(tel["llm"]["adjudicate_think"]["hit_max_tokens_pct"], 0)
+        self.assertIn("adjudicate", tel["llm"])  # the non-thinking retry
+        # Every clip that reached ASR (incl. drop/latin); a crash redoes its in-flight windows.
+        (self.assertGreaterEqual if resumed else self.assertEqual)(tel["asr_requests"], 43 + 2)
 
     def test_two_racing_workers_clean_everything_exactly_once(self) -> None:
         threads = [threading.Thread(target=run_worker, args=(self._cfg(f"h:{i}"),)) for i in range(2)]
@@ -239,7 +252,7 @@ class EndToEndTest(unittest.TestCase):
         with open(part, "ab") as fh:  # torn write after the last commit
             fh.write(b'{"audio_filepath": "half a rec')
         run_worker(self._cfg("h:0"))  # same id resumes its own chunk
-        self._check_complete()
+        self._check_complete(resumed=True)
 
 
 class PromptTest(unittest.TestCase):

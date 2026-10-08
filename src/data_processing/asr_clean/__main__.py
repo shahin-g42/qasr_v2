@@ -123,6 +123,17 @@ def main(argv: list[str] | None = None) -> int:
             print(f"choices : {st['choices']}")
             print(f"rejects : {st['rejects']}")
             print(f"asr truncated (hit max_tokens): {st['asr_truncated']}")
+            t = st["telemetry"]
+            print(f"\nASR     : {t['asr_requests']:,} requests, mean {t['asr_mean_latency_s']} s, "
+                  f"RTFx {t['asr_rtfx']} (demand from these workers)")
+            print(f"LLM     : {t['llm_output_tok_per_s']:,} output tok/s; "
+                  f"thinking fell back to non-thinking for {t['think_fallback_items']:,} items")
+            print(f"{'lane':<18} {'reqs':>7} {'items/req':>9} {'answered':>8} {'latency':>8} "
+                  f"{'prompt tok':>10} {'output tok':>10} {'hit max':>7}")
+            for lane, v in t["llm"].items():
+                print(f"{lane:<18} {v['requests']:>7,} {v['items_per_request']:>9} {v['items_answered_pct']:>7}% "
+                      f"{v['mean_latency_s']:>7}s {v['mean_prompt_tokens']:>10,} {v['mean_completion_tokens']:>10,} "
+                      f"{v['hit_max_tokens_pct']:>6}%")
         return 0
 
     if args.cmd == "peek":

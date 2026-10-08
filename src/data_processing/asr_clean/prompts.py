@@ -103,19 +103,30 @@ def system_prompt(lang: str) -> str:
     return "\n\n".join(parts)
 
 
-def user_prompt(items: list[dict], lang: str) -> str:
+_AGREED = """\
+In ALL of these items the two transcripts already agree on the words, so the \
+words are certain. Change ONLY punctuation, casing, spacing, spoken numbers \
+to digits (ITN) and diacritics. Do NOT change, inflect, pluralize, add, drop \
+or "correct" any word, its grammar or its spelling, and never rewrite a \
+quotation or verse.
+
+"""
+
+
+def user_prompt(items: list[dict], lang: str, lane: str = "adjudicate") -> str:
     language = LANGUAGE_NAMES.get(lang, lang)
     blocks = [
         f"{i}.\n   ORIGINAL: <<<{it['org_text']}>>>\n   ASR:      <<<{it['asr_text']}>>>"
         for i, it in enumerate(items)
     ]
-    return (f"Edit these {len(items)} {language} items. Return the JSON array, one object per item, "
+    return ((_AGREED if lane == "format" else "")
+            + f"Edit these {len(items)} {language} items. Return the JSON array, one object per item, "
             f'"i" from 0 to {len(items) - 1}.\n\n' + "\n\n".join(blocks))
 
 
-def messages(items: list[dict], lang: str) -> list[dict]:
+def messages(items: list[dict], lang: str, lane: str = "adjudicate") -> list[dict]:
     return [{"role": "system", "content": system_prompt(lang)},
-            {"role": "user", "content": user_prompt(items, lang)}]
+            {"role": "user", "content": user_prompt(items, lang, lane)}]
 
 
 # ------------------------------------------------------------------ parsing --
@@ -172,7 +183,9 @@ def guard(text: str, org: str, asr: str, lang: str, max_divergence: float = 0.5)
         return "prompt_leak"
     expected = EXPECTED_SCRIPT.get(lang)
     script = dominant_script(text)
-    if expected and script and script != expected:
+    # Judged against the inputs too: code-switched Chinese ("你怎么学data
+    # analysis的") has more Latin letters than Han characters, legitimately.
+    if expected and script and script != expected and script not in (dominant_script(org), dominant_script(asr)):
         return "wrong_script"
     if min(cer(org, text, lang) if org else 1.0, cer(asr, text, lang) if asr else 1.0) > max_divergence:
         return "divergent"

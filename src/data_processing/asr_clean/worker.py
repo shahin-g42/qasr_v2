@@ -41,7 +41,7 @@ from pathlib import Path
 from .endpoints import ASRClient, LLMClient, PermanentError, TransientError
 from .plan import iter_chunk_lines, load_dup_mask, load_plan
 from .prompts import PROMPT_VERSION, guard, messages, parse_response
-from .text import cer, header_duration, strip_envelope
+from .text import added_letters, cer, header_duration, strip_envelope
 
 LOG = logging.getLogger("asr_clean")
 OUTPUT_KEYS = ("audio_filepath", "duration", "text", "org_text", "asr_text")
@@ -55,17 +55,20 @@ class WorkerConfig:
     asr_model: str = "qasr"
     llm_model: str = "corrector"
     flush_every: int = 1024          # records per commit (and per window)
-    windows_in_flight: int = 3       # pipelined windows per process
-    asr_concurrency: int = 16        # in-flight ASR requests per process
-    llm_concurrency: int = 24        # in-flight LLM requests per process
+    windows_in_flight: int = 4       # pipelined windows per process
+    asr_concurrency: int = 32        # in-flight ASR requests per process
+    llm_concurrency: int = 32        # in-flight LLM requests per process
     format_batch: int = 16           # items per request, transcripts agree
     adjudicate_batch: int = 8        # items per request, transcripts disagree
     agree_cer: float = 0.02          # normalized CER(org, asr) at or below = "agree"
-    thinking: str = "auto"           # auto: think only when adjudicating | always | never
+    # Off by default: on the 8k-context corrector nodes 91% of thinking requests
+    # hit max_tokens before answering (test1, 2026-10-09). auto = adjudication only.
+    thinking: str = "never"          # never | auto | always
     llm_context: int = 8192          # the corrector's --max-model-len
     format_max_tokens: int = 4096
     adjudicate_max_tokens: int = 6144
     max_divergence: float = 0.5      # guard: output must be this close to org or asr
+    agree_max_added: int = 1         # format lane: letters the LLM may insert/substitute
     min_duration: float = 0.1        # the training filter (configs/v7.6)
     max_duration: float = 35.0
     max_item_attempts: int = 4
@@ -287,7 +290,7 @@ class ChunkProcessor:
                  think: bool | None = None) -> None:
         think = self._think(lane) if think is None else think
         payload = [{"org_text": it.org_text, "asr_text": it.asr_text} for it in items]
-        msgs = messages(payload, lang)
+        msgs = messages(payload, lang, lane)
         budget = self.cfg.adjudicate_max_tokens if lane == "adjudicate" else self.cfg.format_max_tokens
         est_prompt = sum(len(m["content"]) for m in msgs) // 2 + 64  # conservative chars/token
         max_tokens = max(256, min(budget, self.cfg.llm_context - est_prompt))
@@ -322,6 +325,11 @@ class ChunkProcessor:
             reason = guard(res["text"], it.org_text, it.asr_text, lang, self.cfg.max_divergence)
             if reason:
                 it.reject, it.detail, it.llm_raw = f"guard_{reason}", "", res["text"]
+            elif lane == "format" and added_letters(it.org_text, res["text"], lang) > self.cfg.agree_max_added:
+                # Both independent transcripts agree on these words; an LLM that
+                # still rewrites them (test1: 60% of Malayalam) is overruled.
+                it.text, it.choice, it.detail = it.org_text, "original", "agree_guard"
+                self.tel.add(agree_guard_overrules=1)
             else:
                 it.text = res["text"]
         if not missing:
@@ -458,6 +466,8 @@ class ChunkProcessor:
             counts[f"choice:{it.choice}"] += 1
             if it.detail == "asr_truncated":
                 counts["asr_truncated"] += 1
+            if it.detail == "agree_guard":
+                counts["agree_guard"] += 1
             rec = {"audio_filepath": it.audio_filepath, "duration": round(it.duration, 3),
                    "text": it.text, "org_text": it.org_text, "asr_text": it.asr_text}
             out_lines.append(json.dumps(rec, ensure_ascii=False))
@@ -594,6 +604,7 @@ def status(run_root: str) -> dict:
         "lanes": {k[5:]: v for k, v in total.items() if k.startswith("lane:")},
         "choices": {k[7:]: v for k, v in total.items() if k.startswith("choice:")},
         "asr_truncated": total["asr_truncated"],
+        "agree_guard": total["agree_guard"],
         "telemetry": telemetry,
         "records_per_s": round(rate, 1),
         "eta_hours": round((to_clean - processed) / rate / 3600, 1) if rate else None,

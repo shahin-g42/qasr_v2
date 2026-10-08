@@ -123,6 +123,7 @@ def main(argv: list[str] | None = None) -> int:
             print(f"choices : {st['choices']}")
             print(f"rejects : {st['rejects']}")
             print(f"asr truncated (hit max_tokens): {st['asr_truncated']}")
+            print(f"agree guard (LLM rewrote words both transcripts agree on; kept ORIGINAL): {st['agree_guard']:,}")
             t = st["telemetry"]
             print(f"\nASR     : {t['asr_requests']:,} requests, mean {t['asr_mean_latency_s']} s, "
                   f"RTFx {t['asr_rtfx']} (demand from these workers)")

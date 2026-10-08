@@ -75,6 +75,47 @@ def cer(ref: str, hyp: str, lang: str) -> float:
     return edit_distance(r, h) / len(r)
 
 
+def added_letters(src: str, out: str, lang: str) -> int:
+    """Letters ``out`` inserts or substitutes relative to ``src`` (deletions are free).
+
+    Compared on the normalized form without spaces or digits, so punctuation,
+    casing, spacing, Arabic diacritics and spoken numbers becoming digits
+    (a deletion of the number word) cost nothing; a changed, inflected or
+    invented word does.
+    """
+    a = re.sub(r"\d", "", normalize(src, lang)).replace(" ", "")
+    b = re.sub(r"\d", "", normalize(out, lang)).replace(" ", "")
+    if a == b:
+        return 0
+    try:
+        from rapidfuzz.distance import Levenshtein
+
+        return sum(op.tag in ("insert", "replace") for op in Levenshtein.editops(a, b))
+    except ImportError:
+        pass
+    # DP with the cheapest alignment, then count non-deletion steps on one optimal path.
+    n, m = len(a), len(b)
+    d = [[0] * (m + 1) for _ in range(n + 1)]
+    for i in range(n + 1):
+        d[i][0] = i
+    for j in range(m + 1):
+        d[0][j] = j
+    for i in range(1, n + 1):
+        for j in range(1, m + 1):
+            d[i][j] = min(d[i - 1][j] + 1, d[i][j - 1] + 1, d[i - 1][j - 1] + (a[i - 1] != b[j - 1]))
+    i, j, added = n, m, 0
+    while i or j:
+        if i and j and d[i][j] == d[i - 1][j - 1] + (a[i - 1] != b[j - 1]):
+            added += a[i - 1] != b[j - 1]
+            i, j = i - 1, j - 1
+        elif i and d[i][j] == d[i - 1][j] + 1:
+            i -= 1
+        else:
+            added += 1
+            j -= 1
+    return added
+
+
 def dominant_script(text: str, min_letters: int = 5) -> str | None:
     counts: dict[str, int] = {}
     for c in text:

@@ -80,6 +80,8 @@ class _Fakes:
                         out.append({"i": i, "text": "", "choice": "original", "drop": True})
                     elif "LATIN" in org:
                         out.append({"i": i, "text": "this is english not arabic at all", "choice": "asr"})
+                    elif "MUTATE" in org:  # rewrites a word both transcripts agree on
+                        out.append({"i": i, "text": org.replace("جملة", "جملتان") + ".", "choice": "merged"})
                     else:
                         out.append({"i": i, "text": org + ".", "choice": "original" if org == asr else "merged"})
                 think = "<think>reasoning about the items</think>" if body["chat_template_kwargs"]["enable_thinking"] else ""
@@ -121,6 +123,8 @@ def _dataset(tmp: Path) -> tuple[Path, Path, list[str]]:
             org = "DROPME " + org
         if i == 13:
             org = "LATIN " + org
+        if i == 19:  # odd: ORIGINAL == ASR, so the format lane; the fake LLM rewrites a word
+            org = org + " MUTATE"
         if i == 16:  # disagrees with ASR -> adjudication lane, with thinking
             org = org + " وكلام إضافي طويل بالعربية LONGTHINK"  # Arabic-dominant, or the script guard fires
         asr = org if i % 2 else f"جملة رقمي {i}"  # half agree, half need adjudication
@@ -199,7 +203,7 @@ class EndToEndTest(unittest.TestCase):
     def _cfg(self, wid: str, **kw) -> WorkerConfig:
         return WorkerConfig(run_root=self.root, asr_urls=[self.fakes.url], llm_url=self.fakes.url,
                             worker_id=wid, flush_every=4, asr_concurrency=4, llm_concurrency=3,
-                            format_batch=3, adjudicate_batch=2, **kw)
+                            format_batch=3, adjudicate_batch=2, thinking="auto", **kw)
 
     def _outputs(self) -> tuple[list[dict], list[dict]]:
         out = [json.loads(line) for p in sorted((Path(self.root) / "ar").rglob("part-*.jsonl"))
@@ -214,7 +218,10 @@ class EndToEndTest(unittest.TestCase):
             self.assertEqual(tuple(r), OUTPUT_KEYS)  # exactly the 5 columns, in order
             self.assertIsInstance(r["duration"], float)
             self.assertNotIn("<asr_text>", r["org_text"])  # q3asr envelope stripped
-            self.assertEqual(r["text"], r["org_text"] + ".")
+            if "MUTATE" in r["org_text"]:  # agree guard: the rewrite is overruled
+                self.assertEqual(r["text"], r["org_text"])
+            else:
+                self.assertEqual(r["text"], r["org_text"] + ".")
         written = [r["audio_filepath"] for r in out]
         self.assertEqual(len(written), len(set(written)))  # exactly once
         self.assertEqual(set(written), set(self.paths) - {self.paths[11], self.paths[13]})
@@ -225,6 +232,7 @@ class EndToEndTest(unittest.TestCase):
         self.assertEqual(st["written"], 43)
         self.assertEqual(st["processed"], st["to_clean"])
         self.assertEqual(st["lanes"]["format"] + st["lanes"]["adjudicate"], 43)
+        self.assertEqual(st["agree_guard"], 1)
         tel = st["telemetry"]
         self.assertGreaterEqual(tel["think_fallback_items"], 1)  # LONGTHINK recovered without thinking
         self.assertGreater(tel["llm"]["adjudicate_think"]["hit_max_tokens_pct"], 0)
@@ -268,6 +276,33 @@ class PromptTest(unittest.TestCase):
         self.assertIsNone(guard("مرحبًا بكم.", "مرحبا بكم", "مرحبا بكو", "ar"))
         self.assertEqual(guard("ജന ജയഹനദ തടങങയ", "ജനം, ജയ്ഹിന്ദ് തുടങ്ങിയ", "ജന ജയഹനദ തടങങയ", "ml"),
                          "stripped_marks")
+
+    def test_code_switched_chinese_is_not_wrong_script(self) -> None:
+        # test1 rejected 72 of these: more Latin letters than Han characters, legitimately.
+        zh = "听起来很有趣！你怎么学data analysis的？"
+        self.assertIsNone(guard(zh, zh, zh, "zh"))
+        self.assertEqual(guard("Punpao tian ming ah wang sheng", "混滔天明了皇上又跟进", "混滔天明了皇上", "zh"),
+                         "wrong_script")
+
+    def test_added_letters_allows_formatting_and_itn_not_rewrites(self) -> None:
+        from data_processing.asr_clean.text import added_letters
+
+        # formatting, diacritics, ITN: free
+        self.assertEqual(added_letters("ست سنوات بعد سنتين", "6 سنوات بعد سنتين.", "ar"), 0)
+        self.assertEqual(added_letters("مرحبا بكم", "مَرْحَبًا بِكُم،", "ar"), 0)
+        self.assertEqual(added_letters("My uncle is thirty years", "My uncle is 30 years.", "en"), 0)
+        self.assertEqual(added_letters("നിങ്ങൾ കണ്ടു പിടിച്ചോ", "നിങ്ങൾ കണ്ടുപിടിച്ചോ?", "ml"), 0)
+        # rewrites seen in test1: plural added, verse changed, word replaced
+        self.assertGreater(added_letters("ചില പ്ലേറ്റ് കുറച്ച്", "ചില പ്ലേറ്റുകൾ കുറച്ച്", "ml"), 1)
+        self.assertGreater(added_letters("فَوَرَبِّ السَّمَاءِ وَالْأَرْضِ", "فَوَرَبِّ السَّماواتِ وَالْأَرْضِ", "ar"), 1)
+        self.assertGreater(added_letters("പരമ്പരാഗതമായിട്ടുള്ള വസ്ത്രങ്ങളും", "പരസ്പരം ആഗതമായുള്ള വസ്ത്രങ്ങളും", "ml"), 1)
+
+    def test_format_lane_prompt_freezes_the_words(self) -> None:
+        from data_processing.asr_clean.prompts import user_prompt
+
+        items = [{"org_text": "a", "asr_text": "a"}]
+        self.assertIn("words are certain", user_prompt(items, "ml", "format"))
+        self.assertNotIn("words are certain", user_prompt(items, "ml", "adjudicate"))
 
     def test_arabic_prompt_carries_corpus_conventions(self) -> None:
         sp = system_prompt("ar")

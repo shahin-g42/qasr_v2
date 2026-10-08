@@ -58,7 +58,7 @@ class WorkerConfig:
     windows_in_flight: int = 4       # pipelined windows per process
     asr_concurrency: int = 32        # in-flight ASR requests per process
     llm_concurrency: int = 32        # in-flight LLM requests per process
-    format_batch: int = 16           # items per request, transcripts agree
+    format_batch: int = 24           # items per request, transcripts agree (shares the long system prompt)
     adjudicate_batch: int = 8        # items per request, transcripts disagree
     agree_cer: float = 0.02          # normalized CER(org, asr) at or below = "agree"
     # Off by default: on the 8k-context corrector nodes 91% of thinking requests

@@ -222,6 +222,7 @@ class PlanTest(unittest.TestCase):
             plan = build_plan(str(tmp / "run"), config_sources(str(cfg)), chunk_mb=0, jobs=1, limit=3)
             self.assertEqual(plan["lines"], 6)  # 3 eval + 3 train
             self.assertEqual(plan["duplicates"], 0)
+            self.assertAlmostEqual(plan["estimated_full_lines"], 52, delta=8)  # 10 eval + 42 train
 
 
 class EndToEndTest(unittest.TestCase):
@@ -306,6 +307,13 @@ class PromptTest(unittest.TestCase):
         self.assertEqual(parse_response(content, 2), {0: {"text": "a", "choice": "unknown", "drop": False}})
         self.assertEqual(parse_response("not json", 2), {})
 
+    def test_parse_compact_keys(self) -> None:
+        content = '[{"i":0,"t":"مرحبا.","s":"a"},{"i":1,"d":1},{"i":2,"t":"x","s":"zz"}]'
+        self.assertEqual(parse_response(content, 3), {
+            0: {"text": "مرحبا.", "choice": "asr", "drop": False},
+            1: {"text": "", "choice": "unknown", "drop": True},
+            2: {"text": "x", "choice": "unknown", "drop": False}})
+
     def test_guards(self) -> None:
         self.assertEqual(guard("this is english", "مرحبا بكم جميعا", "مرحبا بكم", "ar"), "wrong_script")
         self.assertEqual(guard("<<<مرحبا>>>", "مرحبا", "مرحبا", "ar"), "prompt_leak")
@@ -343,8 +351,10 @@ class PromptTest(unittest.TestCase):
 
     def test_arabic_prompt_carries_corpus_conventions(self) -> None:
         sp = system_prompt("ar")
-        for needle in ("Western digits", "ORIGINAL", "ASR", "DIALECT PRESERVATION", "DIACRITICS", '"i": 0'):
+        for needle in ("Western digits", "ORIGINAL", "ASR", "DIALECT PRESERVATION", "DIACRITICS", '[{"i":0,"t":'):
             self.assertIn(needle, sp)
+        self.assertNotIn("{{", sp)  # the output example must be literal JSON, not a format template
+        self.assertIn("an Arabic", sp)
         self.assertIn("matra", system_prompt("ml"))
 
 

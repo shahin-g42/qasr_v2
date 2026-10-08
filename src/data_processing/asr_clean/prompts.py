@@ -22,10 +22,10 @@ from ..prompts import (
 )
 from .text import EXPECTED_SCRIPT, INDIC_LANGS, LANGUAGE_NAMES, cer, dominant_script, mark_ratio
 
-PROMPT_VERSION = "asr-clean-v1"
+PROMPT_VERSION = "asr-clean-v2"  # v2: compact output keys, frozen words in the format lane
 
 _ADJUDICATION = """\
-You are the final editor of a {language} speech-recognition training corpus. \
+You are the final editor of {article} {language} speech-recognition training corpus. \
 For each numbered item you get two independent transcripts of the SAME audio \
 clip. You cannot hear the audio: decide from the two transcripts.
 
@@ -58,7 +58,7 @@ translated text, filler hallucinations on noise.
 starts that the transcripts support; an utterance that genuinely stops \
 mid-sentence stays incomplete.
 6. If both transcripts are unusable (both garbled, or describing \
-different speech so that no reading is defensible), set "drop": true.
+different speech so that no reading is defensible), drop the item.
 7. Then write the chosen words in publication-quality form following the \
 formatting rules below.
 """
@@ -69,22 +69,29 @@ must be present. If one transcript is missing them (letters without their \
 vowel signs), take the spelling from the other.
 """
 
+# Compact keys on purpose: at ~50 output tokens per item, the old verbose
+# object ("text"/"choice"/"drop": false) was ~40% scaffolding, and output
+# tokens are what the corrector nodes are bound by (test3, 2026-10-09).
 _OUTPUT = """\
-Output STRICT JSON only (no markdown fences, no commentary): an array with \
-EXACTLY one object per item, in order, using each item's number as "i":
-[{{"i": 0, "text": "...", "choice": "original|asr|merged", "drop": false}}, ...]
-"choice" says which transcript the final words mostly follow ("merged" when \
-both contributed). "text" is the final transcript only.
-"""
+Output STRICT JSON only (no markdown fences, no commentary, no spaces \
+between keys): an array with EXACTLY one object per item, in order:
+[{"i":0,"t":"<final transcript>","s":"o"},{"i":1,"t":"...","s":"a"},...]
+"i" = the item number. "t" = the final transcript only. "s" = which \
+transcript the final words mostly follow: "o" ORIGINAL, "a" ASR, "m" both. \
+Only for an unusable item write {"i":N,"d":1} instead (step 6).
+"""  # not passed through str.format: single braces
 
+# The text-only cleaner also emitted a dialect tag; this output has no such
+# field, and the instruction only invites an extra key.
+_DIALECT = _RULE_DIALECT_PRESERVE.replace("\n   - Tag the detected dialect accurately.", "")
 _ARABIC_FORMAT = "\n\n".join(
-    ("Formatting rules (Arabic):", _RULE_ITN, _RULE_PUNCTUATION, _RULE_DIALECT_PRESERVE, _RULE_DIACRITICS)
+    ("Formatting rules (Arabic):", _RULE_ITN, _RULE_PUNCTUATION, _DIALECT, _RULE_DIACRITICS)
 )
 
 
 def system_prompt(lang: str) -> str:
     language = LANGUAGE_NAMES.get(lang, lang)
-    parts = [_ADJUDICATION.format(language=language)]
+    parts = [_ADJUDICATION.format(language=language, article="an" if language[0] in "AEIOU" else "a")]
     if lang == "ar":
         parts.append(_ARABIC_FORMAT)
     else:
@@ -131,6 +138,8 @@ def messages(items: list[dict], lang: str, lane: str = "adjudicate") -> list[dic
 
 # ------------------------------------------------------------------ parsing --
 
+_CHOICES = {"o": "original", "a": "asr", "m": "merged",
+            "original": "original", "asr": "asr", "merged": "merged"}
 _FENCE_RE = re.compile(r"^```(?:json)?\s*|\s*```$", re.MULTILINE)
 
 
@@ -158,11 +167,13 @@ def parse_response(content: str, n: int) -> dict[int, dict]:
         i = obj.get("i")
         if not isinstance(i, int) or isinstance(i, bool) or not 0 <= i < n or i in out:
             continue
-        drop = obj.get("drop") is True
-        text = obj.get("text")
+        # Compact keys (t/s/d), with the verbose ones still accepted.
+        drop = obj.get("d") in (1, True) or obj.get("drop") is True
+        text = obj.get("t", obj.get("text"))
         if not drop and (not isinstance(text, str) or not text.strip()):
             continue
-        choice = obj.get("choice") if obj.get("choice") in ("original", "asr", "merged") else "unknown"
+        raw_choice = obj.get("s", obj.get("choice"))
+        choice = _CHOICES.get(raw_choice, "unknown")
         out[i] = {"text": (text or "").strip(), "choice": choice, "drop": drop}
     return out
 

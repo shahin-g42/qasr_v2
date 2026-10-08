@@ -254,6 +254,18 @@ def build_plan(run_root: str, sources: list[dict], *, chunk_mb: int = 64, dedup:
     os.replace(tmp, plan_path)
     print(f"plan: {plan['lines']:,} lines, {dup_total:,} duplicate audio paths skipped, "
           f"{plan['lines'] - dup_total:,} to clean -> {plan_path}", flush=True)
+    if limit:
+        # Scale each file's sampled bytes-per-record to its full size: turns a
+        # test run's records/s into a wall-clock estimate for the real run.
+        full = 0
+        for s_ in sources:
+            cs = [c for c in chunks if c["source"] == s_["path"]]
+            n, nbytes = sum(c["lines"] for c in cs), sum(c["end"] - c["start"] for c in cs)
+            full += round(os.path.getsize(s_["path"]) * n / nbytes) if nbytes else 0
+        plan["estimated_full_lines"] = full
+        tmp.write_text(json.dumps(plan, indent=1))
+        os.replace(tmp, plan_path)
+        print(f"plan: the full run (no --limit) would have ~{full:,} records before dedup", flush=True)
     return plan
 
 

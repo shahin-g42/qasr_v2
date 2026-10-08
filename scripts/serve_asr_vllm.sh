@@ -192,10 +192,9 @@ smoke() {
 }
 
 # One-GPU check that the image really computes on this driver: a cuBLAS
-# (Triton reads kernel source from a file, hence the script is written to /tmp.)
-#
 # matmul and a freshly compiled Triton kernel (the paths a version mismatch
-# breaks first). Runs in ~1 minute once the image is pulled.
+# breaks first). Triton reads kernel source from a file, so the script is
+# written to /tmp inside the container. Runs in ~1 minute once pulled.
 gpu_test() {
   log "=== gpu-test: ${IMAGE} on GPU ${GPUS%%,*} (CUDA compat=$(cuda_compat)) ==="
   docker run --rm -i --gpus "\"device=${GPUS%%,*}\"" $(compat_env)--entrypoint bash "$IMAGE" -c \

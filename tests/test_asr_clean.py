@@ -157,6 +157,7 @@ def _dataset(tmp: Path) -> tuple[Path, Path, list[str]]:
     _wav(long_wav, 40.0)
     rows_train.append({"audio_filepath": str(long_wav), "text": "طويل جدا", "duration": 40.0})
     rows_train.append({"text": "no audio path"})
+    rows_train.append({"audio_filepath": str(audio / "music_only.wav"), "text": "[موسيقى]", "duration": 2.0})
     ev, tr = tmp / "eval_ar_x.jsonl", tmp / "train_ar_x.jsonl"
     ev.write_text("".join(json.dumps(r, ensure_ascii=False) + "\n" for r in rows_eval))
     tr.write_text("".join(json.dumps(r, ensure_ascii=False) + "\n" for r in rows_train))
@@ -173,7 +174,7 @@ class PlanTest(unittest.TestCase):
             sources = config_sources(str(cfg))
             self.assertEqual([s["split"] for s in sources], ["eval", "train"])
             plan = build_plan(str(tmp / "run"), sources, chunk_mb=0, jobs=2)  # 0 MB: one line per chunk
-            self.assertEqual(plan["lines"], 10 + 35 + 5 + 2)
+            self.assertEqual(plan["lines"], 10 + 35 + 5 + 3)
             self.assertEqual(plan["duplicates"], 5)
             dup_chunks = [c for c in plan["chunks"] if c["dups"]]
             self.assertTrue(all(c["split"] == "train" for c in dup_chunks))  # eval copies kept
@@ -236,7 +237,7 @@ class PlanTest(unittest.TestCase):
             plan = build_plan(str(tmp / "run"), config_sources(str(cfg)), chunk_mb=0, jobs=1, limit=3)
             self.assertEqual(plan["lines"], 6)  # 3 eval + 3 train
             self.assertEqual(plan["duplicates"], 0)
-            self.assertAlmostEqual(plan["estimated_full_lines"], 52, delta=8)  # 10 eval + 42 train
+            self.assertAlmostEqual(plan["estimated_full_lines"], 53, delta=8)  # 10 eval + 43 train
 
 
 class EndToEndTest(unittest.TestCase):
@@ -283,7 +284,8 @@ class EndToEndTest(unittest.TestCase):
         self.assertEqual(len(written), len(set(written)))  # exactly once
         self.assertEqual(set(written), set(self.paths) - {self.paths[11], self.paths[13]})
         reasons = sorted(r["reason"] for r in rej)
-        self.assertEqual(reasons, ["bad_record", "duration_out_of_range", "guard_wrong_script", "llm_drop"])
+        self.assertEqual(reasons, ["bad_record", "duration_out_of_range", "guard_wrong_script", "llm_drop",
+                                   "non_speech"])
         st = status(self.root)
         self.assertEqual(st["chunks_done"], st["chunks"])
         self.assertEqual(st["written"], 43)
@@ -382,6 +384,49 @@ class DiacriticsTest(unittest.TestCase):
         self.assertIn("CRITICAL", dsp("critical"))
         self.assertIn("FULL", dsp("full"))
         self.assertIn("Never change, add, remove or reorder a letter", dsp("full"))
+
+
+class ConventionsTest(unittest.TestCase):
+    def test_arabic_canon(self) -> None:
+        from data_processing.asr_clean.conventions import canonicalize as c
+
+        self.assertEqual(c("قال شكراً، الخصم 50% بس ١٠ ريال", "ar"), "قال شكرًا، الخصم 50٪ بس 10 ريال")
+        self.assertEqual(c("كبيـــرة جداً", "ar"), "كبيرة جدًا")
+
+    def test_indic_canon(self) -> None:
+        from data_processing.asr_clean.conventions import canonicalize as c
+
+        self.assertEqual(c("यह है | अब १२ बजे", "hi"), "यह है। अब 12 बजे")
+        # nta: the Unicode 5.1+ recommended chillu-n form; legacy ZWJ chillu -> atomic
+        self.assertEqual(c("ഗവൺമെന്റിന്റെ ന്\u200d", "ml"), "ഗവൺമെൻ്റിൻ്റെ ൻ")
+
+    def test_non_speech_tags_only(self) -> None:
+        from data_processing.asr_clean.conventions import strip_non_speech
+
+        self.assertEqual(strip_non_speech("[موسيقى]"), "")
+        self.assertEqual(strip_non_speech("hello [Laughter] there <unk>"), "hello there")
+        self.assertEqual(strip_non_speech("the interval [a, b] is closed"), "the interval [a, b] is closed")
+
+    def test_comparison_folds(self) -> None:
+        from data_processing.asr_clean.text import added_letters, normalize
+
+        self.assertEqual(normalize("لصالحة على", "ar"), normalize("لصالحه علي", "ar"))  # spelling fixes
+        self.assertEqual(added_letters("يعطية لصالحة", "يعطيه لصالحه", "ar"), 0)
+        self.assertEqual(normalize("ന്\u200dറ", "ml").count(" "), 0)  # ZWJ never splits a word
+        self.assertEqual(normalize("ഗവൺമെന്റ്", "ml"), normalize("ഗവൺമെൻ്റ്", "ml"))  # one nta
+
+    def test_itn_specs_cover_the_hard_cases(self) -> None:
+        from data_processing.asr_clean.conventions import ITN
+
+        must = {"ar": ["٪", "ريال", "ملايين", "ألف عافية", "واحد صاحبي", "Hijri", "Quran"],
+                "en": ["$50", "21st", "1990", "World War II", "no one", "10,000"],
+                "zh": ["2021年", "10万", "三个计划", "第一", "一心一意"],
+                "hi": ["2 लाख", "4:15", "4:45", "एक आदमी", "रुपये"],
+                "ml": ["2 ലക്ഷം", "ആയിരം", "ഒരു ദിവസം", "രൂപ"]}
+        for lang, needles in must.items():
+            for needle in needles:
+                self.assertIn(needle, ITN[lang], f"{lang}: {needle}")
+        self.assertNotIn("\u0d05\u0d3e", ITN["ml"])  # the malformed "അായിരം" example
 
 
 class PromptTest(unittest.TestCase):

@@ -54,7 +54,10 @@ ALWAYS mark, on every word where it applies:
 - Shadda on EVERY doubled consonant ("المدرّسة", "يُعلّم", "مرّة"), \
 including the sun letter after al- ("الشّمس", "النّاس").
 - Tanween on EVERY word pronounced with it: fathatan ("شكرًا", "أيضًا", \
-"مدرسةً"), dammatan ("كتابٌ"), kasratan ("في بيتٍ").
+"مدرسةً"), dammatan ("كتابٌ"), kasratan ("في بيتٍ"). In dialectal speech \
+that is mostly the adverbial fathatan ("شكرًا", "طبعًا", "أبدًا", \
+"تقريبًا", "دائمًا"): never add an MSA case tanween the dialect does not \
+pronounce ("في بيت" in dialect stays without kasratan).
 Add a short vowel (fatha, damma, kasra, sukun) ONLY where the word is \
 otherwise ambiguous ("عَلِم" vs "عَلَّم", "كَتَب" vs "كُتُب") and the kasra \
 of the feminine "you" ("أنتِ", "لكِ", "عندكِ").

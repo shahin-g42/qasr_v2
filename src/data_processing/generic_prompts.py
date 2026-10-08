@@ -48,7 +48,7 @@ words in Latin script, do not translate or transliterate them.""",
     "ml": """\
 Language conventions (Malayalam):
 - Punctuation: standard (. , ? !). Keep Malayalam script.
-- ITN: spelled-out numbers to Western digits ("\u0d05\u0d3e\u0d2f\u0d3f\u0d30\u0d02" -> "1000", \
+- ITN: spelled-out numbers to Western digits ("\u0d06\u0d2f\u0d3f\u0d30\u0d02" -> "1000", \
 "\u0d05\u0d2e\u0d4d\u0d2a\u0d24\u0d4d" -> "50").
 - Times and dates in digits, month name as spoken \
 ("3:30", "2024 മാർച്ച് 21").

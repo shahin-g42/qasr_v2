@@ -20,6 +20,7 @@ INDIC_LANGS = {"hi", "ml"}
 _ENVELOPE_RE = re.compile(r"^\s*language\s+[^<]*<asr_text>", re.IGNORECASE)
 _ARABIC_DIACRITICS = re.compile("[ؐ-ًؚ-ٰٟۖ-ۭـ]")
 _ALEF_FORMS = str.maketrans({"أ": "ا", "إ": "ا", "آ": "ا", "ٱ": "ا"})
+_AR_FOLDS = str.maketrans({"ة": "ه", "ى": "ي"})
 _DIGITS = str.maketrans("٠١٢٣٤٥٦٧٨٩۰۱۲۳۴۵۶۷۸۹", "01234567890123456789")
 
 
@@ -39,10 +40,19 @@ def normalize(text: str, lang: str) -> str:
     Arabic additionally drops diacritics/tatweel and folds alef forms so a
     diacritized and a bare spelling of the same word compare equal.
     """
+    if lang in ("ml", "hi"):
+        from .conventions import canonicalize
+
+        text = canonicalize(text or "", lang)  # one encoding per sound (chillu, nta, danda)
     text = unicodedata.normalize("NFKC", text or "").casefold().translate(_DIGITS)
     if lang == "ar":
-        text = _ARABIC_DIACRITICS.sub("", text).translate(_ALEF_FORMS)
-    text = "".join(" " if unicodedata.category(c)[0] in "PSZC" else c for c in text)
+        # Standard Arabic comparison folds: alef forms, ta marbuta/ha, alef
+        # maqsura/ya -- spelling fixes of the SAME word must not count as edits.
+        text = _ARABIC_DIACRITICS.sub("", text).translate(_ALEF_FORMS).translate(_AR_FOLDS)
+    # Zero-width (non-)joiners shape Indic/Arabic letters inside a word: drop,
+    # never turn into a space (that split words). Other controls become spaces.
+    text = "".join("" if unicodedata.category(c) == "Cf" else " " if unicodedata.category(c)[0] in "PSZC" else c
+                   for c in text)
     return " ".join(text.split())
 
 

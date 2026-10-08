@@ -33,13 +33,13 @@ import os
 import socket
 import threading
 import time
-import unicodedata
 from collections import Counter, deque
 from concurrent.futures import FIRST_COMPLETED, Future, ThreadPoolExecutor, wait
 from dataclasses import asdict, dataclass, field
 from pathlib import Path
 
 from . import diacritics
+from .conventions import canonicalize, strip_non_speech
 from .endpoints import ASRClient, LLMClient, PermanentError, TransientError
 from .plan import iter_chunk_lines, load_dup_mask, load_plan
 from .prompts import PROMPT_VERSION, guard, messages, parse_response
@@ -269,6 +269,9 @@ class ChunkProcessor:
         item.duration = float(d) if isinstance(d, (int, float)) and d > 0 else None
         if not item.org_text:
             item.reject, item.detail = "bad_record", "empty original transcript"
+        elif not strip_non_speech(item.org_text):
+            # "[موسيقى]", "[music]": a non-speech clip, not a transcript to clean
+            item.reject, item.detail = "non_speech", item.org_text[:100]
 
     def _asr_one(self, item: Item, lang: str) -> None:
         if item.reject:
@@ -307,7 +310,7 @@ class ChunkProcessor:
     def _correct(self, items: list[Item], lang: str, lane: str, attempt: int = 1,
                  think: bool | None = None) -> None:
         think = self._think(lane) if think is None else think
-        payload = [{"org_text": it.org_text, "asr_text": it.asr_text} for it in items]
+        payload = [{"org_text": strip_non_speech(it.org_text), "asr_text": it.asr_text} for it in items]
         msgs = messages(payload, lang, lane)
         budget = self.cfg.adjudicate_max_tokens if lane == "adjudicate" else self.cfg.format_max_tokens
         est_prompt = sum(len(m["content"]) for m in msgs) // 2 + 64  # conservative chars/token
@@ -340,6 +343,7 @@ class ChunkProcessor:
             if res["drop"]:
                 it.reject, it.detail = "llm_drop", "both transcripts unusable"
                 continue
+            res["text"] = canonicalize(res["text"], lang)
             reason = guard(res["text"], it.org_text, it.asr_text, lang, self.cfg.max_divergence)
             if not reason and it.detail == "asr_truncated" and res["choice"] == "asr":
                 # The ASR stopped at max_tokens (it looped) and the final text follows
@@ -352,7 +356,8 @@ class ChunkProcessor:
                 # Both transcripts agree on these words; an LLM that still rewrites
                 # them (test3: ml 55%, hi 13%) is overruled. Its version is kept in
                 # _review/ so the decision can be audited.
-                it.text, it.choice, it.detail, it.llm_raw = it.org_text, "original", "agree_guard", res["text"]
+                it.text, it.choice, it.detail, it.llm_raw = (canonicalize(it.org_text, lang), "original",
+                                                             "agree_guard", res["text"])
                 self.tel.add(agree_guard_overrules=1)
             else:
                 it.text = res["text"]
@@ -414,7 +419,7 @@ class ChunkProcessor:
             res = parsed.get(i)
             why = "no_answer" if res is None or res["drop"] else diacritics.check(it.text, res["text"])
             if why is None:
-                it.text, it.diac = unicodedata.normalize("NFC", res["text"]), "ok"
+                it.text, it.diac = canonicalize(res["text"], "ar"), "ok"
             elif attempt == 1:
                 retry.append(it)
             else:

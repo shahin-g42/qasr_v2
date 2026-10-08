@@ -13,17 +13,14 @@ from __future__ import annotations
 import json
 import re
 
-from ..generic_prompts import _conventions_for
-from ..prompts import (
-    _RULE_DIALECT_PRESERVE,
-    _RULE_ITN,
-    _RULE_PUNCTUATION,
-)
+from ..prompts import _RULE_DIALECT_PRESERVE
+from .conventions import conventions
 from .text import EXPECTED_SCRIPT, INDIC_LANGS, LANGUAGE_NAMES, cer, dominant_script, mark_ratio
 
 # v2: compact output keys, frozen words in the format lane
 # v3: Arabic diacritics moved to a dedicated, letter-preserving pass (diacritics.py)
-PROMPT_VERSION = "asr-clean-v3"
+# v4: complete per-language ITN/orthography (conventions.py), deterministic canon
+PROMPT_VERSION = "asr-clean-v4"
 
 _ADJUDICATION = """\
 You are the final editor of {article} {language} speech-recognition training corpus. \
@@ -57,7 +54,9 @@ Never translate, paraphrase, or "improve" the wording.
 translated text, filler hallucinations on noise.
 5. Keep what was spoken: fillers, hesitations, repetitions and false \
 starts that the transcripts support; an utterance that genuinely stops \
-mid-sentence stays incomplete.
+mid-sentence stays incomplete. Recited scripture (Quran, hadith) and \
+quoted poetry keep their exact canonical wording. Remove non-speech \
+annotations ([music], <noise>, (laughter)), speaker labels and timestamps.
 6. If both transcripts are unusable (both garbled, or describing \
 different speech so that no reading is defensible), drop the item.
 7. Then write the chosen words in publication-quality form following the \
@@ -88,26 +87,15 @@ _DIALECT = _RULE_DIALECT_PRESERVE.replace("\n   - Tag the detected dialect accur
 _NO_DIACRITICS = """\
 5. DIACRITICS: do NOT add diacritics -- a dedicated pass adds them after you. \
 Write the letters exactly; marks already present may be kept or dropped."""
-_ARABIC_FORMAT = "\n\n".join(
-    ("Formatting rules (Arabic):", _RULE_ITN, _RULE_PUNCTUATION, _DIALECT, _NO_DIACRITICS)
-)
+_ARABIC_EXTRA = "\n\n".join((_DIALECT, _NO_DIACRITICS))
 
 
 def system_prompt(lang: str) -> str:
     language = LANGUAGE_NAMES.get(lang, lang)
     parts = [_ADJUDICATION.format(language=language, article="an" if language[0] in "AEIOU" else "a")]
+    parts.append(f"Formatting rules ({language}):\n" + conventions(lang))
     if lang == "ar":
-        parts.append(_ARABIC_FORMAT)
-    else:
-        parts.append(
-            "Formatting rules:\n"
-            "- Punctuation from syntactic and prosodic boundaries, not mechanically.\n"
-            "- Inverse text normalization (ITN): numbers, times, dates, currencies and "
-            "percentages in written form, converting exactly what was spoken.\n"
-            "- Preserve accent, register, colloquialisms and code-switching exactly as "
-            "spoken; code-switched words keep the script they were spoken in.\n"
-            + _conventions_for(lang)
-        )
+        parts.append(_ARABIC_EXTRA)
     if lang in INDIC_LANGS:
         parts.append(_INDIC_MARKS)
     parts.append(_OUTPUT)

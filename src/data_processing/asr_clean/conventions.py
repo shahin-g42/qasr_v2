@@ -1,0 +1,235 @@
+"""Per-language formatting and ITN conventions, plus the deterministic canon.
+
+Two halves:
+
+- ``FORMAT`` / ``ITN``: what the corrector LLM is told. One complete
+  specification per language, written for SPOKEN-language targets: numbers
+  the speaker said as a quantity become digits; numbers that are words of
+  the language (articles, idioms, ordinals, approximations, names,
+  scripture) stay words. Never infer what was not said.
+- ``canonicalize()``: what is fixed in code, after the LLM, because it must
+  be identical in every record and the model drifts on it (test3,
+  2026-10-09): "%" vs "٪" (112 vs 652 records), fathatan on the alef vs
+  before it (905 vs 1,892 originals), Malayalam "ൻ്റ" vs "ന്റ" (two
+  encodings of one sound), legacy ZWJ chillus, Arabic-Indic/Devanagari
+  digits, "|" for danda, tatweel, non-speech tags.
+"""
+
+from __future__ import annotations
+
+import re
+import unicodedata
+
+# ----------------------------------------------------------------- the LLM --
+
+_COMMON_ITN = """\
+- Convert ONLY what the speaker said as a number, EXACTLY as said: never \
+expand, round, complete or infer (a year, century, AM/PM, unit or currency \
+that was not spoken is never added).
+- Digit sequences said one by one (phone numbers, IDs, codes) become \
+contiguous digits with no invented separators.
+- Ranges: convert each number and keep the connecting word as spoken \
+("5 to 10", "من 5 إلى 10"); never invent a dash.
+- NEVER convert numbers inside names, titles, proverbs, idioms, \
+religious texts (Quran, hadith, scripture) or quoted poetry.
+"""
+
+ITN = {
+    "ar": """\
+INVERSE TEXT NORMALIZATION (Arabic), Western digits 0-9 only (never ٠-٩):
+- Quantities: "ثلاثة آلاف" -> "3000", "مية وخمسين" -> "150", "تلاتين" -> "30". \
+The counted noun stays EXACTLY as spoken, even when colloquial agreement \
+differs from MSA ("خمس مرة" -> "5 مرة").
+- Millions and above: digits + the scale word ("ثلاثة ملايين" -> "3 ملايين", \
+"مليون ونص" -> "1.5 مليون"); a bare "مليون"/"مليار" (one million) stays a word.
+- Decimals said with فاصلة: "ثلاثة فاصلة خمسة" -> "3.5". Fraction words stay \
+words ("نص", "ربع", "تلت", "ساعة ونص").
+- Percent: digits + "٪" ("خمسين بالمية" -> "50٪").
+- Money: digits + the currency word as spoken ("خمسين ريال" -> "50 ريال", \
+"ألف درهم" -> "1000 درهم"); never a symbol ($, €, ر.س).
+- Years: "سنة ألفين وعشرين" -> "سنة 2020", "عام ألف وتسعمية وتسعين" -> "عام 1990".
+- Times: H:MM when minutes are spoken ("الساعة تلاتة ونص" -> "الساعة 3:30", \
+"الساعة اتنين وربع" -> "الساعة 2:15", "الساعة خمسة إلا ربع" -> "الساعة 4:45"); \
+bare digits otherwise ("الساعة تلاتة" -> "الساعة 3"). Keep the spoken period \
+word (صباحًا، مساءً، العصر); never a 24-hour clock that was not said.
+- Dates: digits for day and year, the month exactly as spoken ("الحادي \
+والعشرين من مارس ألفين وأربعة وعشرين" -> "21 مارس 2024"); never convert \
+Hijri <-> Gregorian, never add هـ / م.
+- KEEP AS WORDS: ordinals (الأول، التاني، العاشر، القرن العشرين); "واحد/وحدة" \
+used as an article or pronoun ("واحد صاحبي", "كل واحد"); "واحد" and "اتنين" \
+after a noun as emphasis ("كتاب واحد"); idioms (ألف عافية، ألف مبروك، ألف \
+شكر، مية بالمية، مرة وحدة، سبعة أيام بلياليها); vague quantities (عشرات، مئات، \
+كم واحد، شوية).
+""" + _COMMON_ITN,
+    "en": """\
+INVERSE TEXT NORMALIZATION (English):
+- Quantities become digits, including 1-9: "five years" -> "5 years", \
+"twenty five" -> "25", "three thousand" -> "3000", "ten thousand" -> "10,000" \
+(comma grouping from 10,000 up, none for 4 digits).
+- Millions and above: "two million" -> "2 million", "three point five \
+billion" -> "3.5 billion". Decimals: "three point five" -> "3.5", "point \
+five" -> "0.5". Simple fractions stay words ("a half", "three quarters").
+- Percent: "ten percent" -> "10%". Money: "fifty dollars" -> "$50", "five \
+dollars fifty" -> "$5.50", "twenty pounds" -> "£20", "fifty cents" -> "50 cents".
+- Units stay words: "five kilometers" -> "5 kilometers", "twenty degrees" -> \
+"20 degrees" (no km, °).
+- Times: "three thirty pm" -> "3:30 PM", "three o'clock" -> "3 o'clock"; \
+"noon", "midnight", "half past three", "quarter to five" stay words.
+- Dates and years: "March twenty first twenty twenty four" -> "March 21, 2024", \
+"nineteen ninety" -> "1990", "two thousand and five" -> "2005", "the \
+nineties" -> "the '90s". "oh" read as zero becomes 0 ("room two oh one" -> \
+"room 201").
+- Ordinals: 1st-10th stay words ("the third time", "first of all"); 11th and \
+up become digits ("the 21st century", "her 40th birthday"); in dates per above.
+- KEEP AS WORDS: pronoun/idiomatic "one" ("one of them", "no one", \
+"someone", "the one", "one day", "at one point", "one another"); "a couple", \
+"a dozen", "a few", "hundreds of", "thousands of"; Roman numerals in names \
+as conventionally written ("World War II", "Henry VIII").
+""" + _COMMON_ITN,
+    "zh": """\
+INVERSE TEXT NORMALIZATION (Chinese):
+- Become digits: years and dates ("二零二一年三月二十一日" -> "2021年3月21日"), \
+clock times ("三点半" -> "3:30", "八点十五分" -> "8:15"), percentages \
+("百分之五十" -> "50%"), money ("五十块" -> "50块", "三百元" -> "300元"), \
+measurements with units ("五公里" -> "5公里"), decimals ("三点五" -> "3.5"), \
+large numbers with 万/亿 kept as units ("十万" -> "10万", "三亿" -> "3亿", \
+"两万五" -> "2.5万"), counts of 10 and up ("二十个人" -> "20个人").
+- STAY CHARACTERS: 1-9 with a measure word in narrative ("三个计划", "两个人", \
+"一次"); approximations (几个, 三四个, 十几个, 上百); ordinals (第一, 第二次); \
+fraction words (三分之一, 一半); weekdays (星期三); words that contain a \
+number (一些, 一起, 一样, 一定, 一直, 十分, 万一, 一下); chengyu and idioms \
+(一心一意, 三心二意, 一石二鸟).
+""" + _COMMON_ITN,
+    "hi": """\
+INVERSE TEXT NORMALIZATION (Hindi), Western digits only (never १२३):
+- Quantities: "पचास" -> "50", "तीन हज़ार" -> "3000"; लाख/करोड़ stay as the \
+scale word after the digits ("दो लाख" -> "2 लाख", "पाँच करोड़" -> "5 करोड़").
+- Percent: "पचास प्रतिशत/फ़ीसदी" -> "50%". Money: digits + the word as \
+spoken ("पचास रुपये" -> "50 रुपये"); never ₹.
+- Times: "साढ़े तीन बजे" -> "3:30 बजे", "सवा चार बजे" -> "4:15 बजे", \
+"पौने पाँच बजे" -> "4:45 बजे", "डेढ़ बजे" -> "1:30 बजे", "ढाई बजे" -> "2:30 बजे".
+- Dates and years: "इक्कीस मार्च" -> "21 मार्च", "दो हज़ार चौबीस" -> "2024".
+- STAY WORDS: "एक" as the article "a" ("एक आदमी आया"); डेढ़, ढाई, सवा, साढ़े, \
+पौने with quantities ("डेढ़ घंटा", "ढाई साल"); ordinals (पहला, दूसरा, \
+तीसरी बार); idioms ("एक-दो बार", "दो-चार दिन", "सौ बात की एक बात").
+""" + _COMMON_ITN,
+    "ml": """\
+INVERSE TEXT NORMALIZATION (Malayalam), Western digits only:
+- Quantities: "അമ്പത്" -> "50", "ആയിരം" -> "1000", "മൂവായിരം" -> "3000"; \
+ലക്ഷം/കോടി stay as the scale word after the digits ("രണ്ട് ലക്ഷം" -> \
+"2 ലക്ഷം", "അഞ്ച് കോടി" -> "5 കോടി").
+- Percent: "അമ്പത് ശതമാനം" -> "50%". Money: digits + the word as spoken \
+("അമ്പത് രൂപ" -> "50 രൂപ"); never ₹.
+- Times: "മൂന്നര മണി" -> "3:30", "മൂന്ന് മണി" -> "3 മണി". Dates: "2024 മാർച്ച് 21" \
+(fields as spoken).
+- STAY WORDS: "ഒരു" as the article "a" ("ഒരു ദിവസം"); "ഒന്ന്" in idioms \
+("ഒന്ന് നോക്കൂ"); ordinals (ഒന്നാമത്തെ, രണ്ടാം); fraction words (അര, കാൽ).
+""" + _COMMON_ITN,
+}
+
+FORMAT = {
+    "ar": """\
+ORTHOGRAPHY (Arabic), for MSA and dialect alike -- spell the SAME word right, \
+never replace it:
+- Hamza on its standard seat (أنا، إلى، إن، سأل، مسؤول، شيء), madda where due (آخر).
+- Ta marbuta for the feminine ending (مدرسة، كبيرة), ـه for the pronoun "his/him" \
+(لصالحه، يعطيه، تبغاه); alef maqsura (على، مستشفى) vs ya (في، علي) by the word.
+- No tatweel (ـ). Dialect-specific spellings are words of the dialect: keep them \
+("ليش", "هلق", "دلوقتي", "بيعمل"); do not respell them as MSA.
+- Code-switched words stay in the script the transcripts use: "campus" stays \
+Latin; established loanwords keep their Arabic spelling (كمبيوتر، موبايل).
+""",
+    "hi": """\
+ORTHOGRAPHY (Hindi): standard Devanagari spelling of the SAME word: matras, \
+halant, anusvara/chandrabindu as in standard usage; keep nukta (ज़, फ़, क़) \
+exactly as the transcripts have it -- never add or strip it. English words, \
+acronyms and loanwords stay in the script the ORIGINAL uses: do NOT convert \
+Devanagari ("यूपीआई", "टेस्ट") to Latin or Latin to Devanagari.
+""",
+    "ml": """\
+ORTHOGRAPHY (Malayalam): standard spelling of the SAME word with every vowel \
+sign, virama and chillu present; never change a word's inflection or tense. \
+English words and loanwords stay in the script the ORIGINAL uses: do NOT \
+convert Malayalam-script loanwords ("ടെസ്റ്റ്", "ഫീഡ്ബാക്ക്") to Latin or back.
+""",
+    "zh": """\
+ORTHOGRAPHY (Chinese): Simplified characters; no spaces between Chinese \
+characters; one space between Chinese and an embedded Latin word or number \
+only where the ORIGINAL has it. Keep erhua (儿) and regional words as spoken. \
+Latin words keep the casing the ORIGINAL uses.
+""",
+    "en": """\
+ORTHOGRAPHY (English): sentence case, proper nouns and "I" capitalized; \
+contractions as spoken ("don't", "gonna" stay); fillers spelled "uh", "um", \
+"hmm"; American spelling unless the ORIGINAL consistently uses British.
+""",
+}
+
+PUNCTUATION = {
+    "ar": "PUNCTUATION (Arabic): ، ؛ ؟ ! . : «» -- never the Latin , ; ?. "
+          "End complete sentences; a cut-off utterance ends with \"...\". One line: never a line break.",
+    "hi": "PUNCTUATION (Hindi): । ends a sentence (never |), ? for questions, standard commas. "
+          "A cut-off utterance ends with \"...\". One line: never a line break.",
+    "ml": "PUNCTUATION (Malayalam): . , ? ! as in standard Malayalam. "
+          "A cut-off utterance ends with \"...\". One line: never a line break.",
+    "zh": "PUNCTUATION (Chinese): full-width 。，？！；：、“” only; a cut-off utterance "
+          "ends with ……. One line: never a line break.",
+    "en": "PUNCTUATION (English): standard . , ? ! ; : and \"double quotes\". A cut-off "
+          "utterance ends with \"...\". One line: never a line break.",
+}
+
+
+def conventions(lang: str) -> str:
+    return "\n".join(x for x in (FORMAT.get(lang, ""), PUNCTUATION.get(lang, ""), ITN.get(lang, _COMMON_ITN)) if x)
+
+
+# -------------------------------------------------------------- the canon --
+
+# Non-speech annotations that some sources put in the label. A record whose
+# label is nothing but these is a non-speech clip, not a transcript.
+_NON_SPEECH = re.compile(
+    r"\[\s*(?:music|noise|laughter|laugh|laughs|applause|silence|inaudible|unintelligible|"
+    r"crosstalk|cough|breath|sigh|unk|foreign|"
+    r"موسيقى|موسيقي|ضوضاء|ضحك|ضحكة|تصفيق|صمت|غير مفهوم|كلام غير مفهوم|"
+    r"音乐|笑声|噪音|掌声|静音|"
+    r"संगीत|शोर|हँसी|हंसी|तालियाँ|"
+    r"സംഗീതം|ശബ്ദം|ചിരി)\s*\]"
+    r"|<\s*(?:unk|noise|music|laughter|sil)\s*>"
+    r"|\(\s*(?:music|laughter|laughs|applause|inaudible|noise)\s*\)",
+    re.IGNORECASE,
+)
+
+_AR_INDIC_DIGITS = str.maketrans("٠١٢٣٤٥٦٧٨٩۰۱۲۳۴۵۶۷۸۹", "01234567890123456789")
+_DEVANAGARI_DIGITS = str.maketrans("०१२३४५६७८९", "0123456789")
+_ML_DIGITS = str.maketrans("൦൧൨൩൪൫൬൭൮൯", "0123456789")
+# Legacy chillu (consonant + virama + ZWJ) -> atomic chillu (Unicode 5.1+).
+_ML_CHILLU = {"ണ്‍": "ൺ", "ന്‍": "ൻ", "ര്‍": "ർ",
+              "ല്‍": "ൽ", "ള്‍": "ൾ", "ക്‍": "ൿ"}
+
+
+def strip_non_speech(text: str) -> str:
+    return " ".join(_NON_SPEECH.sub(" ", text).split())
+
+
+def canonicalize(text: str, lang: str) -> str:
+    """The deterministic final form: identical conventions in every record."""
+    text = unicodedata.normalize("NFC", strip_non_speech(text))
+    if lang == "ar":
+        text = text.translate(_AR_INDIC_DIGITS).replace("ـ", "")
+        text = re.sub(r"(?<=\d)\s*%", "٪", text)
+        # fathatan before the final alef ("شكرًا"), not on it ("شكراً")
+        text = re.sub("([ء-ي])([َ-ْٰ]*)اً", "\\1\\2ًا", text)
+        text = unicodedata.normalize("NFC", text)
+    elif lang == "hi":
+        # danda attaches to the word before it ("है।"); "|" is a keyboard stand-in
+        text = re.sub(r"\s*[|।](?!।)", "।", text.translate(_DEVANAGARI_DIGITS))
+    elif lang == "ml":
+        text = text.translate(_ML_DIGITS)
+        for old, new in _ML_CHILLU.items():
+            text = text.replace(old, new)
+        # "nta": the Unicode 5.1+ recommended encoding is chillu-n + virama + rra
+        # (L2/07-279, L2/19-345r2); na + virama + rra is the legacy form. Most
+        # originals already use it; the LLM was converting them away. (The ZWJ
+        # variant was already read as chillu-n above, its legacy meaning "ൻറ".)
+        text = text.replace("\u0d28\u0d4d\u0d31", "\u0d7b\u0d4d\u0d31")
+    return " ".join(text.split())

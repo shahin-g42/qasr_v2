@@ -96,6 +96,15 @@ sys.exit(0 if ok and w and tok else 1)
 PY
   fi
   if command -v nvidia-smi >/dev/null; then
+    # The image's CUDA runtime must not exceed what the driver supports: the
+    # default v0.26.0 tag is CUDA 13 and will not start on a 12.9 driver.
+    local drv_cuda img_cuda
+    drv_cuda=$(nvidia-smi | grep -oE 'CUDA Version: [0-9]+\.[0-9]+' | awk '{print $3}')
+    case "$IMAGE" in *cu129*) img_cuda=12.9 ;; *cu130*|*) img_cuda=13.0 ;; esac
+    log "  driver CUDA         : ${drv_cuda:-unknown}  (image needs ${img_cuda})"
+    if [ -n "$drv_cuda" ] && [ "$(printf '%s\n%s\n' "$img_cuda" "$drv_cuda" | sort -V | head -1)" != "$img_cuda" ]; then
+      log "  !! driver supports CUDA ${drv_cuda} < ${img_cuda} -- use a -cu129 image"; fail=1
+    fi
     log "  GPUs requested      : ${GPUS}"
     nvidia-smi --query-gpu=index,memory.used,memory.total --format=csv,noheader,nounits \
       | while IFS=', ' read -r idx used total; do

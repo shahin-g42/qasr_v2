@@ -198,10 +198,13 @@ gpu_test() {
   log "=== gpu-test: ${IMAGE} on GPU ${GPUS%%,*} (CUDA compat=$(cuda_compat)) ==="
   docker run --rm -i --gpus "\"device=${GPUS%%,*}\"" $(compat_env)--entrypoint bash "$IMAGE" -c \
     "$(compat_prelude)python3 -" <<'PY'
-import os, torch, triton, triton.language as tl
+import ctypes, os, torch, triton, triton.language as tl
 print(f"  torch {torch.__version__} (CUDA {torch.version.cuda}), triton {triton.__version__}")
 print(f"  LD_LIBRARY_PATH head: {os.environ.get('LD_LIBRARY_PATH', '').split(':')[0] or '-'}")
-print(f"  device: {torch.cuda.get_device_name(0)}, driver API {torch._C._cuda_getDriverVersion()}")
+# The libcuda actually loaded: 12090 = compat lib in use, 12080 = host driver.
+drv = ctypes.c_int()
+ctypes.CDLL("libcuda.so.1").cuDriverGetVersion(ctypes.byref(drv))
+print(f"  device: {torch.cuda.get_device_name(0)}, libcuda API {drv.value}")
 x = torch.randn(2048, 2048, device="cuda", dtype=torch.bfloat16)
 ref = (x.float() @ x.float())
 err = ((x @ x).float() - ref).abs().max().item() / ref.abs().max().item()

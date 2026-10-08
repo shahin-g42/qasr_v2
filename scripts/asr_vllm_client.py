@@ -17,6 +17,7 @@ import argparse
 import json
 import random
 import sys
+import urllib.error
 import urllib.request
 
 LANGUAGES = {"ar": "Arabic", "en": "English", "zh": "Chinese", "hi": "Hindi", "ml": "Malayalam"}
@@ -33,8 +34,13 @@ def _post(url: str, route: str, body: dict, timeout: float = 600) -> dict:
     req = urllib.request.Request(
         url.rstrip("/") + route, data=json.dumps(body).encode(), headers={"Content-Type": "application/json"}
     )
-    with urllib.request.urlopen(req, timeout=timeout) as resp:
-        return json.load(resp)
+    try:
+        with urllib.request.urlopen(req, timeout=timeout) as resp:
+            return json.load(resp)
+    except urllib.error.HTTPError as exc:
+        # vLLM puts the real cause in the JSON body; surface it instead of a bare "500".
+        detail = exc.read().decode("utf-8", errors="replace")[:2000]
+        raise RuntimeError(f"{route} -> HTTP {exc.code}: {detail}") from None
 
 
 def messages(path: str, lang: str | None) -> list[dict]:

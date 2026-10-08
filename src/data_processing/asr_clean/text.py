@@ -1,0 +1,122 @@
+"""Text and audio-header utilities shared by every asr_clean stage (stdlib only)."""
+
+from __future__ import annotations
+
+import re
+import struct
+import unicodedata
+import wave
+
+LANGUAGE_NAMES = {"ar": "Arabic", "en": "English", "zh": "Chinese", "hi": "Hindi", "ml": "Malayalam"}
+
+# Dominant script a clean transcript of each language must be written in.
+# Code-switched words in another script are fine as a minority.
+EXPECTED_SCRIPT = {"ar": "ARABIC", "en": "LATIN", "zh": "CJK", "hi": "DEVANAGARI", "ml": "MALAYALAM"}
+
+NO_SPACE_LANGS = {"zh"}
+INDIC_LANGS = {"hi", "ml"}
+
+# q3asr SFT rows store "language Arabic<asr_text>..." as the label.
+_ENVELOPE_RE = re.compile(r"^\s*language\s+[^<]*<asr_text>", re.IGNORECASE)
+_ARABIC_DIACRITICS = re.compile("[ؐ-ًؚ-ٰٟۖ-ۭـ]")
+_ALEF_FORMS = str.maketrans({"أ": "ا", "إ": "ا", "آ": "ا", "ٱ": "ا"})
+_DIGITS = str.maketrans("٠١٢٣٤٥٦٧٨٩۰۱۲۳۴۵۶۷۸۹", "01234567890123456789")
+
+
+def strip_envelope(text: str) -> str:
+    return _ENVELOPE_RE.sub("", text or "").strip()
+
+
+def local_path(path: str) -> str:
+    """The training loader's remap (qasr.data): /vast lives under /lustrefs/taiga/vast40."""
+    return "/lustrefs/taiga/vast40" + path[len("/vast"):] if path.startswith("/vast/") else path
+
+
+def normalize(text: str, lang: str) -> str:
+    """Comparison form: NFKC, casefold, digits folded, punctuation/symbols out.
+
+    Combining marks stay attached (Indic vowel signs are letters of the word);
+    Arabic additionally drops diacritics/tatweel and folds alef forms so a
+    diacritized and a bare spelling of the same word compare equal.
+    """
+    text = unicodedata.normalize("NFKC", text or "").casefold().translate(_DIGITS)
+    if lang == "ar":
+        text = _ARABIC_DIACRITICS.sub("", text).translate(_ALEF_FORMS)
+    text = "".join(" " if unicodedata.category(c)[0] in "PSZC" else c for c in text)
+    return " ".join(text.split())
+
+
+def edit_distance(a, b) -> int:
+    if len(a) < len(b):
+        a, b = b, a
+    prev = list(range(len(b) + 1))
+    for i, x in enumerate(a, 1):
+        cur = [i]
+        for j, y in enumerate(b, 1):
+            cur.append(min(prev[j] + 1, cur[j - 1] + 1, prev[j - 1] + (x != y)))
+        prev = cur
+    return prev[-1]
+
+
+try:  # ~100x faster; identical results
+    from rapidfuzz.distance import Levenshtein as _lev
+
+    def edit_distance(a, b) -> int:
+        return _lev.distance(a, b)
+except ImportError:
+    pass
+
+
+def cer(ref: str, hyp: str, lang: str) -> float:
+    """Character error rate of ``hyp`` against ``ref`` on the comparison form."""
+    r, h = normalize(ref, lang).replace(" ", ""), normalize(hyp, lang).replace(" ", "")
+    if not r:
+        return 0.0 if not h else 1.0
+    return edit_distance(r, h) / len(r)
+
+
+def dominant_script(text: str, min_letters: int = 5) -> str | None:
+    counts: dict[str, int] = {}
+    for c in text:
+        if unicodedata.category(c)[0] == "L":
+            name = unicodedata.name(c, "").split(" ")[0]
+            counts[name] = counts.get(name, 0) + 1
+    if not counts or sum(counts.values()) < min_letters:
+        return None
+    return max(counts, key=counts.get)
+
+
+def mark_ratio(text: str) -> float:
+    """Share of letters that are combining marks (Indic vowel signs, viramas)."""
+    letters = [c for c in text if unicodedata.category(c)[0] in "LM"]
+    return sum(unicodedata.category(c) in ("Mn", "Mc") for c in letters) / max(len(letters), 1)
+
+
+# ---------------------------------------------------------------- duration --
+
+def header_duration(path: str) -> float | None:
+    """Duration from the file header only (no decoding)."""
+    try:
+        import soundfile
+
+        info = soundfile.info(path)
+        if info.samplerate and info.frames:
+            return info.frames / info.samplerate
+    except Exception:
+        pass
+    try:
+        if path.endswith(".wav"):
+            with wave.open(path) as w:
+                return w.getnframes() / float(w.getframerate())
+        if path.endswith(".flac"):
+            with open(path, "rb") as fh:
+                if fh.read(4) != b"fLaC":
+                    return None
+                fh.read(4)
+                info = fh.read(34)
+            rate = (info[10] << 12) | (info[11] << 4) | (info[12] >> 4)
+            total = ((info[13] & 0x0F) << 32) | struct.unpack(">I", info[14:18])[0]
+            return total / rate if rate and total else None
+    except (OSError, wave.Error, EOFError, IndexError, struct.error):
+        return None
+    return None

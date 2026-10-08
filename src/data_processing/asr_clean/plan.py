@@ -1,0 +1,199 @@
+"""Freeze the work: sources -> byte-range chunks -> exact audio_filepath dedup.
+
+Run once (any node) before the workers. Everything a worker needs lives under
+``<run_root>/_state/``:
+
+- ``plan.json``          every chunk: id, lang, split, source path, stem,
+                         byte range, line count, duplicate count;
+- ``dups/<chunk>.npy``   packed bitmask over the chunk's lines, 1 = an earlier
+                         line anywhere in the plan has the same audio path.
+
+Dedup order is eval files first, then train in config order, so a clip that
+appears in both splits stays in eval and its train copies are dropped (no
+train/eval leakage), and overlapping slices (e.g. ``train_ar_q3asr`` range
+files) are cleaned once.
+"""
+
+from __future__ import annotations
+
+import hashlib
+import json
+import os
+import re
+from concurrent.futures import ProcessPoolExecutor
+from pathlib import Path
+
+from .text import local_path
+
+PLAN_VERSION = 1
+_PATH_RE = re.compile(rb'"(?:audio_filepath|wav_path)"\s*:\s*"((?:[^"\\]|\\.)*)"')
+
+
+def config_sources(config: str, splits: tuple[str, ...] = ("eval", "train")) -> list[dict]:
+    """``[{lang, split, path}]`` from a training YAML, eval first (the dedup priority)."""
+    try:
+        import yaml
+    except ImportError:
+        yaml = None
+    out: list[dict] = []
+    for split in splits:
+        key = f"{split}_manifest"
+        with open(config, encoding="utf-8") as fh:
+            if yaml is not None:
+                block = (yaml.safe_load(fh) or {}).get(key) or {}
+            else:  # the fixed `key:` / `  lang:` / `    - path` shape every config uses
+                block, inside, lang = {}, False, None
+                for raw in fh:
+                    line = raw.split("#", 1)[0].rstrip()
+                    if not line.strip():
+                        continue
+                    if not line.startswith(" "):
+                        inside, lang = line == f"{key}:", None
+                    elif inside and re.fullmatch(r"  [A-Za-z_]+:", line):
+                        lang = line.strip()[:-1]
+                    elif inside and lang and line.lstrip().startswith("- "):
+                        block.setdefault(lang, []).append(line.lstrip()[2:].strip().strip("'\""))
+        for lang, paths in block.items():
+            for path in paths:
+                out.append({"lang": lang, "split": split, "path": path})
+    return out
+
+
+def _stem(path: str) -> str:
+    return Path(path).name.removesuffix(".jsonl").removesuffix(".json")
+
+
+def _byte_ranges(path: str, target: int) -> list[tuple[int, int]]:
+    """Split a file into ~``target``-byte ranges that start and end on line boundaries."""
+    size = os.path.getsize(path)
+    ranges, start = [], 0
+    with open(path, "rb") as fh:
+        while start < size:
+            end = start + target
+            if end >= size:
+                ranges.append((start, size))
+                break
+            fh.seek(end)
+            fh.readline()
+            end = fh.tell()
+            ranges.append((start, end))
+            start = end
+    return ranges
+
+
+def iter_chunk_lines(path: str, start: int, end: int):
+    """Yield ``(line_index, end_offset, raw_line)`` for every line in ``[start, end)``.
+
+    The planner and the workers both enumerate lines with this, so a line's
+    index (the dedup-mask position) is the same on both sides.
+    """
+    with open(path, "rb") as fh:
+        fh.seek(start)
+        pos, i = start, 0
+        while pos < end:
+            line = fh.readline()
+            if not line:
+                break
+            pos += len(line)
+            yield i, pos, line
+            i += 1
+
+
+def path_key(raw: bytes) -> int | None:
+    """64-bit identity of a line's audio path (after the /vast remap), or None."""
+    m = _PATH_RE.search(raw)
+    if not m:
+        return None
+    try:
+        path = json.loads(b'"' + m.group(1) + b'"')
+    except json.JSONDecodeError:
+        return None
+    return int.from_bytes(hashlib.blake2b(local_path(path).encode(), digest_size=8).digest(), "little")
+
+
+def _hash_chunk(args: tuple[str, int, int]):
+    import numpy as np
+
+    path, start, end = args
+    keys = []
+    for i, _, raw in iter_chunk_lines(path, start, end):
+        k = path_key(raw)
+        # Unparseable lines get a unique key so they are never "duplicates";
+        # the worker rejects them on its own.
+        keys.append(k if k is not None else (hash((path, start, i)) & 0xFFFFFFFFFFFFFFFF) | 1 << 63)
+    return np.asarray(keys, dtype=np.uint64)
+
+
+def build_plan(run_root: str, sources: list[dict], *, chunk_mb: int = 64, dedup: bool = True,
+               jobs: int = os.cpu_count() or 8) -> dict:
+    root = Path(run_root)
+    state = root / "_state"
+    plan_path = state / "plan.json"
+    if plan_path.exists():
+        raise SystemExit(f"plan already exists: {plan_path} (a run's plan is frozen; use a new RUN_ID)")
+    (state / "dups").mkdir(parents=True, exist_ok=True)
+
+    missing = [s["path"] for s in sources if not os.path.exists(s["path"])]
+    if missing:
+        raise SystemExit("missing manifests:\n  " + "\n  ".join(missing))
+    stems: dict[tuple[str, str], str] = {}
+    chunks: list[dict] = []
+    for s in sources:
+        key = (s["lang"], _stem(s["path"]))
+        if key in stems and stems[key] != s["path"]:
+            raise SystemExit(f"two sources map to the same output {key}: {stems[key]} and {s['path']}")
+        stems[key] = s["path"]
+        for k, (a, b) in enumerate(_byte_ranges(s["path"], chunk_mb << 20)):
+            chunks.append({"id": f"{s['lang']}__{key[1]}__{k:05d}", "lang": s["lang"], "split": s["split"],
+                           "source": s["path"], "stem": key[1], "part": k, "start": a, "end": b})
+
+    print(f"plan: {len(sources)} manifests -> {len(chunks)} chunks of ~{chunk_mb} MB; hashing paths "
+          f"with {jobs} processes", flush=True)
+    import numpy as np
+
+    with ProcessPoolExecutor(max_workers=jobs) as pool:
+        arrays = list(pool.map(_hash_chunk, [(c["source"], c["start"], c["end"]) for c in chunks], chunksize=1))
+    sizes = [len(a) for a in arrays]
+    for c, n in zip(chunks, sizes, strict=True):
+        c["lines"] = n
+
+    dup_total = 0
+    if dedup and chunks:
+        keys = np.concatenate(arrays)
+        _, first = np.unique(keys, return_index=True)
+        is_dup = np.ones(len(keys), dtype=bool)
+        is_dup[first] = False
+        offset = 0
+        for c, n in zip(chunks, sizes, strict=True):
+            mask = is_dup[offset:offset + n]
+            offset += n
+            c["dups"] = int(mask.sum())
+            dup_total += c["dups"]
+            np.save(state / "dups" / f"{c['id']}.npy", np.packbits(mask))
+    else:
+        for c in chunks:
+            c["dups"] = 0
+
+    plan = {"version": PLAN_VERSION, "chunks": chunks, "dedup": dedup,
+            "lines": sum(sizes), "duplicates": dup_total,
+            "sources": [{**s, "stem": _stem(s["path"])} for s in sources]}
+    tmp = plan_path.with_suffix(".tmp")
+    tmp.write_text(json.dumps(plan, indent=1))
+    os.replace(tmp, plan_path)
+    print(f"plan: {plan['lines']:,} lines, {dup_total:,} duplicate audio paths skipped, "
+          f"{plan['lines'] - dup_total:,} to clean -> {plan_path}", flush=True)
+    return plan
+
+
+def load_plan(run_root: str) -> dict:
+    return json.loads((Path(run_root) / "_state" / "plan.json").read_text())
+
+
+def load_dup_mask(run_root: str, chunk: dict):
+    """Boolean per line of the chunk, or None when the plan has no dedup."""
+    path = Path(run_root) / "_state" / "dups" / f"{chunk['id']}.npy"
+    if not path.exists():
+        return None
+    import numpy as np
+
+    return np.unpackbits(np.load(path))[: chunk["lines"]].astype(bool)

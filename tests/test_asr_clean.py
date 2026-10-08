@@ -1,0 +1,243 @@
+"""data_processing.asr_clean end to end against fake ASR and LLM servers.
+
+Covers what a 176M-record run must survive: duplicate clips across eval and
+train, an ASR server answering 503, an LLM that omits items from its JSON or
+answers in the wrong script, two workers racing for chunks, and a crash in
+the middle of a chunk (resume must neither lose nor duplicate a record).
+"""
+
+from __future__ import annotations
+
+import json
+import re
+import tempfile
+import threading
+import unittest
+import wave
+from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
+from pathlib import Path
+
+from data_processing.asr_clean.plan import build_plan, config_sources, load_dup_mask
+from data_processing.asr_clean.prompts import guard, parse_response, system_prompt
+from data_processing.asr_clean.worker import OUTPUT_KEYS, WorkerConfig, assemble, run_worker, status
+
+ITEM_RE = re.compile(r"(\d+)\.\n   ORIGINAL: <<<(.*?)>>>\n   ASR:      <<<(.*?)>>>", re.DOTALL)
+
+
+class _Fakes:
+    """One HTTP server playing both the ASR (/v1 with audio) and the LLM (/v1 with text)."""
+
+    def __init__(self) -> None:
+        self.lock = threading.Lock()
+        self.asr_calls = 0
+        self.asr_503_left = 3
+        self.flaky_seen = False
+
+        fakes = self
+
+        class Handler(BaseHTTPRequestHandler):
+            def _send(self, code: int, obj: dict) -> None:
+                data = json.dumps(obj).encode()
+                self.send_response(code)
+                self.send_header("Content-Type", "application/json")
+                self.send_header("Content-Length", str(len(data)))
+                self.end_headers()
+                self.wfile.write(data)
+
+            def do_GET(self) -> None:
+                self._send(200, {})
+
+            def do_POST(self) -> None:
+                body = json.loads(self.rfile.read(int(self.headers["Content-Length"])))
+                content = body["messages"][-1]["content"]
+                if isinstance(content, list):  # ASR request
+                    with fakes.lock:
+                        fakes.asr_calls += 1
+                        if fakes.asr_503_left > 0:
+                            fakes.asr_503_left -= 1
+                            return self._send(503, {"error": "warming up"})
+                    path = Path(content[0]["audio_url"]["url"][len("file://"):])
+                    text = path.with_suffix(".asr").read_text(encoding="utf-8")
+                    return self._send(200, {"choices": [{"message": {
+                        "content": f"language {body['messages'][0]['content']}<asr_text>{text}"},
+                        "finish_reason": "stop"}]})
+                # LLM request: follow ORIGINAL, add a full stop; misbehave on markers.
+                out = []
+                for i, org, asr in ITEM_RE.findall(content):
+                    i = int(i)
+                    if "FLAKY" in org:
+                        with fakes.lock:
+                            first = not fakes.flaky_seen
+                            fakes.flaky_seen = True
+                        if first:
+                            continue  # omit this item once: must be retried, not dropped
+                    if "DROPME" in org:
+                        out.append({"i": i, "text": "", "choice": "original", "drop": True})
+                    elif "LATIN" in org:
+                        out.append({"i": i, "text": "this is english not arabic at all", "choice": "asr"})
+                    else:
+                        out.append({"i": i, "text": org + ".", "choice": "original" if org == asr else "merged"})
+                think = "<think>reasoning about the items</think>" if body["chat_template_kwargs"]["enable_thinking"] else ""
+                return self._send(200, {"choices": [{"message": {"content": think + json.dumps(out, ensure_ascii=False)},
+                                                     "finish_reason": "stop"}],
+                                        "usage": {"prompt_tokens": 10, "completion_tokens": 10}})
+
+            def log_message(self, *a) -> None:
+                pass
+
+        self.server = ThreadingHTTPServer(("127.0.0.1", 0), Handler)
+        threading.Thread(target=self.server.serve_forever, daemon=True).start()
+        self.url = f"http://127.0.0.1:{self.server.server_address[1]}"
+
+    def close(self) -> None:
+        self.server.shutdown()
+
+
+def _wav(path: Path, seconds: float) -> None:
+    with wave.open(str(path), "wb") as w:
+        w.setnchannels(1)
+        w.setsampwidth(2)
+        w.setframerate(16_000)
+        w.writeframes(b"\0\0" * int(16_000 * seconds))
+
+
+def _dataset(tmp: Path) -> tuple[Path, Path, list[str]]:
+    """eval (10 clips) + train (40 clips, 5 of them the eval clips again)."""
+    audio = tmp / "audio"
+    audio.mkdir()
+    rows_eval, rows_train = [], []
+    for i in range(45):
+        wav = audio / f"c{i}.wav"
+        _wav(wav, 1.0 + (i % 3))
+        org = f"جملة رقم {i}"
+        if i == 7:
+            org = "FLAKY " + org
+        if i == 11:
+            org = "DROPME " + org
+        if i == 13:
+            org = "LATIN " + org
+        asr = org if i % 2 else f"جملة رقمي {i}"  # half agree, half need adjudication
+        wav.with_suffix(".asr").write_text(asr, encoding="utf-8")
+        row = {"audio_filepath": str(wav), "text": f"language Arabic<asr_text>{org}" if i % 5 == 0 else org}
+        if i % 4:
+            row["duration"] = 1.0 + (i % 3)  # others: header probe
+        (rows_eval if i < 10 else rows_train).append(row)
+    rows_train += rows_eval[:5]  # leakage: eval clips also in train
+    long_wav = audio / "long.wav"
+    _wav(long_wav, 40.0)
+    rows_train.append({"audio_filepath": str(long_wav), "text": "طويل جدا", "duration": 40.0})
+    rows_train.append({"text": "no audio path"})
+    ev, tr = tmp / "eval_ar_x.jsonl", tmp / "train_ar_x.jsonl"
+    ev.write_text("".join(json.dumps(r, ensure_ascii=False) + "\n" for r in rows_eval))
+    tr.write_text("".join(json.dumps(r, ensure_ascii=False) + "\n" for r in rows_train))
+    cfg = tmp / "cfg.yaml"
+    cfg.write_text(f"eval_manifest:\n  ar:\n    - {ev}\ntrain_manifest:\n  ar:\n    - {tr}\n")
+    return cfg, tr, [str(audio / f"c{i}.wav") for i in range(45)]
+
+
+class PlanTest(unittest.TestCase):
+    def test_eval_first_dedup_and_chunking(self) -> None:
+        with tempfile.TemporaryDirectory() as t:
+            tmp = Path(t)
+            cfg, _, _ = _dataset(tmp)
+            sources = config_sources(str(cfg))
+            self.assertEqual([s["split"] for s in sources], ["eval", "train"])
+            plan = build_plan(str(tmp / "run"), sources, chunk_mb=0, jobs=2)  # 0 MB: one line per chunk
+            self.assertEqual(plan["lines"], 10 + 35 + 5 + 2)
+            self.assertEqual(plan["duplicates"], 5)
+            dup_chunks = [c for c in plan["chunks"] if c["dups"]]
+            self.assertTrue(all(c["split"] == "train" for c in dup_chunks))  # eval copies kept
+            self.assertTrue(all(load_dup_mask(str(tmp / "run"), c).all() for c in dup_chunks))
+            with self.assertRaises(SystemExit):  # a run's plan is frozen
+                build_plan(str(tmp / "run"), sources, jobs=1)
+
+
+class EndToEndTest(unittest.TestCase):
+    def setUp(self) -> None:
+        self.fakes = _Fakes()
+        self.tmpdir = tempfile.TemporaryDirectory()
+        self.tmp = Path(self.tmpdir.name)
+        cfg, _, self.paths = _dataset(self.tmp)
+        self.root = str(self.tmp / "run")
+        build_plan(self.root, config_sources(str(cfg)), chunk_mb=1, jobs=2)
+
+    def tearDown(self) -> None:
+        self.fakes.close()
+        self.tmpdir.cleanup()
+
+    def _cfg(self, wid: str, **kw) -> WorkerConfig:
+        return WorkerConfig(run_root=self.root, asr_urls=[self.fakes.url], llm_url=self.fakes.url,
+                            worker_id=wid, flush_every=4, asr_concurrency=4, llm_concurrency=3,
+                            format_batch=3, adjudicate_batch=2, **kw)
+
+    def _outputs(self) -> tuple[list[dict], list[dict]]:
+        out = [json.loads(line) for p in sorted((Path(self.root) / "ar").rglob("part-*.jsonl"))
+               for line in p.read_text(encoding="utf-8").splitlines()]
+        rej = [json.loads(line) for p in sorted((Path(self.root) / "_rejects").rglob("*.jsonl"))
+               for line in p.read_text(encoding="utf-8").splitlines()]
+        return out, rej
+
+    def _check_complete(self) -> None:
+        out, rej = self._outputs()
+        for r in out:
+            self.assertEqual(tuple(r), OUTPUT_KEYS)  # exactly the 5 columns, in order
+            self.assertIsInstance(r["duration"], float)
+            self.assertNotIn("<asr_text>", r["org_text"])  # q3asr envelope stripped
+            self.assertEqual(r["text"], r["org_text"] + ".")
+        written = [r["audio_filepath"] for r in out]
+        self.assertEqual(len(written), len(set(written)))  # exactly once
+        self.assertEqual(set(written), set(self.paths) - {self.paths[11], self.paths[13]})
+        reasons = sorted(r["reason"] for r in rej)
+        self.assertEqual(reasons, ["bad_record", "duration_out_of_range", "guard_wrong_script", "llm_drop"])
+        st = status(self.root)
+        self.assertEqual(st["chunks_done"], st["chunks"])
+        self.assertEqual(st["written"], 43)
+        self.assertEqual(st["processed"], st["to_clean"])
+        self.assertEqual(st["lanes"]["format"] + st["lanes"]["adjudicate"], 43)
+
+    def test_two_racing_workers_clean_everything_exactly_once(self) -> None:
+        threads = [threading.Thread(target=run_worker, args=(self._cfg(f"h:{i}"),)) for i in range(2)]
+        for th in threads:
+            th.start()
+        for th in threads:
+            th.join()
+        self._check_complete()
+        self.assertTrue(self.fakes.flaky_seen)
+        merged = assemble(self.root)
+        self.assertEqual(len(merged), 2)
+        n = sum(len((Path(self.root) / "ar" / f"{s}.jsonl").read_text().splitlines())
+                for s in ("eval_ar_x", "train_ar_x"))
+        self.assertEqual(n, 43)
+
+    def test_crash_mid_chunk_then_resume(self) -> None:
+        run_worker(self._cfg("h:0"), stop_after_windows=2)  # dies after 2 commits
+        part = next((Path(self.root) / "ar").rglob("part-*.jsonl"))
+        with open(part, "ab") as fh:  # torn write after the last commit
+            fh.write(b'{"audio_filepath": "half a rec')
+        run_worker(self._cfg("h:0"))  # same id resumes its own chunk
+        self._check_complete()
+
+
+class PromptTest(unittest.TestCase):
+    def test_parse_is_strict_and_0_based(self) -> None:
+        content = '```json\n[{"i": 0, "text": "a"}, {"i": 0, "text": "dup"}, {"i": 5, "text": "x"}, {"i": 1}]\n```'
+        self.assertEqual(parse_response(content, 2), {0: {"text": "a", "choice": "unknown", "drop": False}})
+        self.assertEqual(parse_response("not json", 2), {})
+
+    def test_guards(self) -> None:
+        self.assertEqual(guard("this is english", "مرحبا بكم جميعا", "مرحبا بكم", "ar"), "wrong_script")
+        self.assertEqual(guard("<<<مرحبا>>>", "مرحبا", "مرحبا", "ar"), "prompt_leak")
+        self.assertEqual(guard("كلام مختلف تماما عن المدخلات", "مرحبا بكم", "مرحبا بكم", "ar"), "divergent")
+        self.assertIsNone(guard("مرحبًا بكم.", "مرحبا بكم", "مرحبا بكو", "ar"))
+        self.assertEqual(guard("ജന ജയഹനദ തടങങയ", "ജനം, ജയ്ഹിന്ദ് തുടങ്ങിയ", "ജന ജയഹനദ തടങങയ", "ml"),
+                         "stripped_marks")
+
+    def test_arabic_prompt_carries_corpus_conventions(self) -> None:
+        sp = system_prompt("ar")
+        for needle in ("Western digits", "ORIGINAL", "ASR", "DIALECT PRESERVATION", "DIACRITICS", '"i": 0'):
+            self.assertIn(needle, sp)
+        self.assertIn("matra", system_prompt("ml"))
+
+
+if __name__ == "__main__":
+    unittest.main()

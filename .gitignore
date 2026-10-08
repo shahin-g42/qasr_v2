@@ -59,3 +59,6 @@ q3asr_sft_manifests/
 
 # ASR load-test outputs (scripts/run_asr_load_test.sh)
 logs/asr_load_test/
+
+# ASR-assisted cleaning runs (scripts/corpus/run_asr_clean.sh)
+asr_cleaned_manifests/

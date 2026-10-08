@@ -9,6 +9,7 @@ any drift here would silently change every served transcript.
 from __future__ import annotations
 
 import json
+import re
 import sys
 import tempfile
 import unittest
@@ -122,6 +123,90 @@ class TowerParityTest(unittest.TestCase):
         torch.testing.assert_close(torch.cat(ours), ref, rtol=1e-4, atol=1e-4)
         for wav, emb in zip(wavs, ours, strict=False):
             self.assertEqual(emb.shape[0], tower.num_tokens(QASRMelExtractor().num_frames(len(wav))))
+
+
+class MelFallbackTest(unittest.TestCase):
+    def test_transformers_mel_bank_matches_librosa(self) -> None:
+        # The vllm-openai image ships no librosa, so production uses the fallback.
+        import builtins
+
+        real_import = builtins.__import__
+
+        def no_librosa(name, *args, **kwargs):
+            if name == "librosa":
+                raise ImportError(name)
+            return real_import(name, *args, **kwargs)
+
+        builtins.__import__ = no_librosa
+        try:
+            fallback = QASRMelExtractor()
+        finally:
+            builtins.__import__ = real_import
+        torch.testing.assert_close(fallback.mel_filters, QASRMelExtractor().mel_filters, rtol=0, atol=1e-7)
+        for wav in _waveforms():
+            torch.testing.assert_close(fallback(wav)[0], QASRMelExtractor()(wav)[0], rtol=0, atol=1e-5)
+
+
+# Qwen3-1.7B decoder dims as welded by convert_weights (Audar-ASR-V1.2-Turbo).
+FULL_TEXT = {
+    "model_type": "qwen3", "hidden_size": 2048, "num_hidden_layers": 28, "num_attention_heads": 16,
+    "num_key_value_heads": 8, "head_dim": 128, "intermediate_size": 6144, "vocab_size": 151936,
+    "tie_word_embeddings": True,
+}
+# vLLM's WeightsMapper in qasr_vllm.model, reproduced so this test needs no vLLM.
+PLUGIN_PREFIXES = {
+    "model.audio_tower.": "audio_tower.encoder.",
+    "model.multi_modal_projector.": "audio_tower.projector.",
+    "model.language_model.": "language_model.model.",
+    "lm_head.": "language_model.lm_head.",
+}
+
+
+def _map(name: str) -> str:
+    for old, new in PLUGIN_PREFIXES.items():
+        if name.startswith(old):
+            return new + name[len(old):]
+    raise AssertionError(f"checkpoint key {name!r} matches no plugin prefix")
+
+
+class FullSizeLayoutTest(unittest.TestCase):
+    """Every production-checkpoint tensor must land on a plugin tensor, and vice versa."""
+
+    def setUp(self) -> None:
+        cfg = QASRConfig(text_config=FULL_TEXT, tie_word_embeddings=True)
+        with torch.device("meta"):
+            self.model = QASRForConditionalGeneration(cfg)
+            self.tower = QASRAudioTower(QASRVllmConfig(**json.loads(cfg.to_json_string())))
+        # What save_pretrained writes: the state dict minus the tied lm_head.
+        self.saved = [k for k in self.model.state_dict() if k != "lm_head.weight"]
+
+    def test_parameter_counts(self) -> None:
+        def count(module: torch.nn.Module) -> int:
+            return sum(p.numel() for p in module.parameters())
+
+        self.assertEqual(len(self.model.model.audio_tower.layers), 48)
+        self.assertEqual(len(self.model.model.language_model.layers), 28)
+        self.assertEqual(count(self.model.model.multi_modal_projector), 4_263_168)
+        self.assertEqual(round(count(self.model) / 1e9, 2), 3.62)
+        self.assertEqual(count(self.tower), count(self.model.model.audio_tower) + 4_263_168)
+
+    def test_audio_keys_cover_tower_exactly(self) -> None:
+        mapped = {_map(k)[len("audio_tower."):] for k in self.saved if k.startswith(("model.audio_tower.", "model.multi_modal_projector."))}
+        # vLLM's AutoWeightsLoader fills parameters plus persistent buffers (BatchNorm stats).
+        expected = set(self.tower.state_dict())
+        self.assertEqual(mapped - expected, set(), "checkpoint tensors with no plugin target")
+        self.assertEqual(expected - mapped, set(), "plugin tensors the checkpoint never fills")
+
+    def test_decoder_keys_are_qwen3_layout(self) -> None:
+        decoder = [_map(k) for k in self.saved if k.startswith("model.language_model.")]
+        self.assertEqual(len(decoder), 2 + 28 * 11)  # embed + final norm, 11 tensors per layer
+        allowed = re.compile(
+            r"language_model\.model\.(embed_tokens\.weight|norm\.weight|layers\.\d+\.("
+            r"input_layernorm|post_attention_layernorm|self_attn\.(q|k|v|o)_proj|"
+            r"self_attn\.(q|k)_norm|mlp\.(gate|up|down)_proj)\.weight)"
+        )
+        self.assertEqual([k for k in decoder if not allowed.fullmatch(k)], [])
+        self.assertNotIn("lm_head.weight", self.saved)
 
 
 if __name__ == "__main__":

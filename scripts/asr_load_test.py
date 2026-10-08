@@ -217,30 +217,104 @@ except ImportError:
         return prev[-1]
 
 
+INDIC_LANGS = {"hi", "ml"}
+# A unit repeated 3+ times back to back. Chinese characters are syllables, so a
+# 3-char unit (在哪儿在哪儿在哪儿) is already a loop; elsewhere require 4+ chars.
+LOOP_RE = {True: re.compile(r"(.{3,40}?)\1{2,}"), False: re.compile(r"(.{4,40}?)\1{2,}")}
+
+
+def _mark_ratio(text: str) -> float:
+    letters = [c for c in text if unicodedata.category(c)[0] in "LM"]
+    return sum(unicodedata.category(c) in ("Mn", "Mc") for c in letters) / max(len(letters), 1)
+
+
+def _script(text: str) -> str | None:
+    """Dominant Unicode script of the letters (first word of the char name: LATIN, CJK, ...)."""
+    counts: dict[str, int] = {}
+    for c in text:
+        if unicodedata.category(c)[0] == "L":
+            name = unicodedata.name(c, "").split(" ")[0]
+            counts[name] = counts.get(name, 0) + 1
+    return max(counts, key=counts.get) if counts and sum(counts.values()) >= 5 else None
+
+
+def issues(rec: dict) -> list[str]:
+    """Failure patterns found in this load test's first real run (2026-10-08)."""
+    ref, hyp, lang = rec["ref"], rec["hyp"], rec["lang"]
+    out = []
+    # Indic vowel signs/viramas dropped: the model learned it from mark-stripped
+    # training transcripts (indic_tts 22.8%, IMaSC 3.4% of ml rows in v7.0).
+    if lang in INDIC_LANGS and _mark_ratio(ref) > 0.15 and _mark_ratio(hyp) < 0.2 * _mark_ratio(ref):
+        out.append("stripped_marks")
+    loop_re = LOOP_RE[lang in NO_SPACE_LANGS]
+    h = normalize(hyp, lang).replace(" ", "")
+    if loop_re.search(h) and not loop_re.search(normalize(ref, lang).replace(" ", "")):
+        out.append("loop")
+    rs, hs = _script(ref), _script(hyp)
+    if rs and hs and rs != hs:
+        out.append("wrong_script")  # e.g. pinyin/English for Chinese audio
+    if not hyp.strip():
+        out.append("empty")
+    if rec.get("finish") == "length":
+        out.append("truncated")
+    return out
+
+
+def _unique_ok(records: list[dict]) -> list[dict]:
+    """One record per clip: higher levels replay the pool, which would inflate n."""
+    seen: dict[str, dict] = {}
+    for r in records:
+        if r["ok"]:
+            seen.setdefault(r["path"], r)
+    return list(seen.values())
+
+
+def _accuracy(rows: list[dict], lang: str) -> dict:
+    ce = cn = we = wn = 0
+    for r in rows:
+        ref, hyp = normalize(r["ref"], lang), normalize(r["hyp"], lang)
+        rc, hc = ref.replace(" ", ""), hyp.replace(" ", "")
+        ce += edit_distance(rc, hc)
+        cn += len(rc)
+        rw, hw = (list(rc), list(hc)) if lang in NO_SPACE_LANGS else (ref.split(), hyp.split())
+        we += edit_distance(rw, hw)
+        wn += len(rw)
+    name = LANGUAGES.get(lang, lang).lower()
+    flags: dict[str, int] = {}
+    for r in rows:
+        for flag in r.get("issues", []):
+            flags[flag] = flags.get(flag, 0) + 1
+    return {
+        "n": len(rows),
+        "cer": round(ce / max(cn, 1), 4),
+        "wer": round(we / max(wn, 1), 4),  # character-level for zh
+        "lid_agree": round(sum((r.get("lid") or "").lower() == name for r in rows) / len(rows), 4),
+        "issues": flags,
+    }
+
+
 def score(records: list[dict]) -> dict[str, dict]:
-    """Corpus-level CER/WER, LID agreement, truncation/empty rates per language."""
+    """Per language (unique clips): CER/WER, LID agreement, issue counts, and per-source rows."""
+    rows = _unique_ok(records)
+    # Greedy decoding is not batch-invariant in bf16: on clips where the model
+    # hesitates between readings, the transcript flips with batch composition.
+    # That instability is a low-confidence signal worth keeping.
+    variants: dict[str, set[str]] = {}
+    for r in records:
+        if r["ok"]:
+            variants.setdefault(r["path"], set()).add(r["hyp"])
+    for r in rows:
+        r["issues"] = issues(r)
+        r["variants"] = len(variants[r["path"]])
+        if r["variants"] > 1:
+            r["issues"].append("unstable")
     out: dict[str, dict] = {}
-    for lang in sorted({r["lang"] for r in records}):
-        rows = [r for r in records if r["lang"] == lang and r["ok"]]
-        if not rows:
-            continue
-        ce = cn = we = wn = 0
-        for r in rows:
-            ref, hyp = normalize(r["ref"], lang), normalize(r["hyp"], lang)
-            rc, hc = ref.replace(" ", ""), hyp.replace(" ", "")
-            ce += edit_distance(rc, hc)
-            cn += len(rc)
-            rw, hw = (list(rc), list(hc)) if lang in NO_SPACE_LANGS else (ref.split(), hyp.split())
-            we += edit_distance(rw, hw)
-            wn += len(rw)
-        name = LANGUAGES.get(lang, lang).lower()
-        out[lang] = {
-            "n": len(rows),
-            "cer": round(ce / max(cn, 1), 4),
-            "wer": round(we / max(wn, 1), 4),  # character-level for zh
-            "lid_agree": round(sum((r.get("lid") or "").lower() == name for r in rows) / len(rows), 4),
-            "truncated": round(sum(r.get("finish") == "length" for r in rows) / len(rows), 4),
-            "empty": round(sum(not r["hyp"].strip() for r in rows) / len(rows), 4),
+    for lang in sorted({r["lang"] for r in rows}):
+        lr = [r for r in rows if r["lang"] == lang]
+        out[lang] = _accuracy(lr, lang)
+        out[lang]["by_source"] = {
+            src: _accuracy([r for r in lr if r["source"] == src], lang)
+            for src in sorted({r["source"] for r in lr})
         }
     return out
 
@@ -255,16 +329,22 @@ def pct(values: list[float], q: float) -> float:
 # -------------------------------------------------------------------- load --
 
 def run_level(pool: list[dict], urls: list[str], concurrency: int, n_requests: int,
-              timeout: float, max_tokens: int) -> tuple[list[dict], float]:
+              timeout: float, max_tokens: int, min_seconds: float = 0.0) -> tuple[list[dict], float]:
+    """Issue at least ``n_requests`` and keep going until ``min_seconds`` have passed.
+
+    The time floor is what makes a level a steady-state measurement: a burst of
+    a few seconds is dominated by ramp-up and the drain of the last requests.
+    """
     lock = threading.Lock()
-    counter = iter(range(n_requests))
+    counter = iter(range(10**12))
     records: list[dict] = []
+    deadline = time.perf_counter() + min_seconds
 
     def worker() -> None:
         while True:
             with lock:
-                i = next(counter, None)
-            if i is None:
+                i = next(counter)
+            if i >= n_requests and time.perf_counter() >= deadline:
                 return
             item = pool[i % len(pool)]
             url = urls[i % len(urls)]
@@ -323,8 +403,10 @@ def main() -> int:
     ap.add_argument("--manifest", action="append", help="LANG=PATH (repeatable)")
     ap.add_argument("--langs", help="comma list to restrict, e.g. ar,en")
     ap.add_argument("--per-lang", type=int, default=200, help="clips sampled per language")
-    ap.add_argument("--concurrency", default="8,32,64,128,256,512", help="comma-separated sweep")
+    ap.add_argument("--concurrency", default="64,256,512,1024,2048", help="comma-separated sweep")
     ap.add_argument("--requests", type=int, default=0, help="requests per level (default: max(pool, 4x concurrency))")
+    ap.add_argument("--min-level-seconds", type=float, default=60,
+                    help="keep each level running at least this long (steady state)")
     ap.add_argument("--warmup", type=int, default=32)
     ap.add_argument("--min-duration", type=float, default=0.3)
     ap.add_argument("--max-duration", type=float, default=35.0)
@@ -352,16 +434,17 @@ def main() -> int:
         raise SystemExit(f"every warmup request failed, e.g. {bad[0]['error']}")
 
     levels = [int(c) for c in args.concurrency.split(",")]
+    all_records: list[list[dict]] = []
     report = {"urls": args.url, "pool": len(pool), "langs": sorted(sources), "levels": []}
     hdr = f"{'conc':>5} {'req/s':>7} {'RTFx':>7} {'tok/s':>8} {'p50':>6} {'p90':>6} {'p99':>6} {'err%':>5}"
     print(f"=== sweep over {levels} ({len(args.url)} server(s), {len(pool)} clips) ===\n{hdr}")
     for c in levels:
         n = args.requests or max(len(pool), 4 * c)
         t_start = time.time()
-        records, wall = run_level(pool, args.url, c, n, args.timeout, args.max_tokens)
+        records, wall = run_level(pool, args.url, c, n, args.timeout, args.max_tokens, args.min_level_seconds)
+        all_records.append(records)
         s = summarize(records, wall, c)
         s["t_start"], s["t_end"] = round(t_start, 1), round(time.time(), 1)  # for GPU/CPU monitors
-        s["accuracy"] = score(records)
         report["levels"].append(s)
         with open(out / f"requests_c{c}.jsonl", "w", encoding="utf-8") as fh:
             for r in records:
@@ -378,11 +461,24 @@ def main() -> int:
           f"knee (>=95% of peak) at concurrency {knee['concurrency']} "
           f"(p90 {knee['lat_p90']} s)")
 
-    print("\n=== accuracy at the knee (normalized; zh WER is character-level) ===")
-    print(f"{'lang':>4} {'n':>5} {'CER':>7} {'WER':>7} {'LID':>6} {'trunc':>6} {'empty':>6}")
-    for lang, a in knee["accuracy"].items():
-        print(f"{lang:>4} {a['n']:>5} {a['cer']:>7.2%} {a['wer']:>7.2%} {a['lid_agree']:>6.1%} "
-              f"{a['truncated']:>6.1%} {a['empty']:>6.1%}")
+    # Accuracy is a property of the model, not the load level: score every unique
+    # clip across all levels (first answer per clip; greedy decoding is deterministic).
+    every = [r for lv_records in all_records for r in lv_records]
+    acc = score(every)
+    report["accuracy"] = acc
+    print("\n=== accuracy per unique clip (normalized; zh WER is character-level) ===")
+    print(f"{'lang':>4} {'source':<28} {'n':>5} {'CER':>7} {'WER':>7} {'LID':>6}  issues")
+    for lang, a in acc.items():
+        for src, b in [("ALL", a), *a["by_source"].items()]:
+            flags = " ".join(f"{k}={v}" for k, v in sorted(b["issues"].items())) or "-"
+            print(f"{lang:>4} {src:<28} {b['n']:>5} {b['cer']:>7.2%} {b['wer']:>7.2%} {b['lid_agree']:>6.1%}  {flags}")
+    flagged = [r for r in _unique_ok(every) if r.get("issues")]
+    with open(out / "issues.jsonl", "w", encoding="utf-8") as fh:
+        for r in sorted(flagged, key=lambda r: (r["lang"], r["source"])):
+            fh.write(json.dumps({k: r.get(k) for k in ("lang", "source", "issues", "variants", "duration",
+                                                       "path", "ref", "hyp")},
+                                ensure_ascii=False) + "\n")
+    print(f"flagged clips: {len(flagged)} -> {out / 'issues.jsonl'}")
 
     if args.project_hours and knee["rtfx"] > 0:
         hours = args.project_hours / knee["rtfx"]

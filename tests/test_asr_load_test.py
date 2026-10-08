@@ -112,6 +112,7 @@ class EndToEndTest(unittest.TestCase):
                 argv = sys.argv
                 sys.argv = ["asr_load_test.py", "--url", url, "--manifest", f"en={manifest}",
                             "--per-lang", "20", "--concurrency", "2,8", "--warmup", "4",
+                            "--min-level-seconds", "0",
                             "--project-hours", "1000", "--out", str(out)]
                 try:
                     self.assertEqual(alt.main(), 0)
@@ -125,11 +126,44 @@ class EndToEndTest(unittest.TestCase):
         for lv in report["levels"]:
             self.assertEqual(lv["error_rate"], 0)
             self.assertEqual(lv["undated_clips"], 0)
-            acc = lv["accuracy"]["en"]
-            self.assertEqual(acc["lid_agree"], 1.0)
-            # 5 of 20 clips have 1 wrong word out of 4 -> WER 5/80
-            self.assertAlmostEqual(acc["wer"], round(5 / 80, 4))
+        acc = report["accuracy"]["en"]
+        self.assertEqual(acc["n"], 20)  # unique clips, not requests
+        self.assertEqual(acc["lid_agree"], 1.0)
+        # 5 of 20 clips have 1 wrong word out of 4 -> WER 5/80
+        self.assertAlmostEqual(acc["wer"], round(5 / 80, 4))
+        self.assertEqual(acc["issues"], {})  # the fake server is deterministic
         self.assertIn("projection", report)
+
+
+class IssueDetectorTest(unittest.TestCase):
+    """Cases taken from the first real load test (2026-10-08)."""
+
+    def _rec(self, lang: str, ref: str, hyp: str, **kw) -> dict:
+        return {"lang": lang, "ref": ref, "hyp": hyp, "finish": "stop", **kw}
+
+    def test_malayalam_stripped_marks(self) -> None:
+        rec = self._rec("ml", "ജനം, ജയ്ഹിന്ദ് തുടങ്ങിയ ചാനലുകളിലും സ്ഥിതിയും തഥൈവയാണ്.",
+                        "ജന, ജയഹനദ തടങങയ ചനലകളല സഥത തഥവയണ.")
+        self.assertIn("stripped_marks", alt.issues(rec))
+        ok = self._rec("ml", "എന്നാൽ കാലക്രമേണ അദ്ദേഹത്തിന്റെ മഹത്ത്വം", "എന്നാൽ കാലക്രമേണ അദ്ദേഹത്തിന്റെ മഹത്വം")
+        self.assertEqual(alt.issues(ok), [])
+
+    def test_chinese_loops_and_romanization(self) -> None:
+        loop = self._rec("zh", "江小源很郁闷的，在楼下等了一整天。", "将小圆在哪儿？在哪儿？在哪儿？")
+        self.assertIn("loop", alt.issues(loop))
+        roman = self._rec("zh", "混滔天明了，皇上又跟进如好，这就完了万岁。",
+                          "Punpao tian, ming ah. Wang sheng yu geng jin yu hao.")
+        self.assertIn("wrong_script", alt.issues(roman))
+
+    def test_natural_repetition_in_reference_is_not_a_loop(self) -> None:
+        rec = self._rec("en", "no no no no no no", "no no no no no no")
+        self.assertNotIn("loop", alt.issues(rec))
+
+    def test_unstable_clip_flagged_across_requests(self) -> None:
+        base = {"lang": "zh", "source": "s", "path": "/a.wav", "ref": "如果我爸妈在家", "ok": True,
+                "finish": "stop", "lid": "chinese"}
+        records = [{**base, "hyp": "如果我爸妈在家"}, {**base, "hyp": "如果我爸妈不在家"}]
+        self.assertEqual(alt.score(records)["zh"]["issues"], {"unstable": 1})
 
 
 class ConfigParseTest(unittest.TestCase):

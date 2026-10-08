@@ -13,8 +13,9 @@
 # the per-level table, which is how you tell a GPU-bound server from an
 # audio-decode (API-server CPU) bottleneck.
 #
-# Everything lands in $OUT: report.json, requests_c*.jsonl, gpu.csv, cpu.csv,
-# run.log, monitors.txt.
+# Everything lands in $OUT: report.json, requests_c*.jsonl, issues.jsonl
+# (every clip flagged stripped_marks / loop / wrong_script / unstable / ...),
+# gpu.csv, cpu.csv, run.log, monitors.txt.
 
 set -euo pipefail
 cd "$(dirname "$0")/.."
@@ -24,7 +25,9 @@ CONFIG="${CONFIG:-configs/v7.6/02_full_8node.yaml}"
 SPLIT="${SPLIT:-eval}"
 LANGS="${LANGS:-}"
 PER_LANG="${PER_LANG:-200}"
-CONCURRENCY="${CONCURRENCY:-8,32,64,128,256,512}"
+CONCURRENCY="${CONCURRENCY:-64,256,512,1024,2048}"
+# Each level runs at least this long so the numbers are steady state, not ramp-up.
+MIN_LEVEL_S="${MIN_LEVEL_S:-60}"
 PROJECT_HOURS="${PROJECT_HOURS:-0}"
 CONTAINER="${CONTAINER:-qasr-asr}"
 PY="${PYTHON:-python3}"
@@ -105,7 +108,7 @@ else
 fi
 
 ARGS=("${URL_ARGS[@]}" --config "$CONFIG" --split "$SPLIT" --per-lang "$PER_LANG"
-      --concurrency "$CONCURRENCY" --out "$OUT")
+      --concurrency "$CONCURRENCY" --min-level-seconds "$MIN_LEVEL_S" --out "$OUT")
 [ -n "$LANGS" ] && ARGS+=(--langs "$LANGS")
 [ "$PROJECT_HOURS" != 0 ] && ARGS+=(--project-hours "$PROJECT_HOURS")
 log "$PY scripts/asr_load_test.py ${ARGS[*]}"
@@ -113,7 +116,7 @@ log "$PY scripts/asr_load_test.py ${ARGS[*]}"
 
 cleanup
 if [ -s "$OUT/gpu.csv" ]; then
-  "$PY" - "$OUT" <<'PY' | tee "$OUT/monitors.txt"
+  "$PY" - "$OUT" "$(nproc 2>/dev/null || echo 0)" <<'PY' | tee "$OUT/monitors.txt"
 import csv, json, sys
 from pathlib import Path
 out = Path(sys.argv[1])
@@ -134,7 +137,24 @@ for lv in report["levels"]:
     fmt = lambda xs, f: f(sum(xs) / len(xs)) if xs else "-"
     print(f"{lv['concurrency']:>5} {lv['rtfx']:>7} {fmt(g, lambda v: f'{v:.0f}%'):>9} "
           f"{fmt(m, lambda v: f'{v / 1024:.1f}'):>12} {fmt(c, lambda v: f'{v / 100:.1f}'):>10}")
-print("GPU util flat below ~80% while CPU cores climb -> audio decode bound: restart with API_SERVERS=16")
+# Verdict at the highest level, from what was measured (not a fixed hint).
+cores = int(sys.argv[2]) or None
+top = report["levels"][-1]
+g = [u for t, u, _ in gpu if top["t_start"] <= t <= top["t_end"]]
+c = [v / 100 for t, v in cpu if top["t_start"] <= t <= top["t_end"]]
+gu, cu = (sum(g) / len(g) if g else None), (sum(c) / len(c) if c else None)
+rising = len(report["levels"]) > 1 and top["rtfx"] > 1.10 * report["levels"][-2]["rtfx"]
+print()
+if gu is not None and gu >= 85:
+    print(f"verdict: GPU-bound at concurrency {top['concurrency']} ({gu:.0f}% util) -- this is the server's capacity")
+elif cu is not None and cores and cu >= 0.7 * cores:
+    print(f"verdict: CPU-bound ({cu:.0f} of {cores} cores) -- audio decode/mel: restart with API_SERVERS=16 AUDIO_WORKERS=16")
+elif rising:
+    print(f"verdict: NOT saturated (GPU {gu or 0:.0f}%, CPU {cu or 0:.0f}/{cores} cores, RTFx still rising "
+          f">10% per step) -- raise CONCURRENCY or run a second client on another node")
+else:
+    print(f"verdict: throughput flat with GPU {gu or 0:.0f}% and CPU {cu or 0:.0f}/{cores} cores -- the client may be "
+          "the limit: run a second client on another node and compare")
 PY
 fi
 log "done: $OUT/report.json"

@@ -41,6 +41,10 @@ API_SERVERS="${API_SERVERS:-8}"
 AUDIO_WORKERS="${AUDIO_WORKERS:-8}"
 # vLLM's [audio] extra (setup.py v0.26.0), missing from the image.
 AUDIO_PKGS="${AUDIO_PKGS:-soundfile av soxr scipy}"
+# 1 = batch-invariant decoder kernels (vLLM): a clip's transcript no longer
+# depends on what it was batched with, at a throughput cost. Off by default;
+# the encoder (HF, padded batches) is not bit-exact across batches either way.
+BATCH_INVARIANT="${BATCH_INVARIANT:-0}"
 MEDIA_ROOT="${MEDIA_ROOT:-/lustrefs}"
 HF_CACHE="${HF_CACHE:-$HOME/.cache/huggingface}"
 
@@ -84,6 +88,7 @@ docker run -d --name ${CONTAINER} --restart unless-stopped \\
   -v ${MEDIA_ROOT}:${MEDIA_ROOT}:ro \\
   -v ${HF_CACHE}:/root/.cache/huggingface \\
   -e VLLM_MAX_AUDIO_PREPROCESS_WORKERS=${AUDIO_WORKERS} \\
+  -e VLLM_BATCH_INVARIANT=${BATCH_INVARIANT} \\
   $(compat_env)--entrypoint bash ${IMAGE} -c '
     set -e
     $(compat_prelude)

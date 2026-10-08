@@ -3,7 +3,8 @@
 Run once (any node) before the workers. Everything a worker needs lives under
 ``<run_root>/_state/``:
 
-- ``plan.json``          every chunk: id, lang, split, source path, stem,
+- ``plan.json``          every chunk: id, lang, split, source path, stem
+                         (``<tree>/<file stem>``, e.g. ``v7.6/train_ar_q3asr``),
                          byte range, line count, duplicate count;
 - ``dups/<chunk>.npy``   packed bitmask over the chunk's lines, 1 = an earlier
                          line anywhere in the plan has the same audio path.
@@ -61,6 +62,18 @@ def config_sources(config: str, splits: tuple[str, ...] = ("eval", "train")) -> 
 
 def _stem(path: str) -> str:
     return Path(path).name.removesuffix(".jsonl").removesuffix(".json")
+
+
+def _tree(path: str, lang: str) -> str:
+    """Which manifest tree a file belongs to: the directory above its language dir.
+
+    ``training_manifests/v7.6/ar/x.jsonl`` -> ``v7.6``;
+    ``q3asr_sft_manifests/ar/x.jsonl``    -> ``q3asr_sft_manifests``.
+    Both trees hold a ``train_ar_q3asr.jsonl`` with different content, so the
+    tree is part of every output path.
+    """
+    parent = Path(path).parent
+    return (parent.parent.name if parent.name == lang else parent.name) or "root"
 
 
 def _limit_offset(path: str, limit: int) -> int:
@@ -150,14 +163,16 @@ def build_plan(run_root: str, sources: list[dict], *, chunk_mb: int = 64, dedup:
     stems: dict[tuple[str, str], str] = {}
     chunks: list[dict] = []
     for s in sources:
-        key = (s["lang"], _stem(s["path"]))
+        out = f"{_tree(s['path'], s['lang'])}/{_stem(s['path'])}"
+        key = (s["lang"], out)
         if key in stems and stems[key] != s["path"]:
             raise SystemExit(f"two sources map to the same output {key}: {stems[key]} and {s['path']}")
         stems[key] = s["path"]
         size = _limit_offset(s["path"], limit) if limit else None
         for k, (a, b) in enumerate(_byte_ranges(s["path"], chunk_mb << 20, size)):
-            chunks.append({"id": f"{s['lang']}__{key[1]}__{k:05d}", "lang": s["lang"], "split": s["split"],
-                           "source": s["path"], "stem": key[1], "part": k, "start": a, "end": b})
+            chunks.append({"id": f"{s['lang']}__{out.replace('/', '__')}__{k:05d}", "lang": s["lang"],
+                           "split": s["split"], "source": s["path"], "stem": out, "part": k,
+                           "start": a, "end": b})
 
     print(f"plan: {len(sources)} manifests -> {len(chunks)} chunks of ~{chunk_mb} MB; hashing paths "
           f"with {jobs} processes", flush=True)
@@ -188,7 +203,7 @@ def build_plan(run_root: str, sources: list[dict], *, chunk_mb: int = 64, dedup:
 
     plan = {"version": PLAN_VERSION, "chunks": chunks, "dedup": dedup, "limit": limit,
             "lines": sum(sizes), "duplicates": dup_total,
-            "sources": [{**s, "stem": _stem(s["path"])} for s in sources]}
+            "sources": [{**s, "stem": f"{_tree(s['path'], s['lang'])}/{_stem(s['path'])}"} for s in sources]}
     tmp = plan_path.with_suffix(".tmp")
     tmp.write_text(json.dumps(plan, indent=1))
     os.replace(tmp, plan_path)

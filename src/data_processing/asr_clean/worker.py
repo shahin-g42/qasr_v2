@@ -2,8 +2,9 @@
 
 Layout under ``<run_root>`` (one run = one RUN_ID):
 
-    <lang>/<stem>/part-NNNNN.jsonl          cleaned records (5 columns, exactly)
-    _rejects/<lang>/<stem>/part-NNNNN.jsonl  every record not written, with why
+    <lang>/<tree>/<stem>/part-NNNNN.jsonl          cleaned records (5 columns, exactly)
+    _rejects/<lang>/<tree>/<stem>/part-NNNNN.jsonl  every record not written, with why
+    (<tree> = v7.6 | q3asr_sft_manifests | ..., the source manifest tree)
     _state/plan.json, dups/                  frozen by `plan`
     _state/claims/<chunk>                    who owns a chunk (O_EXCL create)
     _state/progress/<chunk>.json             committed position + counters
@@ -497,7 +498,7 @@ def status(run_root: str) -> dict:
 
 
 def assemble(run_root: str, allow_partial: bool = False) -> list[str]:
-    """Concatenate each source's finished parts into ``<lang>/<stem>.jsonl``."""
+    """Concatenate each source's finished parts into ``<lang>/<tree>/<stem>.jsonl``."""
     plan = load_plan(run_root)
     paths = RunPaths(run_root)
     by_src: dict[tuple[str, str], list[dict]] = {}
@@ -509,6 +510,7 @@ def assemble(run_root: str, allow_partial: bool = False) -> list[str]:
         if not allow_partial and any(s != "done" for s in states):
             continue
         target = paths.root / lang / f"{stem}.jsonl"
+        target.parent.mkdir(parents=True, exist_ok=True)
         tmp = target.with_suffix(".jsonl.tmp")
         n = 0
         with open(tmp, "wb") as out:

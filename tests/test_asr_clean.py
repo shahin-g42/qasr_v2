@@ -151,6 +151,22 @@ class PlanTest(unittest.TestCase):
             with self.assertRaises(SystemExit):  # a run's plan is frozen
                 build_plan(str(tmp / "run"), sources, jobs=1)
 
+    def test_same_file_name_in_two_trees_gets_two_outputs(self) -> None:
+        # The real case: training_manifests/v7.6/ar/train_ar_q3asr.jsonl and
+        # q3asr_sft_manifests/ar/train_ar_q3asr.jsonl are different data.
+        with tempfile.TemporaryDirectory() as t:
+            tmp = Path(t)
+            srcs = []
+            for tree in ("training_manifests/v7.6", "q3asr_sft_manifests"):
+                d = tmp / tree / "ar"
+                d.mkdir(parents=True)
+                (d / "train_ar_q3asr.jsonl").write_text(json.dumps({"audio_filepath": f"/{tree}.wav", "text": "x"}) + "\n")
+                srcs.append({"lang": "ar", "split": "train", "path": str(d / "train_ar_q3asr.jsonl")})
+            plan = build_plan(str(tmp / "run"), srcs, jobs=1)
+            self.assertEqual(sorted(c["stem"] for c in plan["chunks"]),
+                             ["q3asr_sft_manifests/train_ar_q3asr", "v7.6/train_ar_q3asr"])
+            self.assertEqual(len({c["id"] for c in plan["chunks"]}), 2)
+
     def test_limit_takes_the_first_n_records_of_every_manifest(self) -> None:
         with tempfile.TemporaryDirectory() as t:
             tmp = Path(t)
@@ -213,9 +229,9 @@ class EndToEndTest(unittest.TestCase):
         self.assertTrue(self.fakes.flaky_seen)
         merged = assemble(self.root)
         self.assertEqual(len(merged), 2)
-        n = sum(len((Path(self.root) / "ar" / f"{s}.jsonl").read_text().splitlines())
-                for s in ("eval_ar_x", "train_ar_x"))
-        self.assertEqual(n, 43)
+        finals = sorted(p for p in (Path(self.root) / "ar").rglob("*.jsonl") if not p.name.startswith("part-"))
+        self.assertEqual([p.name for p in finals], ["eval_ar_x.jsonl", "train_ar_x.jsonl"])
+        self.assertEqual(sum(len(p.read_text().splitlines()) for p in finals), 43)
 
     def test_crash_mid_chunk_then_resume(self) -> None:
         run_worker(self._cfg("h:0"), stop_after_windows=2)  # dies after 2 commits

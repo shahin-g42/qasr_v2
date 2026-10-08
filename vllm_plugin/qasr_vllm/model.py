@@ -113,9 +113,14 @@ class QASRProcessingInfo(BaseProcessingInfo):
         return int(self.get_hf_config().audio_token_id)
 
     def get_data_parser(self) -> MultiModalDataParser:
+        # vLLM decodes files with soundfile at the native rate and averages
+        # channels, as training does (qasr.audio.load_mono_audio). Resampling
+        # must also match: training uses scipy resample_poly(up, down), which
+        # is exactly vLLM's "scipy" method; the default "pyav" is not.
         return MultiModalDataParser(
             target_sr=SAMPLE_RATE,
             target_channels=1,
+            audio_resample_method="scipy",
             expected_hidden_size=self._get_expected_hidden_size(),
         )
 

@@ -37,6 +37,10 @@ MAX_MODEL_LEN="${MAX_MODEL_LEN:-2048}"
 MAX_NUM_SEQS="${MAX_NUM_SEQS:-512}"
 # Mel extraction and audio decoding run in the API-server processes.
 API_SERVERS="${API_SERVERS:-8}"
+# Audio decode threads per API server (vLLM default is 2).
+AUDIO_WORKERS="${AUDIO_WORKERS:-8}"
+# vLLM's [audio] extra (setup.py v0.26.0), missing from the image.
+AUDIO_PKGS="${AUDIO_PKGS:-soundfile av soxr scipy}"
 MEDIA_ROOT="${MEDIA_ROOT:-/lustrefs}"
 HF_CACHE="${HF_CACHE:-$HOME/.cache/huggingface}"
 
@@ -79,9 +83,14 @@ docker run -d --name ${CONTAINER} --restart unless-stopped \\
   -v ${REPO}/vllm_plugin:/opt/qasr_vllm_src:ro \\
   -v ${MEDIA_ROOT}:${MEDIA_ROOT}:ro \\
   -v ${HF_CACHE}:/root/.cache/huggingface \\
+  -e VLLM_MAX_AUDIO_PREPROCESS_WORKERS=${AUDIO_WORKERS} \\
   $(compat_env)--entrypoint bash ${IMAGE} -c '
     set -e
     $(compat_prelude)
+    # The vllm-openai image ships vLLM WITHOUT its [audio] extra: no soundfile/av
+    # to decode files, no scipy for the training-matched resampler.
+    pip install -q --no-cache-dir ${AUDIO_PKGS}
+    python3 -c "import soundfile, av, scipy.signal, soxr; print(\\"audio deps ok\\")"
     cp -r /opt/qasr_vllm_src /tmp/qasr_vllm
     pip install --no-deps --no-build-isolation -q /tmp/qasr_vllm
     exec vllm serve /model \\
@@ -198,7 +207,7 @@ smoke() {
 gpu_test() {
   log "=== gpu-test: ${IMAGE} on GPU ${GPUS%%,*} (CUDA compat=$(cuda_compat)) ==="
   docker run --rm -i --gpus "\"device=${GPUS%%,*}\"" $(compat_env)--entrypoint bash "$IMAGE" -c \
-    "$(compat_prelude)cat > /tmp/gpu_test.py && python3 /tmp/gpu_test.py" <<'PY'
+    "$(compat_prelude)pip install -q --no-cache-dir ${AUDIO_PKGS} && cat > /tmp/gpu_test.py && python3 /tmp/gpu_test.py" <<'PY'
 import ctypes, os, torch, triton, triton.language as tl
 print(f"  torch {torch.__version__} (CUDA {torch.version.cuda}), triton {triton.__version__}")
 print(f"  LD_LIBRARY_PATH head: {os.environ.get('LD_LIBRARY_PATH', '').split(':')[0] or '-'}")
@@ -222,6 +231,18 @@ a = torch.randn(10_000, device="cuda"); b = torch.randn_like(a); o = torch.empty
 add[(triton.cdiv(a.numel(), 1024),)](a, b, o, a.numel(), BLOCK=1024)
 assert torch.allclose(o, a + b)
 print("  triton JIT kernel  : OK")
+
+# Audio path exactly as the server runs it: vLLM's file loader (soundfile at the
+# native rate) and the scipy resampler the plugin selects, on a 44.1 kHz stereo wav.
+import numpy as np, soundfile
+from vllm.multimodal.media.audio import load_audio
+from vllm.multimodal.audio import resample_audio_scipy
+t = np.arange(44_100 * 2) / 44_100
+soundfile.write("/tmp/probe.wav", np.stack([np.sin(2 * np.pi * 440 * t)] * 2, 1).astype(np.float32), 44_100)
+y, sr = load_audio("/tmp/probe.wav", sr=None)
+y = resample_audio_scipy(y, orig_sr=sr, target_sr=16_000)
+assert y.ndim == 1 and abs(len(y) - 32_000) <= 1, (y.shape, sr)
+print(f"  vLLM audio loader  : OK ({sr} Hz stereo -> {len(y)} samples mono 16 kHz)")
 print("GPU TEST PASSED")
 PY
 }

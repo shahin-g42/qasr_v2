@@ -44,15 +44,18 @@ def messages(path: str, lang: str | None) -> list[dict]:
     ]
 
 
-def transcribe(url: str, path: str, lang: str | None, logprobs: bool = False, max_tokens: int = 512) -> dict:
-    """Greedy transcription. Returns raw text, parsed language/text, and optional token logprobs."""
+def transcribe(
+    url: str, path: str, lang: str | None, logprobs: bool = False, max_tokens: int = 512,
+    timeout: float = 600,
+) -> dict:
+    """Greedy transcription. Returns raw text, parsed language/text, token usage, optional logprobs."""
     body = {
         "model": MODEL, "messages": messages(path, lang), "temperature": 0.0,
         "max_tokens": max_tokens, "skip_special_tokens": True,
     }
     if logprobs:
         body["logprobs"] = True
-    res = _post(url, "/v1/chat/completions", body)
+    res = _post(url, "/v1/chat/completions", body, timeout=timeout)
     choice = res["choices"][0]
     raw = choice["message"]["content"] or ""
     head, sep, text = raw.rpartition("<asr_text>")
@@ -61,6 +64,8 @@ def transcribe(url: str, path: str, lang: str | None, logprobs: bool = False, ma
         "language": head.strip()[len("language "):].strip() if sep and head.strip().startswith("language ") else None,
         "text": text if sep else raw,
         "finish_reason": choice.get("finish_reason"),
+        "prompt_tokens": res.get("usage", {}).get("prompt_tokens"),
+        "completion_tokens": res.get("usage", {}).get("completion_tokens"),
     }
     if logprobs and choice.get("logprobs"):
         out["token_logprobs"] = [t["logprob"] for t in choice["logprobs"]["content"]]

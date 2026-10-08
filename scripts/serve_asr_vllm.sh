@@ -2,6 +2,7 @@
 # Serve a trained QASR checkpoint with vLLM, reachable from every cluster node.
 #
 #   scripts/serve_asr_vllm.sh preflight        # GPUs free? image? checkpoint layout?
+#   scripts/serve_asr_vllm.sh gpu-test         # image computes on this driver? (1 GPU)
 #   scripts/serve_asr_vllm.sh serve            # start the container (detached)
 #   scripts/serve_asr_vllm.sh smoke [MANIFEST] # health, prompt parity, a few transcripts
 #   scripts/serve_asr_vllm.sh print            # print the docker command, run nothing
@@ -43,6 +44,31 @@ log() { printf '%s\n' "$*"; }
 die() { printf 'ERROR: %s\n' "$*" >&2; exit 1; }
 ngpus() { tr ',' '\n' <<<"$GPUS" | grep -c .; }
 
+# CUDA the image was built for vs. what the host driver supports. A -cu129
+# image on an older 12.x driver (this cluster reports 12.8) runs through CUDA
+# forward compatibility: the image ships /usr/local/cuda-12.9/compat, which is
+# supported on datacenter GPUs (H100) with R535/R550/R570 drivers. A CUDA 13
+# image cannot be rescued this way on a 12.x driver.
+image_cuda()  { case "$IMAGE" in *cu129*) echo 12.9 ;; *) echo 13.0 ;; esac; }
+driver_cuda() { nvidia-smi 2>/dev/null | grep -oE 'CUDA Version: [0-9]+\.[0-9]+' | awk '{print $3}'; }
+version_lt()  { [ "$1" != "$2" ] && [ "$(printf '%s\n%s\n' "$1" "$2" | sort -V | head -1)" = "$1" ]; }
+# CUDA_COMPAT=auto|1|0. auto turns it on when the driver is older than the image.
+cuda_compat() {
+  case "${CUDA_COMPAT:-auto}" in
+    1|true) echo 1 ;;
+    0|false) echo 0 ;;
+    *) local d; d=$(driver_cuda); { [ -n "$d" ] && version_lt "$d" "$(image_cuda)"; } && echo 1 || echo 0 ;;
+  esac
+}
+# Shell snippet run inside the container before python starts: putting the
+# compat libcuda first on LD_LIBRARY_PATH covers the API server process too
+# (vLLM's own VLLM_ENABLE_CUDA_COMPATIBILITY only reaches its subprocesses).
+compat_prelude() {
+  [ "$(cuda_compat)" = 1 ] || return 0
+  printf '%s' 'for d in /usr/local/cuda-*/compat; do if [ -d "$d" ]; then export LD_LIBRARY_PATH="$d${LD_LIBRARY_PATH:+:$LD_LIBRARY_PATH}"; fi; done; '
+}
+compat_env() { [ "$(cuda_compat)" = 1 ] && printf '%s' '-e VLLM_ENABLE_CUDA_COMPATIBILITY=1 ' || true; }
+
 docker_cmd() {
   # Plugin source is mounted read-only and copied before install (pip writes
   # build artifacts next to the source).
@@ -53,8 +79,9 @@ docker run -d --name ${CONTAINER} --restart unless-stopped \\
   -v ${REPO}/vllm_plugin:/opt/qasr_vllm_src:ro \\
   -v ${MEDIA_ROOT}:${MEDIA_ROOT}:ro \\
   -v ${HF_CACHE}:/root/.cache/huggingface \\
-  --entrypoint bash ${IMAGE} -c '
+  $(compat_env)--entrypoint bash ${IMAGE} -c '
     set -e
+    $(compat_prelude)
     cp -r /opt/qasr_vllm_src /tmp/qasr_vllm
     pip install --no-deps --no-build-isolation -q /tmp/qasr_vllm
     exec vllm serve /model \\
@@ -99,11 +126,16 @@ PY
     # The image's CUDA runtime must not exceed what the driver supports: the
     # default v0.26.0 tag is CUDA 13 and will not start on a 12.9 driver.
     local drv_cuda img_cuda
-    drv_cuda=$(nvidia-smi | grep -oE 'CUDA Version: [0-9]+\.[0-9]+' | awk '{print $3}')
-    case "$IMAGE" in *cu129*) img_cuda=12.9 ;; *cu130*|*) img_cuda=13.0 ;; esac
-    log "  driver CUDA         : ${drv_cuda:-unknown}  (image needs ${img_cuda})"
-    if [ -n "$drv_cuda" ] && [ "$(printf '%s\n%s\n' "$img_cuda" "$drv_cuda" | sort -V | head -1)" != "$img_cuda" ]; then
-      log "  !! driver supports CUDA ${drv_cuda} < ${img_cuda} -- use a -cu129 image"; fail=1
+    drv_cuda=$(driver_cuda); img_cuda=$(image_cuda)
+    log "  driver CUDA         : ${drv_cuda:-unknown}  (image built for ${img_cuda})"
+    if [ -n "$drv_cuda" ] && version_lt "$drv_cuda" "$img_cuda"; then
+      if [ "${drv_cuda%%.*}" != "${img_cuda%%.*}" ]; then
+        log "  !! CUDA ${img_cuda} image cannot run on a ${drv_cuda} driver -- use a -cu129 image"; fail=1
+      elif [ "$(cuda_compat)" = 1 ]; then
+        log "  CUDA compat         : ON (forward-compat libs from the image; verify with 'gpu-test')"
+      else
+        log "  !! driver ${drv_cuda} < image ${img_cuda} and CUDA_COMPAT=0"; fail=1
+      fi
     fi
     log "  GPUs requested      : ${GPUS}"
     nvidia-smi --query-gpu=index,memory.used,memory.total --format=csv,noheader,nounits \
@@ -159,11 +191,43 @@ smoke() {
   python3 scripts/asr_vllm_client.py sample --url "$url" --lang "$lang" --manifest "$manifest" -n "${N:-10}"
 }
 
+# One-GPU check that the image really computes on this driver: a cuBLAS
+# matmul and a freshly compiled Triton kernel (the paths a version mismatch
+# breaks first). Runs in ~1 minute once the image is pulled.
+gpu_test() {
+  log "=== gpu-test: ${IMAGE} on GPU ${GPUS%%,*} (CUDA compat=$(cuda_compat)) ==="
+  docker run --rm -i --gpus "\"device=${GPUS%%,*}\"" $(compat_env)--entrypoint bash "$IMAGE" -c \
+    "$(compat_prelude)python3 -" <<'PY'
+import os, torch, triton, triton.language as tl
+print(f"  torch {torch.__version__} (CUDA {torch.version.cuda}), triton {triton.__version__}")
+print(f"  LD_LIBRARY_PATH head: {os.environ.get('LD_LIBRARY_PATH', '').split(':')[0] or '-'}")
+print(f"  device: {torch.cuda.get_device_name(0)}, driver API {torch._C._cuda_getDriverVersion()}")
+x = torch.randn(2048, 2048, device="cuda", dtype=torch.bfloat16)
+ref = (x.float() @ x.float())
+err = ((x @ x).float() - ref).abs().max().item() / ref.abs().max().item()
+print(f"  cuBLAS bf16 matmul: rel err {err:.2e}")
+assert err < 1e-2
+
+@triton.jit
+def add(a, b, out, n, BLOCK: tl.constexpr):
+    i = tl.program_id(0) * BLOCK + tl.arange(0, BLOCK)
+    m = i < n
+    tl.store(out + i, tl.load(a + i, mask=m) + tl.load(b + i, mask=m), mask=m)
+
+a = torch.randn(10_000, device="cuda"); b = torch.randn_like(a); o = torch.empty_like(a)
+add[(triton.cdiv(a.numel(), 1024),)](a, b, o, a.numel(), BLOCK=1024)
+assert torch.allclose(o, a + b)
+print("  triton JIT kernel  : OK")
+print("GPU TEST PASSED")
+PY
+}
+
 case "${1:-preflight}" in
   preflight) preflight ;;
+  gpu-test)  gpu_test ;;
   serve)     serve ;;
   smoke)     smoke "${2:-}" ;;
   print)     docker_cmd ;;
   stop)      docker rm -f "$CONTAINER" >/dev/null 2>&1 && log "  stopped ${CONTAINER}" || log "  not running" ;;
-  *) die "usage: $0 {preflight|serve|smoke [manifest]|print|stop}" ;;
+  *) die "usage: $0 {preflight|gpu-test|serve|smoke [manifest]|print|stop}" ;;
 esac

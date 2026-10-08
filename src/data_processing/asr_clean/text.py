@@ -137,9 +137,17 @@ def dominant_script(text: str, min_letters: int = 5) -> str | None:
     return max(counts, key=counts.get)
 
 
-def mark_ratio(text: str) -> float:
-    """Share of letters that are combining marks (Indic vowel signs, viramas)."""
-    letters = [c for c in text if unicodedata.category(c)[0] in "LM"]
+_SCRIPT_BLOCK = {"hi": ("\u0900", "\u097f"), "ml": ("\u0d00", "\u0d7f")}
+
+
+def mark_ratio(text: str, lang: str | None = None) -> float:
+    """Share of letters that are combining marks (Indic vowel signs, viramas).
+
+    With ``lang``, only that language's own script counts: Latin acronyms in a
+    Hindi sentence ("PDP", "GST") have no vowel signs and must not dilute it.
+    """
+    block = _SCRIPT_BLOCK.get(lang or "")
+    letters = [c for c in text if unicodedata.category(c)[0] in "LM" and (not block or block[0] <= c <= block[1])]
     return sum(unicodedata.category(c) in ("Mn", "Mc") for c in letters) / max(len(letters), 1)
 
 

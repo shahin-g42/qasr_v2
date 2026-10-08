@@ -400,6 +400,26 @@ class ConventionsTest(unittest.TestCase):
         # nta: the Unicode 5.1+ recommended chillu-n form; legacy ZWJ chillu -> atomic
         self.assertEqual(c("ഗവൺമെന്റിന്റെ ന്\u200d", "ml"), "ഗവൺമെൻ്റിൻ്റെ ൻ")
 
+    def test_english_case_and_meridiem(self) -> None:
+        from data_processing.asr_clean.conventions import canonicalize as c
+
+        cases = {
+            "the meeting is at 8 p.m. and i'm late": "The meeting is at 8 PM and I'm late",
+            "we met at 10 am. she left": "We met at 10 AM. She left",
+            "we met at 10 a.m. She left": "We met at 10 AM. She left",  # the dotted form's stop survives
+            "Call at 3P.M.": "Call at 3 PM.",
+            "I am fine. i was there": "I am fine. I was there",  # "am" the verb is untouched
+            "Visit iPhone store. the end": "Visit iPhone store. The end",
+        }
+        for src, want in cases.items():
+            self.assertEqual(c(src, "en"), want)
+
+    def test_meta_prefix_from_earlier_llm_pass(self) -> None:
+        from data_processing.asr_clean.conventions import strip_non_speech
+
+        self.assertEqual(strip_non_speech("Corrected Transcript: Horizontal business"), "Horizontal business")
+        self.assertEqual(strip_non_speech("the transcript: shows it"), "the transcript: shows it")
+
     def test_non_speech_tags_only(self) -> None:
         from data_processing.asr_clean.conventions import strip_non_speech
 
@@ -418,8 +438,10 @@ class ConventionsTest(unittest.TestCase):
     def test_itn_specs_cover_the_hard_cases(self) -> None:
         from data_processing.asr_clean.conventions import ITN
 
-        must = {"ar": ["٪", "ريال", "ملايين", "ألف عافية", "واحد صاحبي", "Hijri", "Quran"],
-                "en": ["$50", "21st", "1990", "World War II", "no one", "10,000"],
+        must = {"ar": ["٪", "ريال", "ملايين", "ألف عافية", "واحد صاحبي", "Hijri", "Quran", "21/10", "100 دراهم",
+                       "15 رمضان"],
+                "en": ["$50", "21st", "1990", "World War II", "no one", "10,000", "£30,000", "50 rupees",
+                       "March 21st", "31 July", "AM", "info@example.com", "USA", "-5"],
                 "zh": ["2021年", "10万", "三个计划", "第一", "一心一意"],
                 "hi": ["2 लाख", "4:15", "4:45", "एक आदमी", "रुपये"],
                 "ml": ["2 ലക്ഷം", "ആയിരം", "ഒരു ദിവസം", "രൂപ"]}
@@ -427,6 +449,14 @@ class ConventionsTest(unittest.TestCase):
             for needle in needles:
                 self.assertIn(needle, ITN[lang], f"{lang}: {needle}")
         self.assertNotIn("\u0d05\u0d3e", ITN["ml"])  # the malformed "അായിരം" example
+        from data_processing.asr_clean.conventions import conventions
+
+        self.assertIn("sentence case", conventions("en"))
+        self.assertIn("Mr.", conventions("en"))
+        self.assertIn("《》", conventions("zh"))
+        self.assertIn("never $ or ¥", conventions("zh"))
+        for lang in ("ar", "hi", "ml", "zh"):
+            self.assertIn("acronyms capitalized", conventions(lang), lang)
 
 
 class PromptTest(unittest.TestCase):
@@ -450,6 +480,12 @@ class PromptTest(unittest.TestCase):
         self.assertEqual(guard("<<<مرحبا>>>", "مرحبا", "مرحبا", "ar"), "prompt_leak")
         self.assertEqual(guard("كلام مختلف تماما عن المدخلات", "مرحبا بكم", "مرحبا بكم", "ar"), "divergent")
         self.assertIsNone(guard("مرحبًا بكم.", "مرحبا بكم", "مرحبا بكو", "ar"))
+        # vowel signs lost relative to BOTH inputs (test3, Hindi)
+        hi = "उन्होंने बताया, ये बच्चा बरगुना की अदालत के निर्देश से, 22 दिसंबर को हमारे यहाँ लाया गया।"
+        self.assertEqual(guard("उन्होंन बताय, ये बच्च बरगुन क अदालत क निर्देश स, 22 दिसंबर क हमार यहाँ लाय गय।",
+                               hi, hi, "hi"), "stripped_marks")
+        self.assertIsNone(guard(hi, hi, hi, "hi"))
+        # ...and relative to the better input when the ASR itself is stripped (load test, IMaSC voices)
         self.assertEqual(guard("ജന ജയഹനദ തടങങയ", "ജനം, ജയ്ഹിന്ദ് തുടങ്ങിയ", "ജന ജയഹനദ തടങങയ", "ml"),
                          "stripped_marks")
 

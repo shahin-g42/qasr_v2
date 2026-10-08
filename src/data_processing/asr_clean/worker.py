@@ -88,6 +88,10 @@ class WorkerConfig:
     worker_id: str = field(default_factory=lambda: f"{socket.gethostname()}:{os.getpid()}")
 
 
+# Output failures worth one more sample: the model glitched, the inputs are fine.
+_RETRYABLE_GUARDS = {"stripped_marks", "prompt_leak", "wrong_script", "expanded"}
+
+
 # ------------------------------------------------------------------- files --
 
 def _atomic_json(path: Path, obj: dict) -> None:
@@ -349,6 +353,12 @@ class ChunkProcessor:
                 # The ASR stopped at max_tokens (it looped) and the final text follows
                 # it: the transcript likely ends before the audio does.
                 reason = "follows_truncated_asr"
+            if reason in _RETRYABLE_GUARDS and attempt < self.cfg.max_item_attempts:
+                # a generation glitch (test3: ~1.3% of Indic outputs dropped their
+                # vowel signs): sample again before giving the record up
+                self.tel.add(**{f"guard_retry_{reason}": 1})
+                missing.append(it)
+                continue
             if reason:
                 it.reject, it.detail, it.llm_raw = f"guard_{reason}", "", res["text"]
             elif (self.cfg.agree_max_added >= 0 and lane == "format"

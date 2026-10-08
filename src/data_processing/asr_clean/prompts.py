@@ -194,6 +194,12 @@ def guard(text: str, org: str, asr: str, lang: str, max_divergence: float = 0.5)
         return "divergent"
     if len(text) > 2 * max(len(org), len(asr)) + 20:
         return "expanded"
-    if lang in INDIC_LANGS and mark_ratio(text) < 0.05 and max(mark_ratio(org), mark_ratio(asr)) > 0.15:
-        return "stripped_marks"
+    # Vowel signs/viramas lost relative to the better-spelled input (test3: 31
+    # Hindi and 8 Malayalam outputs dropped >20% of them, e.g. "बताया" ->
+    # "बताय"). The better input is the reference: the ASR learned stripped
+    # spellings from stripped training rows, so following it is no excuse.
+    if lang in INDIC_LANGS:
+        best = max(mark_ratio(org, lang), mark_ratio(asr, lang))
+        if best > 0.15 and mark_ratio(text, lang) < 0.8 * best:
+            return "stripped_marks"
     return None

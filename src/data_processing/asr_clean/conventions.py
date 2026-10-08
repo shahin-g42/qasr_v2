@@ -32,6 +32,16 @@ contiguous digits with no invented separators.
 ("5 to 10", "من 5 إلى 10"); never invent a dash.
 - NEVER convert numbers inside names, titles, proverbs, idioms, \
 religious texts (Quran, hadith, scripture) or quoted poetry.
+- Negative numbers: "minus five" -> "-5" for temperatures and arithmetic.
+- Arithmetic: numbers become digits, operator words stay as spoken \
+("2 plus 2 equals 4"); no symbols the speaker did not say.
+- Scores: digits with a hyphen only for a sports/game score ("2-1"); \
+versions and models: "version two point oh" -> "version 2.0", "iPhone 15".
+- Web: spoken addresses in written form when they are unmistakably an \
+email/URL/handle ("info at example dot com" -> "info@example.com", \
+"example dot com slash help" -> "example.com/help").
+- Letters spelled out one by one form an acronym in capitals without \
+spaces or periods ("U S A" -> "USA"), in the script the transcripts use.
 """
 
 ITN = {
@@ -53,8 +63,12 @@ words ("نص", "ربع", "تلت", "ساعة ونص").
 bare digits otherwise ("الساعة تلاتة" -> "الساعة 3"). Keep the spoken period \
 word (صباحًا، مساءً، العصر); never a 24-hour clock that was not said.
 - Dates: digits for day and year, the month exactly as spoken ("الحادي \
-والعشرين من مارس ألفين وأربعة وعشرين" -> "21 مارس 2024"); never convert \
-Hijri <-> Gregorian, never add هـ / م.
+والعشرين من مارس ألفين وأربعة وعشرين" -> "21 مارس 2024", Levantine "21 \
+آذار", Hijri "15 رمضان"); a month SPOKEN as a number keeps the spoken \
+order with "/" ("واحد وعشرين عشرة" -> "21/10"); never convert Hijri <-> \
+Gregorian, never add هـ / م.
+- The counted noun is never "corrected": "100 دراهم" stays "100 دراهم" even \
+though MSA would say "100 درهم".
 - KEEP AS WORDS: ordinals (الأول، التاني، العاشر، القرن العشرين); "واحد/وحدة" \
 used as an article or pronoun ("واحد صاحبي", "كل واحد"); "واحد" and "اتنين" \
 after a noun as emphasis ("كتاب واحد"); idioms (ألف عافية، ألف مبروك، ألف \
@@ -69,13 +83,22 @@ INVERSE TEXT NORMALIZATION (English):
 - Millions and above: "two million" -> "2 million", "three point five \
 billion" -> "3.5 billion". Decimals: "three point five" -> "3.5", "point \
 five" -> "0.5". Simple fractions stay words ("a half", "three quarters").
-- Percent: "ten percent" -> "10%". Money: "fifty dollars" -> "$50", "five \
-dollars fifty" -> "$5.50", "twenty pounds" -> "£20", "fifty cents" -> "50 cents".
+- Percent: "ten percent" -> "10%". Money: symbols only for dollars, pounds \
+and euros ("fifty dollars" -> "$50", "five dollars fifty" -> "$5.50", \
+"thirty thousand pounds" -> "£30,000", "ten euros" -> "€10", "two million \
+dollars" -> "$2 million"); other currencies keep their word ("50 rupees", \
+"20 dirhams", "100 yen"); "fifty cents" -> "50 cents"; "a buck" stays.
 - Units stay words: "five kilometers" -> "5 kilometers", "twenty degrees" -> \
 "20 degrees" (no km, °).
-- Times: "three thirty pm" -> "3:30 PM", "three o'clock" -> "3 o'clock"; \
+- Times: "three thirty pm" -> "3:30 PM" (always "AM"/"PM", capitals, no \
+periods), "three o'clock" -> "3 o'clock"; time zones stay as spoken \
+("Eastern Time", "GMT"); \
 "noon", "midnight", "half past three", "quarter to five" stay words.
-- Dates and years: "March twenty first twenty twenty four" -> "March 21, 2024", \
+- Dates keep the spoken order and the ordinal only if spoken as one: \
+"March twenty first" -> "March 21st", "March twenty one" -> "March 21", \
+"the second of October" -> "the 2nd of October", "thirty one July" -> \
+"31 July"; full date with year: "March 21st, 2024".
+- Years: "March twenty first twenty twenty four" -> "March 21st, 2024", \
 "nineteen ninety" -> "1990", "two thousand and five" -> "2005", "the \
 nineties" -> "the '90s". "oh" read as zero becomes 0 ("room two oh one" -> \
 "room 201").
@@ -137,31 +160,42 @@ never replace it:
 - No tatweel (ـ). Dialect-specific spellings are words of the dialect: keep them \
 ("ليش", "هلق", "دلوقتي", "بيعمل"); do not respell them as MSA.
 - Code-switched words stay in the script the transcripts use: "campus" stays \
-Latin; established loanwords keep their Arabic spelling (كمبيوتر، موبايل).
+Latin; established loanwords keep their Arabic spelling (كمبيوتر، موبايل). \
+Embedded English: proper nouns and acronyms capitalized, other words lower \
+case unless they start an English sentence.
 """,
     "hi": """\
 ORTHOGRAPHY (Hindi): standard Devanagari spelling of the SAME word: matras, \
 halant, anusvara/chandrabindu as in standard usage; keep nukta (ज़, फ़, क़) \
 exactly as the transcripts have it -- never add or strip it. English words, \
 acronyms and loanwords stay in the script the ORIGINAL uses: do NOT convert \
-Devanagari ("यूपीआई", "टेस्ट") to Latin or Latin to Devanagari.
+Devanagari ("यूपीआई", "टेस्ट") to Latin or Latin to Devanagari. Latin-script English: proper
+nouns and acronyms capitalized, other words as the ORIGINAL writes them.
 """,
     "ml": """\
 ORTHOGRAPHY (Malayalam): standard spelling of the SAME word with every vowel \
 sign, virama and chillu present; never change a word's inflection or tense. \
 English words and loanwords stay in the script the ORIGINAL uses: do NOT \
-convert Malayalam-script loanwords ("ടെസ്റ്റ്", "ഫീഡ്ബാക്ക്") to Latin or back.
+convert Malayalam-script loanwords ("ടെസ്റ്റ്", "ഫീഡ്ബാക്ക്") to Latin or back. Latin-script English: proper
+nouns and acronyms capitalized, other words as the ORIGINAL writes them.
 """,
     "zh": """\
 ORTHOGRAPHY (Chinese): Simplified characters; no spaces between Chinese \
 characters; one space between Chinese and an embedded Latin word or number \
 only where the ORIGINAL has it. Keep erhua (儿) and regional words as spoken. \
-Latin words keep the casing the ORIGINAL uses.
+Embedded English: proper nouns and acronyms capitalized (TV, NBA, iPhone), \
+other words as the ORIGINAL writes them. Money keeps its Chinese unit \
+(元, 块, 美元, 欧元) -- never $ or ¥.
 """,
     "en": """\
-ORTHOGRAPHY (English): sentence case, proper nouns and "I" capitalized; \
-contractions as spoken ("don't", "gonna" stay); fillers spelled "uh", "um", \
-"hmm"; American spelling unless the ORIGINAL consistently uses British.
+CAPITALIZATION AND ORTHOGRAPHY (English): sentence case -- capital at the \
+start of every sentence; capitalize "I", names of people and places, \
+organizations, brands as their owners write them ("iPhone", "YouTube"), \
+days, months, nationalities, languages and religions; acronyms in capitals \
+(NASA, AI, UPI); titles with a period (Mr., Mrs., Ms., Dr., St.). Never \
+ALL CAPS for emphasis. Contractions as spoken ("don't", "gonna" stay); \
+fillers spelled "uh", "um", "hmm"; American spelling unless the ORIGINAL \
+consistently uses British.
 """,
 }
 
@@ -172,7 +206,7 @@ PUNCTUATION = {
           "A cut-off utterance ends with \"...\". One line: never a line break.",
     "ml": "PUNCTUATION (Malayalam): . , ? ! as in standard Malayalam. "
           "A cut-off utterance ends with \"...\". One line: never a line break.",
-    "zh": "PUNCTUATION (Chinese): full-width 。，？！；：、“” only; a cut-off utterance "
+    "zh": "PUNCTUATION (Chinese): full-width 。，？！；：、“” and 《》 for titles of works only; a cut-off utterance "
           "ends with ……. One line: never a line break.",
     "en": "PUNCTUATION (English): standard . , ? ! ; : and \"double quotes\". A cut-off "
           "utterance ends with \"...\". One line: never a line break.",
@@ -207,8 +241,47 @@ _ML_CHILLU = {"ണ്‍": "ൺ", "ന്‍": "ൻ", "ര്‍": "ർ",
               "ല്‍": "ൽ", "ള്‍": "ൾ", "ക്‍": "ൿ"}
 
 
+# Leftovers of an earlier LLM pass at the start of some labels (test3: 18
+# English originals began "Corrected Transcript: ...").
+_META_PREFIX = re.compile(r"^\s*(?:corrected|cleaned|final)?\s*transcript(?:ion)?\s*:\s*", re.IGNORECASE)
+
+
 def strip_non_speech(text: str) -> str:
-    return " ".join(_NON_SPEECH.sub(" ", text).split())
+    return " ".join(_NON_SPEECH.sub(" ", _META_PREFIX.sub("", text)).split())
+
+
+_EN_LOWER_START = {"iphone", "ipad", "ipod", "imac", "ios", "ebay", "e-mail", "etc."}
+
+
+_MERIDIEM = re.compile(r"(\d)\s*([AaPp])(\.[Mm]\.|\.?\s?[Mm]\b)")
+
+
+def _meridiem(text: str) -> str:
+    """One form after a time: "8 p.m." / "10 am" / "3P.M." -> "8 PM" / "10 AM" / "3 PM".
+
+    A dotted "p.m." at the end of a sentence also carried the full stop, so
+    the stop is kept when a new sentence (capital letter) or the text ends.
+    """
+    def fix(m: re.Match) -> str:
+        out = f"{m.group(1)} {m.group(2).upper()}M"
+        rest = text[m.end():]
+        if m.group(3).endswith(".") and (not rest.strip() or re.match(r"\s+[A-Z]", rest)):
+            out += "."
+        return out
+
+    return _MERIDIEM.sub(fix, text)
+
+
+def _english_case(text: str) -> str:
+    """Sentence-initial capitals and the pronoun "I" (test3: 759 English records
+    started lower case -- many sources are all lower case)."""
+    text = re.sub(r"(?<![\w'])i(?=(?:'m|'ve|'ll|'d)?(?![\w']))", "I", text)
+
+    def cap(m: re.Match) -> str:
+        word = m.group(2)
+        return m.group(1) + (word if word.lower() in _EN_LOWER_START else word[0].upper() + word[1:])
+
+    return re.sub(r"(^|[.?!]\s+|[.?!][\"”]\s+)([a-z][\w.'-]*)", cap, text)
 
 
 def canonicalize(text: str, lang: str) -> str:
@@ -220,6 +293,9 @@ def canonicalize(text: str, lang: str) -> str:
         # fathatan before the final alef ("شكرًا"), not on it ("شكراً")
         text = re.sub("([ء-ي])([َ-ْٰ]*)اً", "\\1\\2ًا", text)
         text = unicodedata.normalize("NFC", text)
+    elif lang == "en":
+        text = _meridiem(text)
+        text = _english_case(text)
     elif lang == "hi":
         # danda attaches to the word before it ("है।"); "|" is a keyboard stand-in
         text = re.sub(r"\s*[|।](?!।)", "।", text.translate(_DEVANAGARI_DIGITS))

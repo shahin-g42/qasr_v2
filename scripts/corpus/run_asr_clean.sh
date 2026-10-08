@@ -4,6 +4,7 @@
 #   RUN_ID=asrc1 bash scripts/corpus/run_asr_clean.sh plan      # once, any node
 #   RUN_ID=asrc1 bash scripts/corpus/run_asr_clean.sh run       # on EACH of the 8 LLM nodes
 #   RUN_ID=asrc1 bash scripts/corpus/run_asr_clean.sh status    # anywhere, any time
+#   RUN_ID=asrc1 bash scripts/corpus/run_asr_clean.sh peek -n 5 [--rejects] [--only-changed]
 #   RUN_ID=asrc1 bash scripts/corpus/run_asr_clean.sh assemble  # when sources finish
 #   RUN_ID=asrc1 bash scripts/corpus/run_asr_clean.sh stop      # on a node: stop its workers
 #
@@ -69,6 +70,9 @@ case "${1:-}" in
   status)
     exec "$PY" -m data_processing.asr_clean status --run-root "$ROOT" ${EXTRA[@]+"${EXTRA[@]}"}
     ;;
+  peek)
+    exec "$PY" -m data_processing.asr_clean peek --run-root "$ROOT" ${EXTRA[@]+"${EXTRA[@]}"}
+    ;;
   assemble)
     exec "$PY" -m data_processing.asr_clean assemble --run-root "$ROOT" ${EXTRA[@]+"${EXTRA[@]}"}
     ;;
@@ -82,6 +86,6 @@ case "${1:-}" in
     log "stopped"
     ;;
   *)
-    die "usage: RUN_ID=... $0 {plan|run|status|assemble|stop} [extra args]"
+    die "usage: RUN_ID=... $0 {plan|run|status|peek|assemble|stop} [extra args]"
     ;;
 esac

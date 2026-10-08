@@ -151,6 +151,14 @@ class PlanTest(unittest.TestCase):
             with self.assertRaises(SystemExit):  # a run's plan is frozen
                 build_plan(str(tmp / "run"), sources, jobs=1)
 
+    def test_limit_takes_the_first_n_records_of_every_manifest(self) -> None:
+        with tempfile.TemporaryDirectory() as t:
+            tmp = Path(t)
+            cfg, _, _ = _dataset(tmp)
+            plan = build_plan(str(tmp / "run"), config_sources(str(cfg)), chunk_mb=0, jobs=1, limit=3)
+            self.assertEqual(plan["lines"], 6)  # 3 eval + 3 train
+            self.assertEqual(plan["duplicates"], 0)
+
 
 class EndToEndTest(unittest.TestCase):
     def setUp(self) -> None:

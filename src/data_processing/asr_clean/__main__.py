@@ -39,6 +39,7 @@ def main(argv: list[str] | None = None) -> int:
     p.add_argument("--langs", help="comma list to restrict")
     p.add_argument("--chunk-mb", type=int, default=64)
     p.add_argument("--no-dedup", action="store_true")
+    p.add_argument("--limit", type=int, help="only the first N records of every manifest (test runs)")
     p.add_argument("--jobs", type=int, default=os.cpu_count() or 8)
 
     r = sub.add_parser("run", help="clean: claim chunks until none are left")
@@ -55,6 +56,12 @@ def main(argv: list[str] | None = None) -> int:
     s = sub.add_parser("status")
     s.add_argument("--run-root", required=True)
     s.add_argument("--json", action="store_true")
+
+    k = sub.add_parser("peek", help="print records side by side for spot checks")
+    k.add_argument("--run-root", required=True)
+    k.add_argument("-n", type=int, default=5, help="records per language")
+    k.add_argument("--rejects", action="store_true", help="show rejected records instead")
+    k.add_argument("--only-changed", action="store_true", help="skip records where text == org_text")
 
     a = sub.add_parser("assemble", help="one manifest per source from finished chunks")
     a.add_argument("--run-root", required=True)
@@ -75,7 +82,8 @@ def main(argv: list[str] | None = None) -> int:
         sources = [s_ for s_ in sources if not (s_["path"] in seen or seen.add(s_["path"]))]
         if not sources:
             ap.error("no sources: pass --config and/or --manifest")
-        build_plan(args.run_root, sources, chunk_mb=args.chunk_mb, dedup=not args.no_dedup, jobs=args.jobs)
+        build_plan(args.run_root, sources, chunk_mb=args.chunk_mb, dedup=not args.no_dedup, jobs=args.jobs,
+                   limit=args.limit)
         return 0
 
     if args.cmd == "run":
@@ -115,6 +123,29 @@ def main(argv: list[str] | None = None) -> int:
             print(f"choices : {st['choices']}")
             print(f"rejects : {st['rejects']}")
             print(f"asr truncated (hit max_tokens): {st['asr_truncated']}")
+        return 0
+
+    if args.cmd == "peek":
+        import random
+
+        root = Path(args.run_root)
+        base = root / "_rejects" if args.rejects else root
+        for lang_dir in sorted(p for p in base.iterdir() if p.is_dir() and not p.name.startswith("_")):
+            rows = [json.loads(line) for f in sorted(lang_dir.rglob("part-*.jsonl"))
+                    for line in f.read_text(encoding="utf-8").splitlines() if line.strip()]
+            if args.only_changed:
+                rows = [r for r in rows if r.get("text") != r.get("org_text")]
+            print(f"===== {lang_dir.name}: {len(rows):,} {'rejected' if args.rejects else 'written'}")
+            for r in random.Random(0).sample(rows, min(args.n, len(rows))):
+                print(f"[{r.get('duration')}s] {r['audio_filepath']}")
+                print(f"  ORG : {r.get('org_text')}")
+                print(f"  ASR : {r.get('asr_text')}")
+                if args.rejects:
+                    print(f"  WHY : {r.get('reason')} {r.get('detail', '')}")
+                    if r.get("llm_output"):
+                        print(f"  LLM : {r['llm_output']}")
+                else:
+                    print(f"  TEXT: {r.get('text')}")
         return 0
 
     if args.cmd == "assemble":

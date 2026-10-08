@@ -63,9 +63,18 @@ def _stem(path: str) -> str:
     return Path(path).name.removesuffix(".jsonl").removesuffix(".json")
 
 
-def _byte_ranges(path: str, target: int) -> list[tuple[int, int]]:
-    """Split a file into ~``target``-byte ranges that start and end on line boundaries."""
-    size = os.path.getsize(path)
+def _limit_offset(path: str, limit: int) -> int:
+    """Byte offset just past the first ``limit`` lines."""
+    with open(path, "rb") as fh:
+        for _ in range(limit):
+            if not fh.readline():
+                break
+        return fh.tell()
+
+
+def _byte_ranges(path: str, target: int, size: int | None = None) -> list[tuple[int, int]]:
+    """Split ``[0, size)`` of a file into ~``target``-byte ranges on line boundaries."""
+    size = os.path.getsize(path) if size is None else size
     ranges, start = [], 0
     with open(path, "rb") as fh:
         while start < size:
@@ -125,7 +134,9 @@ def _hash_chunk(args: tuple[str, int, int]):
 
 
 def build_plan(run_root: str, sources: list[dict], *, chunk_mb: int = 64, dedup: bool = True,
-               jobs: int = os.cpu_count() or 8) -> dict:
+               jobs: int = os.cpu_count() or 8, limit: int | None = None) -> dict:
+    """Freeze the chunk list. ``limit`` keeps only the first N lines of every
+    manifest (a quick test run over the real data)."""
     root = Path(run_root)
     state = root / "_state"
     plan_path = state / "plan.json"
@@ -143,7 +154,8 @@ def build_plan(run_root: str, sources: list[dict], *, chunk_mb: int = 64, dedup:
         if key in stems and stems[key] != s["path"]:
             raise SystemExit(f"two sources map to the same output {key}: {stems[key]} and {s['path']}")
         stems[key] = s["path"]
-        for k, (a, b) in enumerate(_byte_ranges(s["path"], chunk_mb << 20)):
+        size = _limit_offset(s["path"], limit) if limit else None
+        for k, (a, b) in enumerate(_byte_ranges(s["path"], chunk_mb << 20, size)):
             chunks.append({"id": f"{s['lang']}__{key[1]}__{k:05d}", "lang": s["lang"], "split": s["split"],
                            "source": s["path"], "stem": key[1], "part": k, "start": a, "end": b})
 
@@ -174,7 +186,7 @@ def build_plan(run_root: str, sources: list[dict], *, chunk_mb: int = 64, dedup:
         for c in chunks:
             c["dups"] = 0
 
-    plan = {"version": PLAN_VERSION, "chunks": chunks, "dedup": dedup,
+    plan = {"version": PLAN_VERSION, "chunks": chunks, "dedup": dedup, "limit": limit,
             "lines": sum(sizes), "duplicates": dup_total,
             "sources": [{**s, "stem": _stem(s["path"])} for s in sources]}
     tmp = plan_path.with_suffix(".tmp")

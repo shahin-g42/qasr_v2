@@ -127,6 +127,9 @@ def main(argv: list[str] | None = None) -> int:
             print(f"rejects : {st['rejects']}")
             print(f"asr truncated (hit max_tokens): {st['asr_truncated']}")
             print(f"agree guard (LLM rewrote words both transcripts agree on; kept ORIGINAL): {st['agree_guard']:,}")
+            d = st["arabic_diacritics"]
+            print(f"arabic  : {d['marks_per_letter']} marks/letter, {d['records_with_marks_pct']}% of records "
+                  f"marked; diacritized {d['diacritized']:,}; kept bare after failed check {d['failed']}")
             t = st["telemetry"]
             print(f"\nASR     : {t['asr_requests']:,} requests, mean {t['asr_mean_latency_s']} s, "
                   f"RTFx {t['asr_rtfx']} (demand from these workers)")

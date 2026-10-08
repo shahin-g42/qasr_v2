@@ -33,11 +33,13 @@ import os
 import socket
 import threading
 import time
+import unicodedata
 from collections import Counter, deque
 from concurrent.futures import FIRST_COMPLETED, Future, ThreadPoolExecutor, wait
 from dataclasses import asdict, dataclass, field
 from pathlib import Path
 
+from . import diacritics
 from .endpoints import ASRClient, LLMClient, PermanentError, TransientError
 from .plan import iter_chunk_lines, load_dup_mask, load_plan
 from .prompts import PROMPT_VERSION, guard, messages, parse_response
@@ -69,6 +71,13 @@ class WorkerConfig:
     adjudicate_max_tokens: int = 6144
     max_divergence: float = 0.5      # guard: output must be this close to org or asr
     agree_max_added: int = 1         # format lane: letters the LLM may insert/substitute
+    # A real transcript of the longest (35 s) clips is ~100-300 tokens; hitting
+    # this cap means the ASR looped. 1024 keeps a looping-but-long transcript's
+    # real tail; test3 had 57 caps in 51.5k requests at 512.
+    asr_max_tokens: int = 1024
+    ar_diacritics: str = "critical"  # Arabic diacritization pass: critical | full | none
+    diac_batch: int = 16             # items per diacritization request
+    diac_max_tokens: int = 6144
     min_duration: float = 0.1        # the training filter (configs/v7.6)
     max_duration: float = 35.0
     max_item_attempts: int = 4
@@ -214,6 +223,7 @@ class Item:
     lane: str = ""
     llm_raw: str = ""
     agree: bool = False
+    diac: str = ""                   # "", "ok" or "failed:<why>"
 
 
 class Window:
@@ -223,6 +233,8 @@ class Window:
         self.asr_futs: list[Future] = []
         self.llm_futs: list[Future] = []
         self.llm_submitted = False
+        self.diac_futs: list[Future] = []
+        self.diac_submitted = False
 
 
 class ChunkProcessor:
@@ -323,6 +335,10 @@ class ChunkProcessor:
                 it.reject, it.detail = "llm_drop", "both transcripts unusable"
                 continue
             reason = guard(res["text"], it.org_text, it.asr_text, lang, self.cfg.max_divergence)
+            if not reason and it.detail == "asr_truncated" and res["choice"] == "asr":
+                # The ASR stopped at max_tokens (it looped) and the final text follows
+                # it: the transcript likely ends before the audio does.
+                reason = "follows_truncated_asr"
             if reason:
                 it.reject, it.detail, it.llm_raw = f"guard_{reason}", "", res["text"]
             elif lane == "format" and added_letters(it.org_text, res["text"], lang) > self.cfg.agree_max_added:
@@ -361,6 +377,49 @@ class ChunkProcessor:
             for k in range(0, len(group), size):
                 window.llm_futs.append(self.llm_pool.submit(self._correct, group[k:k + size], lang, lane))
         window.llm_submitted = True
+
+    # -- stage C: Arabic diacritics (marks only) --------------------------------
+    def _diacritize(self, items: list[Item], attempt: int = 1) -> None:
+        policy = self.cfg.ar_diacritics
+        msgs = diacritics.messages([it.text for it in items], policy)
+        est_prompt = sum(len(m["content"]) for m in msgs) // 2 + 64
+        max_tokens = max(256, min(self.cfg.diac_max_tokens, self.cfg.llm_context - est_prompt))
+        t0 = time.perf_counter()
+        while True:
+            try:
+                content, meta = self.llm.chat(msgs, thinking=False, max_tokens=max_tokens)
+                break
+            except PermanentError as exc:
+                content, meta = "", {"error": str(exc)[:500]}
+                break
+            except TransientError as exc:
+                _wait_healthy([self.llm.client], f"LLM ({exc})")
+        parsed = parse_response(content, len(items))
+        self.tel.add(llm_diacritize_requests=1, llm_diacritize_items=len(items),
+                     llm_diacritize_answered=len(parsed), llm_diacritize_seconds=time.perf_counter() - t0,
+                     llm_diacritize_prompt_tokens=meta.get("prompt_tokens", 0),
+                     llm_diacritize_completion_tokens=meta.get("completion_tokens", 0),
+                     llm_diacritize_truncated=int(meta.get("finish_reason") == "length"),
+                     llm_diacritize_errors=int("error" in meta))
+        retry = []
+        for i, it in enumerate(items):
+            res = parsed.get(i)
+            why = "no_answer" if res is None or res["drop"] else diacritics.check(it.text, res["text"])
+            if why is None:
+                it.text, it.diac = unicodedata.normalize("NFC", res["text"]), "ok"
+            elif attempt == 1:
+                retry.append(it)
+            else:
+                it.diac = f"failed:{why}"  # keeps its undiacritized text
+        for it in retry:  # alone: one bad item must not cost the others
+            self._diacritize([it], attempt + 1)
+
+    def _submit_diac(self, window: Window, lang: str) -> None:
+        if lang == "ar" and self.cfg.ar_diacritics in ("critical", "full"):
+            ready = [it for it in window.items if not it.reject and it.text]
+            for k in range(0, len(ready), self.cfg.diac_batch):
+                window.diac_futs.append(self.llm_pool.submit(self._diacritize, ready[k:k + self.cfg.diac_batch]))
+        window.diac_submitted = True
 
     # -- driver ----------------------------------------------------------------
     def run(self, chunk: dict, paths: RunPaths, claims: Claims, stop_after_windows: int | None = None) -> bool:
@@ -428,9 +487,13 @@ class ChunkProcessor:
                     for f in w.asr_futs:
                         f.result()  # surface bugs, never swallow them
                     self._submit_llm(w, lang)
+                if w.llm_submitted and not w.diac_submitted and all(f.done() for f in w.llm_futs):
+                    for f in w.llm_futs:
+                        f.result()
+                    self._submit_diac(w, lang)
             head = inflight[0]
-            if head.llm_submitted and all(f.done() for f in head.llm_futs):
-                for f in head.llm_futs:
+            if head.diac_submitted and all(f.done() for f in head.diac_futs):
+                for f in head.diac_futs:
                     f.result()
                 self._commit(head, chunk, prog, counts, out_fh, rej_fh, paths, claims)
                 inflight.popleft()
@@ -438,7 +501,9 @@ class ChunkProcessor:
                 if stop_after_windows and windows_done >= stop_after_windows:
                     return False  # test hook: simulate a crash after N commits
                 continue
-            pending = [f for w in inflight for f in (w.llm_futs if w.llm_submitted else w.asr_futs) if not f.done()]
+            pending = [f for w in inflight
+                       for f in (w.diac_futs if w.diac_submitted else w.llm_futs if w.llm_submitted else w.asr_futs)
+                       if not f.done()]
             if pending:
                 wait(pending, timeout=5, return_when=FIRST_COMPLETED)
             if time.time() - last_beat > 120:  # alive even while a slow window is in flight
@@ -468,6 +533,14 @@ class ChunkProcessor:
                 counts["asr_truncated"] += 1
             if it.detail == "agree_guard":
                 counts["agree_guard"] += 1
+            if it.diac:
+                counts["diac:" + it.diac] += 1
+            if chunk["lang"] == "ar":
+                letters = len(diacritics._ARABIC_LETTER_RE.findall(it.text))
+                counts["ar_letters"] += letters
+                counts["ar_marks"] += round(diacritics.density(it.text) * letters)
+                counts["ar_records_marked"] += diacritics.density(it.text) > 0
+                counts["ar_records"] += 1
             rec = {"audio_filepath": it.audio_filepath, "duration": round(it.duration, 3),
                    "text": it.text, "org_text": it.org_text, "asr_text": it.asr_text}
             out_lines.append(json.dumps(rec, ensure_ascii=False))
@@ -504,7 +577,7 @@ def run_worker(cfg: WorkerConfig, stop_after_windows: int | None = None) -> None
     plan = load_plan(cfg.run_root)
     paths = RunPaths(cfg.run_root)
     claims = Claims(paths, cfg.worker_id, cfg.stale_minutes)
-    asr = ASRClient(cfg.asr_urls, model=cfg.asr_model)
+    asr = ASRClient(cfg.asr_urls, model=cfg.asr_model, max_tokens=cfg.asr_max_tokens)
     llm = LLMClient(cfg.llm_url, model=cfg.llm_model)
     for clients, what in ((asr.clients, "ASR"), ([llm.client], "LLM")):
         if not all(c.healthy() for c in clients):
@@ -605,6 +678,12 @@ def status(run_root: str) -> dict:
         "choices": {k[7:]: v for k, v in total.items() if k.startswith("choice:")},
         "asr_truncated": total["asr_truncated"],
         "agree_guard": total["agree_guard"],
+        "arabic_diacritics": {
+            "marks_per_letter": round(total["ar_marks"] / max(total["ar_letters"], 1), 3),
+            "records_with_marks_pct": round(100 * total["ar_records_marked"] / max(total["ar_records"], 1), 1),
+            "diacritized": total["diac:ok"],
+            "failed": {k[12:]: v for k, v in total.items() if k.startswith("diac:failed:")},
+        },
         "telemetry": telemetry,
         "records_per_s": round(rate, 1),
         "eta_hours": round((to_clean - processed) / rate / 3600, 1) if rate else None,

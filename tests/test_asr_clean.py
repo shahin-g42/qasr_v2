@@ -17,6 +17,7 @@ import wave
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 
+from data_processing.asr_clean.diacritics import check, density, strip_marks
 from data_processing.asr_clean.plan import (
     build_plan,
     config_sources,
@@ -66,6 +67,17 @@ class _Fakes:
                     return self._send(200, {"choices": [{"message": {
                         "content": f"language {body['messages'][0]['content']}<asr_text>{text}"},
                         "finish_reason": "stop"}]})
+                if "ONLY job is diacritics" in body["messages"][0]["content"]:
+                    out = []
+                    for i, text in re.findall(r"(\d+)\. <<<(.*?)>>>", content):
+                        if "BADDIAC" in text:  # "diacritizes" by changing a letter: must be refused
+                            diac = text.replace("جملة", "جملت")
+                        else:  # a fatha after the first letter of every Arabic word
+                            diac = re.sub(r"(?<![\u0621-\u064a])([\u0621-\u064a])", "\\1\u064e", text)
+                        out.append({"i": int(i), "t": diac})
+                    return self._send(200, {"choices": [{"message": {"content": json.dumps(out, ensure_ascii=False)},
+                                                         "finish_reason": "stop"}],
+                                            "usage": {"prompt_tokens": 10, "completion_tokens": 10}})
                 # LLM request: follow ORIGINAL, add a full stop; misbehave on markers.
                 if body["chat_template_kwargs"]["enable_thinking"] and "LONGTHINK" in content:
                     # Reasoning that never reaches the answer (27B node, 8k context).
@@ -128,6 +140,8 @@ def _dataset(tmp: Path) -> tuple[Path, Path, list[str]]:
             org = "DROPME " + org
         if i == 13:
             org = "LATIN " + org
+        if i == 21:
+            org = org + " BADDIAC"
         if i == 19:  # odd: ORIGINAL == ASR, so the format lane; the fake LLM rewrites a word
             org = org + " MUTATE"
         if i == 16:  # disagrees with ASR -> adjudication lane, with thinking
@@ -256,10 +270,15 @@ class EndToEndTest(unittest.TestCase):
             self.assertEqual(tuple(r), OUTPUT_KEYS)  # exactly the 5 columns, in order
             self.assertIsInstance(r["duration"], float)
             self.assertNotIn("<asr_text>", r["org_text"])  # q3asr envelope stripped
+            plain = strip_marks(r["text"])
             if "MUTATE" in r["org_text"]:  # agree guard: the rewrite is overruled
-                self.assertEqual(r["text"], r["org_text"])
+                self.assertEqual(plain, r["org_text"])
             else:
-                self.assertEqual(r["text"], r["org_text"] + ".")
+                self.assertEqual(plain, r["org_text"] + ".")  # diacritics never change a letter
+            if "BADDIAC" in r["org_text"]:
+                self.assertEqual(r["text"], plain)  # failed check -> kept bare
+            else:
+                self.assertGreater(density(r["text"]), 0)  # every other Arabic record got marks
         written = [r["audio_filepath"] for r in out]
         self.assertEqual(len(written), len(set(written)))  # exactly once
         self.assertEqual(set(written), set(self.paths) - {self.paths[11], self.paths[13]})
@@ -271,6 +290,9 @@ class EndToEndTest(unittest.TestCase):
         self.assertEqual(st["processed"], st["to_clean"])
         self.assertEqual(st["lanes"]["format"] + st["lanes"]["adjudicate"], 43)
         self.assertEqual(st["agree_guard"], 1)
+        self.assertEqual(st["arabic_diacritics"]["diacritized"], 42)
+        self.assertEqual(st["arabic_diacritics"]["failed"], {"letters_changed": 1})
+        self.assertGreater(st["arabic_diacritics"]["records_with_marks_pct"], 95)
         tel = st["telemetry"]
         self.assertGreaterEqual(tel["think_fallback_items"], 1)  # LONGTHINK recovered without thinking
         self.assertGreater(tel["llm"]["adjudicate_think"]["hit_max_tokens_pct"], 0)
@@ -301,6 +323,36 @@ class EndToEndTest(unittest.TestCase):
         self._check_complete(resumed=True)
 
 
+class DiacriticsTest(unittest.TestCase):
+    def test_marks_only_edit_passes(self) -> None:
+        self.assertIsNone(check("مدرسة كبيرة، 3 طلاب.", "مَدْرَسَةٌ كَبِيرَةٌ، 3 طُلَّابٍ."))
+        self.assertIsNone(check("ما أرفض شي", "مَا أَرْفُض شِي"))  # dialect, partial marks
+        self.assertIsNone(check("بِيِعْمِل", "بيعمل"))  # removing marks is a marks-only edit too
+
+    def test_letter_changes_are_refused(self) -> None:
+        self.assertEqual(check("بيعمل", "يَعْمَل"), "letters_changed")  # dialect -> MSA
+        self.assertEqual(check("مدرسه", "مَدْرَسَة"), "letters_changed")  # ha -> ta marbuta "fix"
+        self.assertEqual(check("اسم", "إِسْم"), "letters_changed")  # hamza seat "fix"
+        self.assertEqual(check("قال كذا", "قَالَ كَذَا."), "letters_changed")  # punctuation added
+
+    def test_misplaced_or_stacked_marks_are_refused(self) -> None:
+        self.assertEqual(check("رقم 3", "رَقَمٌ 3\u064e"), "mark_not_on_letter")
+        self.assertEqual(check("في campus", "فِي c\u064eampus"), "mark_not_on_letter")
+        self.assertEqual(check("علم", "عَ\u0651\u064e\u064bلم"), "stacked_marks")
+
+    def test_density(self) -> None:
+        self.assertEqual(density("قال"), 0.0)
+        self.assertAlmostEqual(density("قَالَ"), 2 / 3)
+        self.assertEqual(density("hello 123"), 0.0)
+
+    def test_policies(self) -> None:
+        from data_processing.asr_clean.diacritics import system_prompt as dsp
+
+        self.assertIn("CRITICAL", dsp("critical"))
+        self.assertIn("FULL", dsp("full"))
+        self.assertIn("Never change, add, remove or reorder a letter", dsp("full"))
+
+
 class PromptTest(unittest.TestCase):
     def test_parse_is_strict_and_0_based(self) -> None:
         content = '```json\n[{"i": 0, "text": "a"}, {"i": 0, "text": "dup"}, {"i": 5, "text": "x"}, {"i": 1}]\n```'
@@ -313,6 +365,9 @@ class PromptTest(unittest.TestCase):
             0: {"text": "مرحبا.", "choice": "asr", "drop": False},
             1: {"text": "", "choice": "unknown", "drop": True},
             2: {"text": "x", "choice": "unknown", "drop": False}})
+
+    def test_asr_cap_is_configurable(self) -> None:
+        self.assertEqual(WorkerConfig(run_root="x", asr_urls=["u"]).asr_max_tokens, 1024)
 
     def test_guards(self) -> None:
         self.assertEqual(guard("this is english", "مرحبا بكم جميعا", "مرحبا بكم", "ar"), "wrong_script")

@@ -15,14 +15,15 @@ import re
 
 from ..generic_prompts import _conventions_for
 from ..prompts import (
-    _RULE_DIACRITICS,
     _RULE_DIALECT_PRESERVE,
     _RULE_ITN,
     _RULE_PUNCTUATION,
 )
 from .text import EXPECTED_SCRIPT, INDIC_LANGS, LANGUAGE_NAMES, cer, dominant_script, mark_ratio
 
-PROMPT_VERSION = "asr-clean-v2"  # v2: compact output keys, frozen words in the format lane
+# v2: compact output keys, frozen words in the format lane
+# v3: Arabic diacritics moved to a dedicated, letter-preserving pass (diacritics.py)
+PROMPT_VERSION = "asr-clean-v3"
 
 _ADJUDICATION = """\
 You are the final editor of {article} {language} speech-recognition training corpus. \
@@ -84,8 +85,11 @@ Only for an unusable item write {"i":N,"d":1} instead (step 6).
 # The text-only cleaner also emitted a dialect tag; this output has no such
 # field, and the instruction only invites an extra key.
 _DIALECT = _RULE_DIALECT_PRESERVE.replace("\n   - Tag the detected dialect accurately.", "")
+_NO_DIACRITICS = """\
+5. DIACRITICS: do NOT add diacritics -- a dedicated pass adds them after you. \
+Write the letters exactly; marks already present may be kept or dropped."""
 _ARABIC_FORMAT = "\n\n".join(
-    ("Formatting rules (Arabic):", _RULE_ITN, _RULE_PUNCTUATION, _DIALECT, _RULE_DIACRITICS)
+    ("Formatting rules (Arabic):", _RULE_ITN, _RULE_PUNCTUATION, _DIALECT, _NO_DIACRITICS)
 )
 
 

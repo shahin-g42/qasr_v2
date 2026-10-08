@@ -1,0 +1,21 @@
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "qasr-vllm"
+version = "0.1.0"
+description = "vLLM out-of-tree model plugin serving QASR (Cohere/Parakeet Conformer + Qwen3) checkpoints"
+requires-python = ">=3.10"
+# Deliberately no dependencies: the plugin runs inside the vllm/vllm-openai
+# image and must use the torch/transformers/vllm that image ships.
+dependencies = []
+
+[project.entry-points."vllm.general_plugins"]
+qasr = "qasr_vllm:register"
+
+[tool.setuptools]
+packages = ["qasr_vllm"]
+
+[tool.setuptools.package-data]
+qasr_vllm = ["*.jinja"]

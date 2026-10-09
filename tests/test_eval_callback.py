@@ -112,6 +112,21 @@ class WEREvalCallbackTest(unittest.TestCase):
 
         self.assertGreater(trainer.logged[0]["eval_wer_ar"], 0.0)
 
+    def test_missing_diacritic_is_reported_in_training_metrics(self) -> None:
+        Path(self.manifest).write_text(
+            json.dumps({"audio_filepath": "/nonexistent/ar.wav", "text": "علّم", "duration": 2.0}),
+            encoding="utf-8",
+        )
+        trainer = _FakeTrainer()
+        callback = _callback(self.manifest, "ar").bind_trainer(trainer)
+        callback._transcribe = lambda t, feature: "علم"
+
+        callback.on_evaluate(args=None, state=_STATE, control=None)
+
+        self.assertEqual(trainer.logged[0]["eval_wer_ar"], 1.0)
+        self.assertEqual(trainer.logged[0]["eval_cer_ar"], 0.25)
+        self.assertEqual(trainer.logged[0]["eval_wer_macro"], 1.0)
+
 
 if __name__ == "__main__":
     unittest.main()

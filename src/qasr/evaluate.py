@@ -30,6 +30,7 @@ import random
 import re
 import statistics
 import time
+import unicodedata
 from collections.abc import Callable
 from pathlib import Path
 from typing import Any
@@ -98,13 +99,13 @@ def load_manifest_samples(
 # ---------------------------------------------------------------------------
 
 def normalize_text(text: str) -> str:
-    """Casefold and strip punctuation so WER measures word identity only."""
-    cleaned = "".join(
-        character if character.isalnum() or character.isspace() or character == "'"
-        else " "
-        for character in text.casefold()
-    )
-    return " ".join(cleaned.split())
+    """Apply Unicode NFC and collapse whitespace, preserving transcript content.
+
+    Diacritics, vowel signs, punctuation, case, and number spellings are all
+    part of the target. NFC only equates canonical Unicode representations;
+    scoring must not clean away mistakes the model should learn to avoid.
+    """
+    return " ".join(unicodedata.normalize("NFC", text).split())
 
 
 def edit_distance(reference: list[str], hypothesis: list[str]) -> int:
@@ -122,11 +123,17 @@ def edit_distance(reference: list[str], hypothesis: list[str]) -> int:
 
 
 def error_counts(reference: str, hypothesis: str) -> dict[str, int]:
-    """Word- and character-level edit counts for corpus-level aggregation."""
-    ref_words = normalize_text(reference).split()
-    hyp_words = normalize_text(hypothesis).split()
-    ref_chars = list(normalize_text(reference).replace(" ", ""))
-    hyp_chars = list(normalize_text(hypothesis).replace(" ", ""))
+    """Edit counts over NFC text for corpus-level WER/CER aggregation.
+
+    WER uses whitespace-delimited tokens. CER uses Unicode code points with
+    whitespace excluded, so a missing combining mark is a character error.
+    """
+    reference = normalize_text(reference)
+    hypothesis = normalize_text(hypothesis)
+    ref_words = reference.split()
+    hyp_words = hypothesis.split()
+    ref_chars = list(reference.replace(" ", ""))
+    hyp_chars = list(hypothesis.replace(" ", ""))
     return {
         "word_errors": edit_distance(ref_words, hyp_words),
         "word_count": len(ref_words),

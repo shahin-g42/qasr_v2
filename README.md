@@ -371,6 +371,15 @@ INFO | qasr | Evaluation example 1/2
   Prediction: [some text]                     ← Generation works
 ```
 
+**WER/CER scoring:** Offline evaluation and the training WER callback preserve
+diacritics (including Arabic harakat and Indic vowel signs), punctuation, case,
+and number spellings. Only Unicode NFC and whitespace collapsing are applied.
+WER compares whitespace-separated tokens; CER compares Unicode code points,
+excluding whitespace. Use references that follow the same cleaning policy as
+the training targets. Scores from the previous punctuation/diacritic-stripping,
+casefolding scorer are not directly comparable; re-score those predictions or
+rerun evaluation to establish the new baseline.
+
 **Common failures:**
 
 | Symptom | Fix |

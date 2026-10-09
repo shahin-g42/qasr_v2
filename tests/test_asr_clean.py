@@ -410,6 +410,31 @@ class ConventionsTest(unittest.TestCase):
         self.assertEqual(c("قال شكراً، الخصم 50% بس ١٠ ريال", "ar"), "قال شكرًا، الخصم 50٪ بس 10 ريال")
         self.assertEqual(c("كبيـــرة جداً", "ar"), "كبيرة جدًا")
 
+    def test_tanween_never_doubled(self) -> None:
+        from data_processing.asr_clean.conventions import canonicalize as c
+        from data_processing.asr_clean.diacritics import apply_policy
+
+        # test5: 487 "أيضًاً"-style doubles from the original's "اً" meeting the model's "ًا"
+        for src, want in {"أيضًاً": "أيضًا", "جدًّاً،": "جدًّا،", "شكرًاً.": "شكرًا.", "جداً": "جدًا",
+                          "خَارِجِيَّةًٍ": "خَارِجِيَّةً", "ماءً": "ماءً"}.items():
+            self.assertEqual(c(src, "ar"), want)
+        self.assertEqual(c(apply_policy("خَارِجِيَّةًٍ", "critical"), "ar"), "خارجيّةً")  # vowels gone, one tanween
+
+    def test_english_small_ordinals(self) -> None:
+        from data_processing.asr_clean.conventions import canonicalize as c
+
+        self.assertEqual(c("Vettel takes over 7th place.", "en"), "Vettel takes over seventh place.")
+        self.assertEqual(c("on January 9th, and 2nd October", "en"), "On January 9th, and 2nd October")
+        self.assertEqual(c("the 2nd of October and the 21st century", "en"),
+                         "The 2nd of October and the 21st century")
+
+    def test_chinese_latin_spacing(self) -> None:
+        from data_processing.asr_clean.conventions import canonicalize as c
+
+        self.assertEqual(c("观察像海豚这样，playfully 在水里", "zh"), "观察像海豚这样，playfully在水里")
+        self.assertEqual(c("我同意，college 可以 在选择的 fields 中", "zh"), "我同意，college可以在选择的fields中")
+        self.assertEqual(c("你怎么学 data analysis 的？", "zh"), "你怎么学data analysis的？")  # Latin words keep theirs
+
     def test_indic_canon(self) -> None:
         from data_processing.asr_clean.conventions import canonicalize as c
 
@@ -472,6 +497,10 @@ class ConventionsTest(unittest.TestCase):
         self.assertIn("Mr.", conventions("en"))
         self.assertIn("《》", conventions("zh"))
         self.assertIn("never $ or ¥", conventions("zh"))
+        self.assertIn("one to nine stay WORDS", conventions("en"))
+        self.assertIn("never convert it to Latin", conventions("ml"))  # test5: "ഇ. എസ്. ഐ. സി" -> "ESI"
+        self.assertIn("use the ORIGINAL's", conventions("ar"))  # test5: "Playstation" -> "بلاي ستيشن"
+        self.assertIn("TIE-BREAK", system_prompt("hi"))  # test5: "दंतेवाड़ा" -> "दंतवाड़ा" (ASR's)
         for lang in ("ar", "hi", "ml", "zh"):
             self.assertIn("acronyms capitalized", conventions(lang), lang)
 

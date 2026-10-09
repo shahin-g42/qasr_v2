@@ -40,8 +40,12 @@ versions and models: "version two point oh" -> "version 2.0", "iPhone 15".
 - Web: spoken addresses in written form when they are unmistakably an \
 email/URL/handle ("info at example dot com" -> "info@example.com", \
 "example dot com slash help" -> "example.com/help").
-- Letters spelled out one by one form an acronym in capitals without \
-spaces or periods ("U S A" -> "USA"), in the script the transcripts use.
+- Latin letters spelled out one by one form an acronym in capitals without \
+spaces or periods ("U S A" -> "USA"). An acronym written in the language's \
+own script stays in that script exactly as the ORIGINAL writes it \
+("ഇ. എസ്. ഐ. സി", "यूपीआई", "بي بي سي"): never convert it to Latin.
+- When ORIGINAL and ASR write the same code-switched word in different \
+scripts ("Playstation" / "بلاي ستيشن"), use the ORIGINAL's.
 """
 
 ITN = {
@@ -77,9 +81,15 @@ after a noun as emphasis ("كتاب واحد"); idioms (ألف عافية، أل
 """ + _COMMON_ITN,
     "en": """\
 INVERSE TEXT NORMALIZATION (English):
-- Quantities become digits, including 1-9: "five years" -> "5 years", \
-"twenty five" -> "25", "three thousand" -> "3000", "ten thousand" -> "10,000" \
-(comma grouping from 10,000 up, none for 4 digits).
+- Quantities: one to nine stay WORDS ("five years", "three times"), 10 and \
+up become digits ("twenty five" -> "25", "three thousand" -> "3000", "ten \
+thousand" -> "10,000"; comma grouping from 10,000 up, none for 4 digits). \
+(The sources write small numbers as words ~30:1; test5 showed the model \
+cannot hold a 1-9 -> digits rule consistently.)
+- Always digits, even below 10: money, percentages, times, dates, years, \
+ages and measurements with a unit ("5 kilometers", "$3", "4%", "3 PM", \
+"May 5", "a 7-year-old"), decimals, scores, versions, and numbers that \
+name something ("Chapter 3", "Formula 1", "PlayStation 2").
 - Millions and above: "two million" -> "2 million", "three point five \
 billion" -> "3.5 billion". Decimals: "three point five" -> "3.5", "point \
 five" -> "0.5". Simple fractions stay words ("a half", "three quarters").
@@ -181,8 +191,8 @@ nouns and acronyms capitalized, other words as the ORIGINAL writes them.
 """,
     "zh": """\
 ORTHOGRAPHY (Chinese): Simplified characters; no spaces between Chinese \
-characters; one space between Chinese and an embedded Latin word or number \
-only where the ORIGINAL has it. Keep erhua (儿) and regional words as spoken. \
+characters, and none between Chinese and an embedded Latin word or number \
+("很intense", "college可以"); spaces only between consecutive Latin words. Keep erhua (儿) and regional words as spoken. \
 Embedded English: proper nouns and acronyms capitalized (TV, NBA, iPhone), \
 other words as the ORIGINAL writes them. Money keeps its Chinese unit \
 (元, 块, 美元, 欧元) -- never $ or ¥.
@@ -246,6 +256,16 @@ _ML_CHILLU = {"ണ്‍": "ൺ", "ന്‍": "ൻ", "ര്‍": "ർ",
 _META_PREFIX = re.compile(r"^\s*(?:corrected|cleaned|final)?\s*transcript(?:ion)?\s*:\s*", re.IGNORECASE)
 
 
+_AR_ALEF_TANWEEN = re.compile("([\u0621-\u064a])([\u064b-\u0652\u0670]*)\u0627\u064b")
+
+
+def _alef_tanween(m: re.Match) -> str:
+    letter, marks = m.group(1), m.group(2)
+    if "\u064b" in marks:  # already before the alef: drop the duplicate
+        return letter + marks + "\u0627"
+    return letter + marks + "\u064b\u0627"
+
+
 def strip_non_speech(text: str) -> str:
     return " ".join(_NON_SPEECH.sub(" ", _META_PREFIX.sub("", text)).split())
 
@@ -272,6 +292,24 @@ def _meridiem(text: str) -> str:
     return _MERIDIEM.sub(fix, text)
 
 
+_ORD_WORDS = {"1st": "first", "2nd": "second", "3rd": "third", "4th": "fourth", "5th": "fifth",
+              "6th": "sixth", "7th": "seventh", "8th": "eighth", "9th": "ninth", "10th": "tenth"}
+_MONTHS = ("January|February|March|April|May|June|July|August|September|October|November|December|"
+           "Jan|Feb|Mar|Apr|Jun|Jul|Aug|Sep|Sept|Oct|Nov|Dec")
+_SMALL_ORD = re.compile(rf"(?<!\d)\b(10th|[1-9](?:st|nd|rd|th))\b(?!\s+(?:of\s+)?(?:{_MONTHS})\b)")
+
+
+def _small_ordinals(text: str) -> str:
+    """1st-10th as words except in dates (test5: "seventh place" -> "7th place")."""
+    def word(m: re.Match) -> str:
+        before = text[max(0, m.start() - 12):m.start()]
+        if re.search(rf"\b(?:{_MONTHS})\.?\s*$", before):  # "January 9th"
+            return m.group(1)
+        return _ORD_WORDS[m.group(1)]
+
+    return _SMALL_ORD.sub(word, text)
+
+
 def _english_case(text: str) -> str:
     """Sentence-initial capitals and the pronoun "I" (test3: 759 English records
     started lower case -- many sources are all lower case)."""
@@ -290,12 +328,22 @@ def canonicalize(text: str, lang: str) -> str:
     if lang == "ar":
         text = text.translate(_AR_INDIC_DIGITS).replace("ـ", "")
         text = re.sub(r"(?<=\d)\s*%", "٪", text)
-        # fathatan before the final alef ("شكرًا"), not on it ("شكراً")
-        text = re.sub("([ء-ي])([َ-ْٰ]*)اً", "\\1\\2ًا", text)
+        # fathatan before the final alef ("شكرًا"), not on it ("شكراً"); when both
+        # forms met (test5: 487 "أيضًاً", "جدًّاً") the one on the alef goes
+        text = _AR_ALEF_TANWEEN.sub(_alef_tanween, text)
+        # one tanween per letter ("خارجيّةًٍ" -> "خارجيّةً")
+        text = re.sub("([\u064b\u064c\u064d])[\u064b\u064c\u064d]+", "\\1", text)
         text = unicodedata.normalize("NFC", text)
     elif lang == "en":
         text = _meridiem(text)
-        text = _english_case(text)
+        text = _english_case(_small_ordinals(text))
+    elif lang == "zh":
+        # no space at a Chinese/Latin-or-digit boundary (test5: the model added
+        # and removed them at random); spaces between Latin words stay
+        text = re.sub(r"(?<=[\u3400-\u9fff\u3000-\u303f\uff00-\uffef])\s+(?=[A-Za-z0-9])", "", text)
+        text = re.sub(r"(?<=[A-Za-z0-9.,!?%])\s+(?=[\u3400-\u9fff\u3000-\u303f\uff00-\uffef])", "", text)
+        text = re.sub(r"(?<=[\u3400-\u9fff\u3000-\u303f\uff00-\uffef])\s+(?=[\u3400-\u9fff\u3000-\u303f\uff00-\uffef])",
+                      "", text)
     elif lang == "hi":
         # danda attaches to the word before it ("है।"); "|" is a keyboard stand-in
         text = re.sub(r"\s*[|।](?!।)", "।", text.translate(_DEVANAGARI_DIGITS))

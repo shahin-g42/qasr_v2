@@ -20,7 +20,8 @@ from .text import EXPECTED_SCRIPT, INDIC_LANGS, LANGUAGE_NAMES, cer, dominant_sc
 # v2: compact output keys, frozen words in the format lane
 # v3: Arabic diacritics moved to a dedicated, letter-preserving pass (diacritics.py)
 # v4: complete per-language ITN/orthography (conventions.py), deterministic canon
-PROMPT_VERSION = "asr-clean-v4"
+# v5: ORIGINAL wins ties; en small numbers as words; script/acronym rules
+PROMPT_VERSION = "asr-clean-v5"
 
 _ADJUDICATION = """\
 You are the final editor of {article} {language} speech-recognition training corpus. \
@@ -46,7 +47,10 @@ dialect of the rest of the utterance, phonetically close to the other \
 reading. Prefer ORIGINAL for names, rare terms and numbers when it is \
 plausible. Prefer ASR where ORIGINAL is garbled, has non-words, is cut off \
 while ASR continues coherently, misses words ASR clearly heard, or lost \
-its diacritics/vowel signs.
+its diacritics/vowel signs. TIE-BREAK: when both readings are real, \
+plausible words (a name spelled two ways, two similar-sounding words), keep \
+the ORIGINAL -- the recognizer was trained on these labels, so on a close \
+call it is the weaker witness.
 3. Never output both alternatives of a span. Never add words that appear \
 in neither transcript (orthographic fixes of the same word are fine). \
 Never translate, paraphrase, or "improve" the wording.

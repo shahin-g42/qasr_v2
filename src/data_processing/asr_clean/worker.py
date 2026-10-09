@@ -482,7 +482,9 @@ class ChunkProcessor:
         if lang == "ar" and self.cfg.ar_diacritics in ("critical", "full"):
             ready = [it for it in window.items if not it.reject and it.text]
             for it in ready:  # the original's shadda/tanween onto unchanged words
-                it.text = diacritics.transfer_marks(it.org_text, it.text)
+                # (canonical first: an original "أيضاً" must not add a second
+                # fathatan to a corrected "أيضًا" -- test5 had 487 of those)
+                it.text = canonicalize(diacritics.transfer_marks(canonicalize(it.org_text, "ar"), it.text), "ar")
             for batch in _pack(ready, self.cfg.diac_batch, self.cfg.diac_batch_chars, lambda it: len(it.text)):
                 window.diac_futs.append(self.llm_pool.submit(self._diacritize, batch))
         window.diac_submitted = True
@@ -592,6 +594,10 @@ class ChunkProcessor:
                     "asr_text": it.asr_text, "reason": it.reject, "detail": it.detail,
                     "lane": it.lane, "choice": it.choice, "llm_output": it.llm_raw}, ensure_ascii=False))
                 continue
+            if chunk["lang"] == "ar" and self.cfg.ar_diacritics in diacritics.POLICY_MARKS:
+                # every Arabic record ends on the policy, whichever path wrote it
+                # (diacritized, kept bare after a failure, agree-guard original)
+                it.text = canonicalize(diacritics.apply_policy(it.text, self.cfg.ar_diacritics), "ar")
             counts["written"] += 1
             counts[f"lane:{it.lane}"] += 1
             counts[f"choice:{it.choice}"] += 1

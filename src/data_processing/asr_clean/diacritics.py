@@ -216,6 +216,18 @@ def project(src: str, out: str, policy: str, min_match: float = 0.9) -> tuple[st
     return _join(s_base, result), None
 
 
+def apply_policy(text: str, policy: str) -> str:
+    """Keep only the policy's marks (and at most one tanween/vowel per letter)."""
+    allowed = set(POLICY_MARKS.get(policy, MARKS))
+    base, marks = _split(text)
+    for m in marks:
+        m &= allowed
+        vowels = [c for c in m if c not in ("\u0651", "\u0670")]
+        if len(vowels) > 1:
+            m.difference_update(sorted(vowels)[1:])
+    return _join(base, marks)
+
+
 def system_prompt(policy: str) -> str:
     del policy  # the model always vocalizes fully; the policy filter is applied in code
     return "\n".join((_HARD_RULES, _VOCALIZE, _OUTPUT))

@@ -134,7 +134,8 @@ def main(argv: list[str] | None = None) -> int:
                   f"marked; diacritized {d['diacritized']:,}; kept bare after failed check {d['failed']}")
             t = st["telemetry"]
             print(f"\nASR     : {t['asr_requests']:,} requests, mean {t['asr_mean_latency_s']} s, "
-                  f"RTFx {t['asr_rtfx']} (demand from these workers)")
+                  f"RTFx {t['asr_rtfx']} (demand from these workers); looping clips re-run with a "
+                  f"repetition penalty: {t['asr_loop_retries']}, recovered {t['asr_loop_recovered']}")
             print(f"LLM     : {t['llm_output_tok_per_s']:,} output tok/s; "
                   f"thinking fell back to non-thinking for {t['think_fallback_items']:,} items")
             print(f"{'lane':<18} {'reqs':>7} {'items/req':>9} {'answered':>8} {'latency':>8} "

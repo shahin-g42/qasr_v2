@@ -78,6 +78,10 @@ class WorkerConfig:
     # this cap means the ASR looped. 1024 keeps a looping-but-long transcript's
     # real tail; test3 had 57 caps in 51.5k requests at 512.
     asr_max_tokens: int = 1024
+    # A transcript that still hits asr_max_tokens is a repetition loop (35 s of
+    # speech is ~100-300 tokens), so a bigger cap only makes the loop longer.
+    # Such a clip is re-run once with this penalty; 0 disables the retry.
+    asr_loop_penalty: float = 1.2
     ar_diacritics: str = "critical"  # Arabic diacritization pass: critical | full | none
     diac_batch: int = 16             # items per diacritization request
     # Batches are also capped by text length (characters of ORIGINAL), so a
@@ -323,6 +327,15 @@ class ChunkProcessor:
                 return
             except TransientError as exc:
                 _wait_healthy(self.asr.clients, f"ASR ({exc})")
+        if res["finish_reason"] == "length" and self.cfg.asr_loop_penalty:
+            self.tel.add(asr_loop_retries=1)
+            try:
+                again = self.asr.transcribe(item.audio_filepath, lang, repetition_penalty=self.cfg.asr_loop_penalty)
+                if again["finish_reason"] != "length":
+                    res = again
+                    self.tel.add(asr_loop_recovered=1)
+            except (PermanentError, TransientError):
+                pass  # keep the first answer; the LLM and guards handle the loop
         item.asr_text, item.asr_label = res["text"], res["language"]
         # Routing signal, computed here so the driver thread never blocks on it.
         item.agree = cer(item.org_text, item.asr_text, lang) <= self.cfg.agree_cer
@@ -722,6 +735,8 @@ def status(run_root: str) -> dict:
         "asr_requests": int(tel["asr_requests"]),
         "asr_mean_latency_s": round(tel["asr_seconds"] / max(tel["asr_requests"], 1), 2),
         "asr_rtfx": round(tel["asr_audio_s"] / wall, 1),
+        "asr_loop_retries": int(tel["asr_loop_retries"]),
+        "asr_loop_recovered": int(tel["asr_loop_recovered"]),
     }
     to_clean = plan["lines"] - plan["duplicates"]
     processed = total["lines"]

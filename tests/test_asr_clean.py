@@ -64,9 +64,12 @@ class _Fakes:
                             return self._send(503, {"error": "warming up"})
                     path = Path(content[0]["audio_url"]["url"][len("file://"):])
                     text = path.with_suffix(".asr").read_text(encoding="utf-8")
+                    finish = "stop"
+                    if "LOOPS" in text and not body.get("repetition_penalty"):
+                        text, finish = text + " لا" * 300, "length"  # loops until the cap
                     return self._send(200, {"choices": [{"message": {
                         "content": f"language {body['messages'][0]['content']}<asr_text>{text}"},
-                        "finish_reason": "stop"}]})
+                        "finish_reason": finish}]})
                 if "ONLY job is diacritics" in body["messages"][0]["content"]:
                     out = []
                     for i, text in re.findall(r"(\d+)\. <<<(.*?)>>>", content):
@@ -147,6 +150,8 @@ def _dataset(tmp: Path) -> tuple[Path, Path, list[str]]:
         if i == 16:  # disagrees with ASR -> adjudication lane, with thinking
             org = org + " وكلام إضافي طويل بالعربية LONGTHINK"  # Arabic-dominant, or the script guard fires
         asr = org if i % 2 else f"جملة رقمي {i}"  # half agree, half need adjudication
+        if i == 23:
+            asr = asr + " LOOPS"  # the ASR loops on this clip unless re-run with a penalty
         wav.with_suffix(".asr").write_text(asr, encoding="utf-8")
         row = {"audio_filepath": str(wav), "text": f"language Arabic<asr_text>{org}" if i % 5 == 0 else org}
         if i % 4:
@@ -296,6 +301,9 @@ class EndToEndTest(unittest.TestCase):
         self.assertEqual(st["arabic_diacritics"]["failed"], {})
         self.assertGreater(st["arabic_diacritics"]["records_with_marks_pct"], 95)
         tel = st["telemetry"]
+        self.assertEqual(tel["asr_loop_recovered"], tel["asr_loop_retries"])  # the penalty re-run ended the loop
+        self.assertGreaterEqual(tel["asr_loop_retries"], 1)
+        self.assertEqual(st["asr_truncated"], 0)  # so nothing reached the LLM truncated
         self.assertGreaterEqual(tel["think_fallback_items"], 1)  # LONGTHINK recovered without thinking
         self.assertGreater(tel["llm"]["adjudicate_think"]["hit_max_tokens_pct"], 0)
         self.assertIn("adjudicate", tel["llm"])  # the non-thinking retry

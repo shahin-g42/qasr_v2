@@ -107,12 +107,17 @@ class ASRClient:
             self._rr += 1
             return self.clients[self._rr % len(self.clients)]
 
-    def transcribe(self, path: str, lang: str) -> dict:
-        """Greedy transcript of one clip, with the model's own language label and finish reason."""
+    def transcribe(self, path: str, lang: str, repetition_penalty: float | None = None) -> dict:
+        """Greedy transcript of one clip, with the model's own language label and finish reason.
+
+        ``repetition_penalty`` is only for re-running a clip that looped; plain
+        transcription never uses it (it would also penalize real repetitions).
+        """
         body = {
             "model": self.model,
             "temperature": 0.0,
             "max_tokens": self.max_tokens,
+            **({"repetition_penalty": repetition_penalty} if repetition_penalty else {}),
             "messages": [
                 {"role": "system", "content": LANGUAGE_NAMES.get(lang, lang)},
                 {"role": "user", "content": [

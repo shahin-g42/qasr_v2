@@ -31,12 +31,14 @@ class TransientError(RuntimeError):
 
 
 class JsonClient:
-    def __init__(self, base_url: str, timeout: float = 600.0, retries: int = 6) -> None:
+    def __init__(self, base_url: str, timeout: float = 600.0, retries: int = 6,
+                 connect_timeout: float = 10.0) -> None:
         parts = urlsplit(base_url.rstrip("/"))
         self.host, self.port = parts.hostname, parts.port or (443 if parts.scheme == "https" else 80)
         self.https = parts.scheme == "https"
         self.prefix = parts.path
         self.timeout = timeout
+        self.connect_timeout = connect_timeout
         self.retries = retries
         self._local = threading.local()
 
@@ -44,7 +46,12 @@ class JsonClient:
         conn = getattr(self._local, "conn", None)
         if conn is None:
             cls = http.client.HTTPSConnection if self.https else http.client.HTTPConnection
-            conn = cls(self.host, self.port, timeout=self.timeout)
+            # Connect fast or fail fast (a host that is down would otherwise hold
+            # every request for the full read timeout before failing over), then
+            # allow the long read timeout for the answer itself.
+            conn = cls(self.host, self.port, timeout=self.connect_timeout)
+            conn.connect()
+            conn.sock.settimeout(self.timeout)
             self._local.conn = conn
         return conn
 
@@ -82,7 +89,7 @@ class JsonClient:
 
     def healthy(self) -> bool:
         try:
-            conn = http.client.HTTPConnection(self.host, self.port, timeout=10)
+            conn = http.client.HTTPConnection(self.host, self.port, timeout=self.connect_timeout)
             conn.request("GET", self.prefix + "/health")
             ok = conn.getresponse().status == 200
             conn.close()
@@ -92,20 +99,45 @@ class JsonClient:
 
 
 class ASRClient:
-    """QASR on vLLM (scripts/serve_asr_vllm.sh). Round-robins over several servers."""
+    """QASR on vLLM (scripts/serve_asr_vllm.sh), round-robin over several servers
+    with failover: a server that fails is benched for ``bench_s`` and its
+    requests go to the others; only when every server is down does the call
+    raise TransientError (and the worker waits). With one server this is the
+    old behaviour. (Full run, 2026-10-09: an ASR engine crash used to stall
+    every node until the single server was back.)"""
 
     def __init__(self, urls: list[str], model: str = "qasr", timeout: float = 600.0,
-                 max_tokens: int = 512) -> None:
-        self.clients = [JsonClient(u, timeout=timeout) for u in urls]
+                 max_tokens: int = 512, bench_s: float = 60.0) -> None:
+        # few retries per server when there is somewhere else to go
+        retries = 6 if len(urls) == 1 else 1
+        self.clients = [JsonClient(u, timeout=timeout, retries=retries) for u in urls]
         self.model = model
         self.max_tokens = max_tokens
+        self.bench_s = bench_s
+        self._down_until = [0.0] * len(self.clients)
         self._rr = 0
         self._lock = threading.Lock()
 
-    def _pick(self) -> JsonClient:
+    def _order(self) -> list[int]:
+        """Server indices to try: healthy ones first, in round-robin order."""
         with self._lock:
             self._rr += 1
-            return self.clients[self._rr % len(self.clients)]
+            start = self._rr
+        now = time.time()
+        idx = [(start + k) % len(self.clients) for k in range(len(self.clients))]
+        return [i for i in idx if self._down_until[i] <= now] + [i for i in idx if self._down_until[i] > now]
+
+    def _request(self, body: dict) -> dict:
+        last: Exception | None = None
+        for i in self._order():
+            try:
+                res = self.clients[i].request("POST", "/v1/chat/completions", body)
+                self._down_until[i] = 0.0
+                return res
+            except TransientError as exc:
+                self._down_until[i] = time.time() + self.bench_s
+                last = exc
+        raise TransientError(f"all {len(self.clients)} ASR server(s) failed; last: {last}")
 
     def transcribe(self, path: str, lang: str, repetition_penalty: float | None = None) -> dict:
         """Greedy transcript of one clip, with the model's own language label and finish reason.
@@ -124,7 +156,7 @@ class ASRClient:
                     {"type": "audio_url", "audio_url": {"url": AUDIO_PLACEHOLDER_URL + local_path(path)}}]},
             ],
         }
-        res = self._pick().request("POST", "/v1/chat/completions", body)
+        res = self._request(body)
         choice = res["choices"][0]
         raw = choice["message"].get("content") or ""
         head, sep, text = raw.rpartition("<asr_text>")

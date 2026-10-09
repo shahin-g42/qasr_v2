@@ -35,6 +35,13 @@ GPU_UTIL="${GPU_UTIL:-0.85}"
 # 35 s audio -> 438 encoder tokens + ~30 prompt tokens + transcript.
 MAX_MODEL_LEN="${MAX_MODEL_LEN:-2048}"
 MAX_NUM_SEQS="${MAX_NUM_SEQS:-512}"
+# Caching is OFF on purpose. Under the full cleaning run (2026-10-09) the engine
+# crashed with "RuntimeError: Encoder cache miss for <mm_hash>" and the
+# container restarted: a prefix-cache hit can skip a clip's encoder pass while
+# its encoder output has already been evicted, and the API-side processor
+# cache adds a second cross-process copy of the same identity. ASR shares only
+# a ~30-token prefix and every clip is unique audio, so neither cache helps.
+#
 # Audio decode, resampling and mel extraction run in the API-server processes,
 # each a single-threaded event loop: the first load test on hpc-029 (8 servers)
 # capped at ~2,500 RTFx with the GPUs at ~60% and the container at ~20 cores
@@ -117,7 +124,9 @@ docker run -d --name ${CONTAINER} --restart unless-stopped \\
       --gpu-memory-utilization ${GPU_UTIL} \\
       --limit-mm-per-prompt "{\"audio\": 1}" \\
       --allowed-local-media-path ${MEDIA_ROOT} \\
-      --generation-config vllm'
+      --generation-config vllm \\
+      --no-enable-prefix-caching \\
+      --mm-processor-cache-gb 0'
 CMD
 }
 

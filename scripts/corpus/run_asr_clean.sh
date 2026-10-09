@@ -34,6 +34,7 @@ ROOT="${ROOT:-$REPO/asr_cleaned_manifests/$RUN_ID}"
 # 2026-10-09); set CONFIG=<training yaml> to take a config's manifests instead.
 DATA_DIR="${DATA_DIR:-$REPO/data}"
 CONFIG="${CONFIG:-}"
+# Space-separated; requests round-robin with failover across all of them.
 ASR_URLS="${ASR_URLS:-http://inception-H100-hpc-029.inception.ai:8020}"
 LLM_URL="${LLM_URL:-http://localhost:8010}"
 PROCS="${PROCS:-16}"
@@ -55,11 +56,14 @@ case "${1:-}" in
   run)
     [ -f "$ROOT/_state/plan.json" ] || die "no plan at $ROOT -- run 'plan' first (same RUN_ID)"
     curl -sf --max-time 10 "$LLM_URL/health" >/dev/null || die "corrector not healthy at $LLM_URL"
+    # Several ASR servers fail over between each other: start if ANY is healthy.
     ASR_ARGS=()
+    up=0
     for u in $ASR_URLS; do
-      curl -sf --max-time 10 "$u/health" >/dev/null || die "ASR not healthy at $u"
+      if curl -sf --max-time 10 "$u/health" >/dev/null; then up=$((up + 1)); else log "WARNING: ASR not healthy at $u (will fail over)"; fi
       ASR_ARGS+=(--asr-url "$u")
     done
+    [ "$up" -gt 0 ] || die "no ASR server is healthy: $ASR_URLS"
     ulimit -n "$(ulimit -Hn)" 2>/dev/null || true
     mkdir -p "$ROOT/_logs"
     CMD=("$PY" -m data_processing.asr_clean run --run-root "$ROOT" "${ASR_ARGS[@]}"

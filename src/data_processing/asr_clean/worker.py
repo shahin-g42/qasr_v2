@@ -638,11 +638,13 @@ def _iter_from(chunk: dict, offset: int, first_line: int):
 
 
 def _wait_healthy(clients, what: str) -> None:
+    """Block until at least one of ``clients`` answers /health (any one is
+    enough: requests fail over between ASR servers)."""
     delay = 10.0
     while True:
         LOG.warning("%s unavailable; waiting %.0fs for /health", what, delay)
         time.sleep(delay)
-        if all(c.healthy() for c in clients):
+        if any(c.healthy() for c in clients):
             return
         delay = min(delay * 2, 300.0)
 
@@ -656,7 +658,7 @@ def run_worker(cfg: WorkerConfig, stop_after_windows: int | None = None) -> None
     asr = ASRClient(cfg.asr_urls, model=cfg.asr_model, max_tokens=cfg.asr_max_tokens)
     llm = LLMClient(cfg.llm_url, model=cfg.llm_model)
     for clients, what in ((asr.clients, "ASR"), ([llm.client], "LLM")):
-        if not all(c.healthy() for c in clients):
+        if not any(c.healthy() for c in clients):
             _wait_healthy(clients, what)
     tel = Telemetry()
     (paths.state / "workers").mkdir(exist_ok=True)

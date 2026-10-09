@@ -339,6 +339,21 @@ class EndToEndTest(unittest.TestCase):
         self.assertEqual(len(mutated), 1)
         self.assertIn("جملتان", strip_marks(mutated[0]["text"]))
 
+    def test_a_dead_asr_server_fails_over_to_the_live_one(self) -> None:
+        import socket
+        import time
+
+        probe = socket.socket()
+        probe.bind(("127.0.0.1", 0))
+        port = probe.getsockname()[1]
+        probe.close()  # nothing listens there now: connection refused, like a crashed server
+        cfg = self._cfg("h:0")
+        cfg.asr_urls = [f"http://127.0.0.1:{port}", self.fakes.url]
+        t0 = time.time()
+        run_worker(cfg)
+        self.assertLess(time.time() - t0, 30)  # no stall waiting for the dead one
+        self._check_complete()
+
     def test_crash_mid_chunk_then_resume(self) -> None:
         run_worker(self._cfg("h:0"), stop_after_windows=2)  # dies after 2 commits
         part = next((Path(self.root) / "ar").rglob("part-*.jsonl"))

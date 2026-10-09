@@ -70,10 +70,10 @@ class _Fakes:
                 if "ONLY job is diacritics" in body["messages"][0]["content"]:
                     out = []
                     for i, text in re.findall(r"(\d+)\. <<<(.*?)>>>", content):
-                        if "BADDIAC" in text:  # "diacritizes" by changing a letter: must be refused
-                            diac = text.replace("جملة", "جملت")
-                        else:  # a fatha after the first letter of every Arabic word
-                            diac = re.sub(r"(?<![\u0621-\u064a])([\u0621-\u064a])", "\\1\u064e", text)
+                        # full vocalization stand-in: shadda + fatha on each word's first letter
+                        diac = re.sub(r"(?<![\u0621-\u064a])([\u0621-\u064a])", "\\1\u0651\u064e", text)
+                        if "BADDIAC" in text:  # also changes a letter: the marks must still land
+                            diac = diac.replace("ملة", "ملت")  # on the SOURCE letters, unchanged
                         out.append({"i": int(i), "t": diac})
                     return self._send(200, {"choices": [{"message": {"content": json.dumps(out, ensure_ascii=False)},
                                                          "finish_reason": "stop"}],
@@ -276,10 +276,10 @@ class EndToEndTest(unittest.TestCase):
                 self.assertEqual(plain, r["org_text"])
             else:
                 self.assertEqual(plain, r["org_text"] + ".")  # diacritics never change a letter
-            if "BADDIAC" in r["org_text"]:
-                self.assertEqual(r["text"], plain)  # failed check -> kept bare
-            else:
-                self.assertGreater(density(r["text"]), 0)  # every other Arabic record got marks
+            # Every Arabic record got marks -- including BADDIAC, whose output also
+            # changed a letter: its marks are projected onto the source letters.
+            self.assertGreater(density(r["text"]), 0, r)
+            self.assertNotIn("\u064e", r["text"])  # critical policy: the fatha is filtered out
         written = [r["audio_filepath"] for r in out]
         self.assertEqual(len(written), len(set(written)))  # exactly once
         self.assertEqual(set(written), set(self.paths) - {self.paths[11], self.paths[13]})
@@ -292,8 +292,8 @@ class EndToEndTest(unittest.TestCase):
         self.assertEqual(st["processed"], st["to_clean"])
         self.assertEqual(st["lanes"]["format"] + st["lanes"]["adjudicate"], 43)
         self.assertEqual(st["agree_guard"], 1)
-        self.assertEqual(st["arabic_diacritics"]["diacritized"], 42)
-        self.assertEqual(st["arabic_diacritics"]["failed"], {"letters_changed": 1})
+        self.assertEqual(st["arabic_diacritics"]["diacritized"], 43)
+        self.assertEqual(st["arabic_diacritics"]["failed"], {})
         self.assertGreater(st["arabic_diacritics"]["records_with_marks_pct"], 95)
         tel = st["telemetry"]
         self.assertGreaterEqual(tel["think_fallback_items"], 1)  # LONGTHINK recovered without thinking
@@ -378,12 +378,21 @@ class DiacriticsTest(unittest.TestCase):
         self.assertAlmostEqual(density("قَالَ"), 2 / 3)
         self.assertEqual(density("hello 123"), 0.0)
 
-    def test_policies(self) -> None:
+    def test_policies_are_applied_in_code(self) -> None:
+        from data_processing.asr_clean.diacritics import project
         from data_processing.asr_clean.diacritics import system_prompt as dsp
 
-        self.assertIn("CRITICAL", dsp("critical"))
-        self.assertIn("FULL", dsp("full"))
-        self.assertIn("Never change, add, remove or reorder a letter", dsp("full"))
+        self.assertIn("Never change, add, remove or reorder a letter", dsp("critical"))
+        self.assertIn("Vocalize every Arabic word completely", dsp("critical"))  # the model always vocalizes
+        src = "وكان يساعدني في شيء، المدرّسة كبيرة جدا."
+        llm = "وَكَانَ يُسَاعِدُنِي فِي شَيْءٍ، الْمُدَرِّسَةُ كَبِيرَةٌ جِدًّا"  # also dropped the final "."
+        crit, why = project(src, llm, "critical")
+        self.assertIsNone(why)
+        self.assertEqual(crit, "وكان يساعدني في شيءٍ، المدرّسة كبيرةٌ جدًّا.")  # shadda + tanween only, src letters
+        full, _ = project(src, llm, "full")
+        self.assertEqual(strip_marks(full), strip_marks(src))
+        self.assertGreater(density(full), 0.5)
+        self.assertEqual(project("قال شي", "كلام آخر تماما مختلف", "critical"), ("قال شي", "misaligned"))
 
 
 class ConventionsTest(unittest.TestCase):

@@ -80,12 +80,34 @@ class WorkerConfig:
     asr_max_tokens: int = 1024
     ar_diacritics: str = "critical"  # Arabic diacritization pass: critical | full | none
     diac_batch: int = 16             # items per diacritization request
+    # Batches are also capped by text length (characters of ORIGINAL), so a
+    # batch of long transcripts still fits its answer in max_tokens (test4: 4.7%
+    # of 24-item format requests hit the cap). ~2-4 chars per output token.
+    format_batch_chars: int = 2400
+    adjudicate_batch_chars: int = 1600
+    diac_batch_chars: int = 1200     # fully vocalized Arabic costs ~2x the tokens
     diac_max_tokens: int = 6144
     min_duration: float = 0.1        # the training filter (configs/v7.6)
     max_duration: float = 35.0
     max_item_attempts: int = 4
     stale_minutes: float = 30.0
     worker_id: str = field(default_factory=lambda: f"{socket.gethostname()}:{os.getpid()}")
+
+
+def _pack(items: list, max_items: int, max_chars: int, size) -> list[list]:
+    """Consecutive batches of at most ``max_items`` and about ``max_chars`` (an
+    item longer than the budget still goes, alone)."""
+    batches, cur, used = [], [], 0
+    for it in items:
+        n = size(it)
+        if cur and (len(cur) >= max_items or used + n > max_chars):
+            batches.append(cur)
+            cur, used = [], 0
+        cur.append(it)
+        used += n
+    if cur:
+        batches.append(cur)
+    return batches
 
 
 # Output failures worth one more sample: the model glitched, the inputs are fine.
@@ -395,10 +417,11 @@ class ChunkProcessor:
         ready = [it for it in window.items if not it.reject]
         agree = [it for it in ready if it.agree]
         disagree = [it for it in ready if not it.agree]
-        for lane, group, size in (("format", agree, self.cfg.format_batch),
-                                  ("adjudicate", disagree, self.cfg.adjudicate_batch)):
-            for k in range(0, len(group), size):
-                window.llm_futs.append(self.llm_pool.submit(self._correct, group[k:k + size], lang, lane))
+        for lane, group, size, chars in (
+                ("format", agree, self.cfg.format_batch, self.cfg.format_batch_chars),
+                ("adjudicate", disagree, self.cfg.adjudicate_batch, self.cfg.adjudicate_batch_chars)):
+            for batch in _pack(group, size, chars, lambda it: len(it.org_text)):
+                window.llm_futs.append(self.llm_pool.submit(self._correct, batch, lang, lane))
         window.llm_submitted = True
 
     # -- stage C: Arabic diacritics (marks only) --------------------------------
@@ -427,10 +450,15 @@ class ChunkProcessor:
         retry = []
         for i, it in enumerate(items):
             res = parsed.get(i)
-            why = "no_answer" if res is None or res["drop"] else diacritics.check(it.text, res["text"])
-            if why is None:
-                it.text, it.diac = canonicalize(res["text"], "ar"), "ok"
-            elif attempt == 1:
+            if res is None or res["drop"]:
+                why = "no_answer"
+            else:
+                projected, why = diacritics.project(it.text, res["text"], self.cfg.ar_diacritics)
+                if why is None and diacritics.check(it.text, projected) is None:
+                    it.text, it.diac = canonicalize(projected, "ar"), "ok"
+                    continue
+                why = why or "check_failed"
+            if attempt == 1:
                 retry.append(it)
             else:
                 it.diac = f"failed:{why}"  # keeps its undiacritized text
@@ -442,8 +470,8 @@ class ChunkProcessor:
             ready = [it for it in window.items if not it.reject and it.text]
             for it in ready:  # the original's shadda/tanween onto unchanged words
                 it.text = diacritics.transfer_marks(it.org_text, it.text)
-            for k in range(0, len(ready), self.cfg.diac_batch):
-                window.diac_futs.append(self.llm_pool.submit(self._diacritize, ready[k:k + self.cfg.diac_batch]))
+            for batch in _pack(ready, self.cfg.diac_batch, self.cfg.diac_batch_chars, lambda it: len(it.text)):
+                window.diac_futs.append(self.llm_pool.submit(self._diacritize, batch))
         window.diac_submitted = True
 
     # -- driver ----------------------------------------------------------------

@@ -24,6 +24,14 @@ import unicodedata
 MARKS = "\u064b\u064c\u064d\u064e\u064f\u0650\u0651\u0652\u0670"
 # Never removed once present (user decision 2026-10-09): shadda and tanween.
 KEEP = "\u0651\u064b\u064c\u064d"
+# Marks each policy WRITES. test4 showed the model cannot vocalize "only the
+# critical marks": records came out either fully vocalized (20-59 short vowels
+# per 100 letters) or bare. So the model now vocalizes fully, as pronounced,
+# and the policy is applied in code by keeping only these marks.
+POLICY_MARKS = {
+    "critical": KEEP + "\u0670",  # shadda, tanween, dagger alef
+    "full": MARKS,
+}
 _MARK_RE = re.compile(f"[{MARKS}]")
 _ARABIC_LETTER_RE = re.compile("[ء-غف-يٱ-ۓە]")
 
@@ -46,34 +54,19 @@ convert dialect to Modern Standard Arabic.
 "بِيِعْمِل", Gulf "شْلُون"), never with MSA case endings they do not have.
 """
 
-_POLICY_TEXT = {
-    # User decision 2026-10-09: critical-only, but shadda and tanween ALWAYS.
-    "critical": """\
-Policy: CRITICAL diacritics -- not full vocalization.
-ALWAYS mark, on every word where it applies:
-- Shadda on EVERY doubled consonant ("المدرّسة", "يُعلّم", "مرّة"), \
-including the sun letter after al- ("الشّمس", "النّاس").
-- Tanween on EVERY word pronounced with it: fathatan ("شكرًا", "أيضًا", \
-"مدرسةً"), dammatan ("كتابٌ"), kasratan ("في بيتٍ"). In dialectal speech \
-that is mostly the adverbial fathatan ("شكرًا", "طبعًا", "أبدًا", \
-"تقريبًا", "دائمًا"): never add an MSA case tanween the dialect does not \
-pronounce ("في بيت" in dialect stays without kasratan).
-Add a short vowel (fatha, damma, kasra, sukun) ONLY where the word is \
-otherwise ambiguous ("عَلِم" vs "عَلَّم", "كَتَب" vs "كُتُب") and the kasra \
-of the feminine "you" ("أنتِ", "لكِ", "عندكِ").
-Keep every mark already in the text. Do not vocalize the remaining letters.
-""",
-    "full": """\
-Policy: FULL diacritization.
-- Vocalize every Arabic word completely: short vowel or sukun on every \
-letter that takes one, shadda on every geminated consonant, tanween where \
-the word is indefinite and inflected.
-- Case endings only where the speech is Modern Standard Arabic; use the \
-pausal form (sukun / no case vowel) at the end of a phrase or sentence.
-- Dialectal speech: vocalize the dialect's pronunciation word by word.
-- Leave the long vowels (ا و ي) as letters; mark the consonant before them.
-""",
-}
+_VOCALIZE = """\
+Vocalize every Arabic word completely, the way it was pronounced:
+- short vowel or sukun on every letter that takes one, shadda on EVERY \
+doubled consonant (including the sun letter after al-: "الشَّمْس", \
+"النَّاس"), tanween wherever the word is pronounced with it;
+- Modern Standard Arabic gets its case endings, with the pausal form \
+(sukun / no case vowel) at the end of a phrase;
+- dialectal speech is vocalized by its own pronunciation word by word, and \
+gets only the tanween dialect speakers actually say -- mostly the adverbial \
+fathatan ("شُكْرًا", "طَبْعًا", "أَبَدًا"); never an MSA case tanween the dialect \
+does not pronounce;
+- keep every mark already in the text; leave long vowels (ا و ي) as letters.
+"""
 
 _OUTPUT = """\
 Output STRICT JSON only (no markdown fences, no commentary): an array with \
@@ -173,8 +166,59 @@ def transfer_marks(org: str, text: str, marks: str = KEEP) -> str:
     return " ".join(tw)
 
 
+def _split(text: str) -> tuple[str, list[set[str]]]:
+    """``(base characters, marks on each base character)`` of NFC text."""
+    base, marks = [], []
+    for ch in unicodedata.normalize("NFC", text):
+        if ch in MARKS:
+            if marks:
+                marks[-1].add(ch)
+        else:
+            base.append(ch)
+            marks.append(set())
+    return "".join(base), marks
+
+
+def _join(base: str, marks: list[set[str]]) -> str:
+    return unicodedata.normalize("NFC", "".join(b + "".join(sorted(m)) for b, m in zip(base, marks, strict=True)))
+
+
+def project(src: str, out: str, policy: str, min_match: float = 0.9) -> tuple[str, str | None]:
+    """Policy marks from the model's ``out`` placed on ``src``'s own letters.
+
+    The result's letters are ``src``'s, always: the model's marks are copied
+    onto the letters they align with (difflib over base characters), so an
+    output that also "fixed" a hamza or added a comma still contributes its
+    vowels instead of being thrown away (test4: 6% of outputs failed the strict
+    check). Shadda and tanween already in ``src`` are always kept; marks go on
+    Arabic letters only, at most one vowel/tanween plus a shadda per letter.
+    Returns ``(text, None)`` or ``(src, reason)`` when the output does not
+    align well enough to trust.
+    """
+    import difflib
+
+    allowed = set(POLICY_MARKS[policy])
+    s_base, s_marks = _split(src)
+    o_base, o_marks = _split(out)
+    sm = difflib.SequenceMatcher(a=s_base, b=o_base, autojunk=False)
+    if sm.ratio() < min_match:
+        return src, "misaligned"
+    result = [m & set(KEEP) for m in s_marks]
+    for a, b, size in sm.get_matching_blocks():
+        for k in range(size):
+            if _ARABIC_LETTER_RE.fullmatch(s_base[a + k]):
+                result[a + k] |= o_marks[b + k] & allowed
+    for m in result:  # one vowel-type mark per letter (+ shadda)
+        vowels = [c for c in m if c not in ("\u0651", "\u0670")]
+        if len(vowels) > 1:
+            keep = next((c for c in vowels if c in KEEP), sorted(vowels)[0])
+            m.difference_update(c for c in vowels if c != keep)
+    return _join(s_base, result), None
+
+
 def system_prompt(policy: str) -> str:
-    return "\n".join((_HARD_RULES, _POLICY_TEXT[policy], _OUTPUT))
+    del policy  # the model always vocalizes fully; the policy filter is applied in code
+    return "\n".join((_HARD_RULES, _VOCALIZE, _OUTPUT))
 
 
 def messages(texts: list[str], policy: str) -> list[dict]:

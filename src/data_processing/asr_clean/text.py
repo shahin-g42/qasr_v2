@@ -45,6 +45,10 @@ def normalize(text: str, lang: str) -> str:
 
         text = canonicalize(text or "", lang)  # one encoding per sound (chillu, nta, danda)
     text = unicodedata.normalize("NFKC", text or "").casefold().translate(_DIGITS)
+    if lang == "hi":
+        # nukta and chandrabindu are spelling variants of the same word ("आजादी"
+        # / "आज़ादी", "जहां" / "जहाँ"): test4's review showed them blocking good fixes
+        text = text.replace("\u093c", "").replace("\u0901", "\u0902")
     if lang == "ar":
         # Standard Arabic comparison folds: alef forms, ta marbuta/ha, alef
         # maqsura/ya -- spelling fixes of the SAME word must not count as edits.

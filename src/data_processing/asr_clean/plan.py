@@ -1,4 +1,4 @@
-"""Freeze the work: sources -> byte-range chunks -> exact audio_filepath dedup.
+"""Freeze the work: sources -> ~8 MB byte-range chunks -> exact audio_filepath dedup.
 
 Run once (any node) before the workers. Everything a worker needs lives under
 ``<run_root>/_state/``:
@@ -189,7 +189,7 @@ def _hash_chunk(args: tuple[str, int, int]):
     return np.asarray(keys, dtype=np.uint64)
 
 
-def build_plan(run_root: str, sources: list[dict], *, chunk_mb: int = 64, dedup: bool = True,
+def build_plan(run_root: str, sources: list[dict], *, chunk_mb: int = 8, dedup: bool = True,
                jobs: int = os.cpu_count() or 8, limit: int | None = None) -> dict:
     """Freeze the chunk list. ``limit`` keeps only the first N lines of every
     manifest (a quick test run over the real data)."""

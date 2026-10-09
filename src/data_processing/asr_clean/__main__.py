@@ -39,7 +39,10 @@ def main(argv: list[str] | None = None) -> int:
     p.add_argument("--manifest", action="append", default=[], help="extra LANG:SPLIT:PATH")
     p.add_argument("--splits", default="eval,train")
     p.add_argument("--langs", help="comma list to restrict")
-    p.add_argument("--chunk-mb", type=int, default=64)
+    # ~8 MB = ~20-40k records = ~3-6 h for one worker process. Chunks are the
+    # unit of load balancing: at 64 MB one chunk took a process 24-47 h, so the
+    # run's tail would wait up to two days on its last chunks.
+    p.add_argument("--chunk-mb", type=int, default=8)
     p.add_argument("--no-dedup", action="store_true")
     p.add_argument("--limit", type=int, help="only the first N records of every manifest (test runs)")
     p.add_argument("--jobs", type=int, default=os.cpu_count() or 8)

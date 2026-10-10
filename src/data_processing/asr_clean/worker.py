@@ -382,8 +382,15 @@ class ChunkProcessor:
             if res["drop"]:
                 it.reject, it.detail = "llm_drop", "both transcripts unusable"
                 continue
-            res["text"] = canonicalize(res["text"], lang)
-            reason = guard(res["text"], it.org_text, it.asr_text, lang, self.cfg.max_divergence)
+            try:
+                res["text"] = canonicalize(res["text"], lang)
+                reason = guard(res["text"], it.org_text, it.asr_text, lang, self.cfg.max_divergence)
+            except Exception as exc:  # one odd output must not kill the worker
+                # (2026-10-10: a "1th" crashed workers, and every worker that took
+                # the chunk over hit the same record again)
+                LOG.exception("canonicalize/guard failed on one record")
+                it.reject, it.detail, it.llm_raw = "internal_error", f"{type(exc).__name__}: {exc}"[:300], res["text"]
+                continue
             if not reason and it.detail == "asr_truncated" and res["choice"] == "asr":
                 # The ASR stopped at max_tokens (it looped) and the final text follows
                 # it: the transcript likely ends before the audio does.
@@ -466,11 +473,15 @@ class ChunkProcessor:
             if res is None or res["drop"]:
                 why = "no_answer"
             else:
-                projected, why = diacritics.project(it.text, res["text"], self.cfg.ar_diacritics)
-                if why is None and diacritics.check(it.text, projected) is None:
-                    it.text, it.diac = canonicalize(projected, "ar"), "ok"
-                    continue
-                why = why or "check_failed"
+                try:
+                    projected, why = diacritics.project(it.text, res["text"], self.cfg.ar_diacritics)
+                    if why is None and diacritics.check(it.text, projected) is None:
+                        it.text, it.diac = canonicalize(projected, "ar"), "ok"
+                        continue
+                    why = why or "check_failed"
+                except Exception:  # keep the record (bare), keep the worker
+                    LOG.exception("diacritization failed on one record")
+                    why = "internal_error"
             if attempt == 1:
                 retry.append(it)
             else:
@@ -597,7 +608,10 @@ class ChunkProcessor:
             if chunk["lang"] == "ar" and self.cfg.ar_diacritics in diacritics.POLICY_MARKS:
                 # every Arabic record ends on the policy, whichever path wrote it
                 # (diacritized, kept bare after a failure, agree-guard original)
-                it.text = canonicalize(diacritics.apply_policy(it.text, self.cfg.ar_diacritics), "ar")
+                try:
+                    it.text = canonicalize(diacritics.apply_policy(it.text, self.cfg.ar_diacritics), "ar")
+                except Exception:  # write the record as it stands
+                    LOG.exception("final Arabic policy failed on one record")
             counts["written"] += 1
             counts[f"lane:{it.lane}"] += 1
             counts[f"choice:{it.choice}"] += 1

@@ -469,6 +469,9 @@ class ConventionsTest(unittest.TestCase):
         self.assertEqual(c("on January 9th, and 2nd October", "en"), "On January 9th, and 2nd October")
         self.assertEqual(c("the 2nd of October and the 21st century", "en"),
                          "The 2nd of October and the 21st century")
+        # malformed suffixes from the model crashed workers (KeyError '1th', 2026-10-10)
+        self.assertEqual(c("he came 1th and she 2th, then 3th", "en"), "He came first and she second, then third")
+        self.assertEqual(c("on May 1th", "en"), "On May 1th")  # dates are left alone
 
     def test_chinese_latin_spacing(self) -> None:
         from data_processing.asr_clean.conventions import canonicalize as c

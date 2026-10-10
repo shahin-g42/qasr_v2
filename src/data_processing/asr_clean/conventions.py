@@ -292,11 +292,13 @@ def _meridiem(text: str) -> str:
     return _MERIDIEM.sub(fix, text)
 
 
-_ORD_WORDS = {"1st": "first", "2nd": "second", "3rd": "third", "4th": "fourth", "5th": "fifth",
-              "6th": "sixth", "7th": "seventh", "8th": "eighth", "9th": "ninth", "10th": "tenth"}
+# Keyed by the NUMBER, any suffix: the model also writes malformed ordinals
+# ("1th", "2th"), and a suffix-keyed lookup crashed workers (2026-10-10).
+_ORD_WORDS = {1: "first", 2: "second", 3: "third", 4: "fourth", 5: "fifth",
+              6: "sixth", 7: "seventh", 8: "eighth", 9: "ninth", 10: "tenth"}
 _MONTHS = ("January|February|March|April|May|June|July|August|September|October|November|December|"
            "Jan|Feb|Mar|Apr|Jun|Jul|Aug|Sep|Sept|Oct|Nov|Dec")
-_SMALL_ORD = re.compile(rf"(?<!\d)\b(10th|[1-9](?:st|nd|rd|th))\b(?!\s+(?:of\s+)?(?:{_MONTHS})\b)")
+_SMALL_ORD = re.compile(rf"(?<!\d)\b(10|[1-9])(?:st|nd|rd|th)\b(?!\s+(?:of\s+)?(?:{_MONTHS})\b)")
 
 
 def _small_ordinals(text: str) -> str:
@@ -304,8 +306,8 @@ def _small_ordinals(text: str) -> str:
     def word(m: re.Match) -> str:
         before = text[max(0, m.start() - 12):m.start()]
         if re.search(rf"\b(?:{_MONTHS})\.?\s*$", before):  # "January 9th"
-            return m.group(1)
-        return _ORD_WORDS[m.group(1)]
+            return m.group(0)
+        return _ORD_WORDS.get(int(m.group(1)), m.group(0))
 
     return _SMALL_ORD.sub(word, text)
 

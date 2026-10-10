@@ -14,6 +14,7 @@
 from __future__ import annotations
 
 import argparse
+import contextlib
 import json
 import multiprocessing as mp
 import os
@@ -23,7 +24,7 @@ from dataclasses import fields
 from pathlib import Path
 
 from .plan import build_plan, config_sources, data_dir_sources
-from .worker import WorkerConfig, assemble, run_child, status
+from .worker import WorkerConfig, assemble, run_child, status, verify
 
 
 def main(argv: list[str] | None = None) -> int:
@@ -70,6 +71,11 @@ def main(argv: list[str] | None = None) -> int:
                    help="show agree-guard overrules: the LLM version that was NOT written")
     k.add_argument("--only-changed", action="store_true", help="skip records where text == org_text")
 
+    v = sub.add_parser("verify", help="check committed output of every chunk; --reset returns bad ones")
+    v.add_argument("--run-root", required=True)
+    v.add_argument("--reset", action="store_true",
+                   help="delete bad chunks' outputs and progress so they are redone (stop their workers first)")
+
     a = sub.add_parser("assemble", help="one manifest per source from finished chunks")
     a.add_argument("--run-root", required=True)
     a.add_argument("--allow-partial", action="store_true")
@@ -96,6 +102,21 @@ def main(argv: list[str] | None = None) -> int:
 
     if args.cmd == "run":
         host = socket.gethostname().split(".")[0]
+        # One `run` per node: a second one would start workers with the SAME ids,
+        # resuming (and writing) the same chunks as the first.
+        lock = Path(args.run_root) / "_state" / "locks" / f"{host}.pid"
+        lock.parent.mkdir(parents=True, exist_ok=True)
+        try:
+            other = int(lock.read_text().strip())
+            os.kill(other, 0)
+            cmdline = Path(f"/proc/{other}/cmdline")
+            if not cmdline.exists() or b"asr_clean" in cmdline.read_bytes():
+                print(f"ERROR: workers for this run are already running on {host} (pid {other}); "
+                      "stop them first (run_asr_clean.sh stop)", file=sys.stderr)
+                return 1
+        except (FileNotFoundError, ValueError, ProcessLookupError, PermissionError):
+            pass
+        lock.write_text(str(os.getpid()))
         base = {f.name: getattr(args, f.name) for f in fields(WorkerConfig)
                 if f.name not in ("asr_urls", "worker_id")}
         base.update(run_root=args.run_root, asr_urls=args.asr_url, llm_url=args.llm_url)
@@ -115,6 +136,9 @@ def main(argv: list[str] | None = None) -> int:
             proc.join()
             failed += proc.exitcode != 0
         print(f"{host}: all workers finished ({failed} failed)", flush=True)
+        with contextlib.suppress(OSError):
+            if lock.read_text().strip() == str(os.getpid()):
+                lock.unlink()
         return 1 if failed else 0
 
     if args.cmd == "status":
@@ -174,6 +198,17 @@ def main(argv: list[str] | None = None) -> int:
                 else:
                     print(f"  TEXT: {r.get('text')}")
         return 0
+
+    if args.cmd == "verify":
+        res = verify(args.run_root, reset=args.reset)
+        print(f"checked {res['checked']} chunks: {len(res['bad'])} bad")
+        for cid, why in sorted(res["bad"].items()):
+            print(f"  {cid}: {why}")
+        if res["bad"] and not args.reset:
+            print("re-run with --reset (after stopping the workers on those chunks) to redo them")
+        if res["bad"] and args.reset:
+            print(f"reset {len(res['bad'])} chunks: they will be redone by the next worker that is free")
+        return 1 if res["bad"] and not args.reset else 0
 
     if args.cmd == "assemble":
         for line in assemble(args.run_root, args.allow_partial):

@@ -811,5 +811,66 @@ def run_child(cfg_dict: dict, log_file: str) -> None:
         raise
 
 
+def verify(run_root: str, reset: bool = False) -> dict:
+    """Check every chunk's committed output; with ``reset``, return bad chunks to the pool.
+
+    A chunk is bad when its part file is shorter than the committed size,
+    holds a line that is not a 5-column record, holds the same audio file
+    twice, or holds a different number of records than its progress counted.
+    Two writers on one chunk (two `run`s on one node, 2026-10-10) produce the
+    last two. Reset deletes the chunk's progress, part, rejects, review and
+    claim, so a worker redoes it from scratch. Only reset while no worker is
+    running on those chunks.
+    """
+    plan = load_plan(run_root)
+    paths = RunPaths(run_root)
+    bad: dict[str, str] = {}
+    checked = 0
+    for c in plan["chunks"]:
+        p = paths.progress_of(c)
+        if not p:
+            continue
+        checked += 1
+        part = paths.part(c)
+        try:
+            size = part.stat().st_size
+        except OSError:
+            size = -1
+        if size < p.get("out_bytes", 0):
+            bad[c["id"]] = f"part file {size} bytes < committed {p.get('out_bytes', 0)}"
+            continue
+        seen: set[str] = set()
+        n = 0
+        why = ""
+        with open(part, "rb") as fh:
+            for line in fh.read(p.get("out_bytes", 0)).splitlines():
+                n += 1
+                try:
+                    rec = json.loads(line)
+                except json.JSONDecodeError:
+                    why = f"unparseable line {n}"
+                    break
+                if tuple(rec) != OUTPUT_KEYS:
+                    why = f"line {n} has columns {list(rec)}"
+                    break
+                if rec["audio_filepath"] in seen:
+                    why = f"audio written twice: {rec['audio_filepath']}"
+                    break
+                seen.add(rec["audio_filepath"])
+        if not why and n != p.get("counts", {}).get("written", 0):
+            why = f"{n} records on disk, progress counted {p.get('counts', {}).get('written', 0)}"
+        if why:
+            bad[c["id"]] = why
+    if reset:
+        by_id = {c["id"]: c for c in plan["chunks"]}
+        for cid in bad:
+            c = by_id[cid]
+            for f in (paths.progress / f"{cid}.json", paths.part(c), paths.rejects(c), paths.review(c),
+                      paths.claims / cid):
+                with contextlib.suppress(FileNotFoundError):
+                    f.unlink()
+    return {"checked": checked, "bad": bad, "reset": reset}
+
+
 def to_dict(cfg: WorkerConfig) -> dict:
     return asdict(cfg)

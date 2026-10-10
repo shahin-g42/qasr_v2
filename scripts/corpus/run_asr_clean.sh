@@ -4,6 +4,7 @@
 #   RUN_ID=asrc1 bash scripts/corpus/run_asr_clean.sh plan      # once, any node
 #   RUN_ID=asrc1 bash scripts/corpus/run_asr_clean.sh run       # on EACH of the 8 LLM nodes
 #   RUN_ID=asrc1 bash scripts/corpus/run_asr_clean.sh status    # anywhere, any time
+#   RUN_ID=asrc1 bash scripts/corpus/run_asr_clean.sh verify [--reset]  # check committed output
 #   RUN_ID=asrc1 bash scripts/corpus/run_asr_clean.sh peek -n 5 [--rejects] [--only-changed]
 #   RUN_ID=asrc1 bash scripts/corpus/run_asr_clean.sh assemble  # when sources finish
 #   RUN_ID=asrc1 bash scripts/corpus/run_asr_clean.sh stop      # on a node: stop its workers
@@ -35,6 +36,8 @@ ROOT="${ROOT:-$REPO/asr_cleaned_manifests/$RUN_ID}"
 DATA_DIR="${DATA_DIR:-$REPO/data}"
 CONFIG="${CONFIG:-}"
 # Space-separated; requests round-robin with failover across all of them.
+# Pass it ON the command line (ASR_URLS="..." RUN_ID=... bash ...) or export it:
+# "ASR_URLS=... && bash ..." sets a shell variable the script never sees.
 ASR_URLS="${ASR_URLS:-http://inception-H100-hpc-029.inception.ai:8020}"
 LLM_URL="${LLM_URL:-http://localhost:8010}"
 PROCS="${PROCS:-16}"
@@ -55,6 +58,10 @@ case "${1:-}" in
     ;;
   run)
     [ -f "$ROOT/_state/plan.json" ] || die "no plan at $ROOT -- run 'plan' first (same RUN_ID)"
+    pidf="$ROOT/_logs/$(hostname -s).pid"
+    if [ -f "$pidf" ] && kill -0 "$(cat "$pidf")" 2>/dev/null; then
+      die "workers already running on $(hostname -s) (pid $(cat "$pidf")): run 'stop' first"
+    fi
     curl -sf --max-time 10 "$LLM_URL/health" >/dev/null || die "corrector not healthy at $LLM_URL"
     # Several ASR servers fail over between each other: start if ANY is healthy.
     ASR_ARGS=()
@@ -79,6 +86,9 @@ case "${1:-}" in
   status)
     exec "$PY" -m data_processing.asr_clean status --run-root "$ROOT" ${EXTRA[@]+"${EXTRA[@]}"}
     ;;
+  verify)
+    exec "$PY" -m data_processing.asr_clean verify --run-root "$ROOT" ${EXTRA[@]+"${EXTRA[@]}"}
+    ;;
   peek)
     exec "$PY" -m data_processing.asr_clean peek --run-root "$ROOT" ${EXTRA[@]+"${EXTRA[@]}"}
     ;;
@@ -95,6 +105,6 @@ case "${1:-}" in
     log "stopped"
     ;;
   *)
-    die "usage: RUN_ID=... $0 {plan|run|status|peek|assemble|stop} [extra args]"
+    die "usage: RUN_ID=... $0 {plan|run|status|verify|peek|assemble|stop} [extra args]"
     ;;
 esac

@@ -25,7 +25,14 @@ from data_processing.asr_clean.plan import (
     load_dup_mask,
 )
 from data_processing.asr_clean.prompts import guard, parse_response, system_prompt
-from data_processing.asr_clean.worker import OUTPUT_KEYS, WorkerConfig, assemble, run_worker, status
+from data_processing.asr_clean.worker import (
+    OUTPUT_KEYS,
+    WorkerConfig,
+    assemble,
+    run_worker,
+    status,
+    verify,
+)
 
 ITEM_RE = re.compile(r"(\d+)\.\n   ORIGINAL: <<<(.*?)>>>\n   ASR:      <<<(.*?)>>>", re.DOTALL)
 
@@ -353,6 +360,26 @@ class EndToEndTest(unittest.TestCase):
         run_worker(cfg)
         self.assertLess(time.time() - t0, 30)  # no stall waiting for the dead one
         self._check_complete()
+
+    def test_verify_finds_a_double_writer_and_reset_redoes_the_chunk(self) -> None:
+        run_worker(self._cfg("h:0"))
+        self.assertEqual(verify(self.root)["bad"], {})
+        # what two `run`s with the same worker ids leave behind: a record committed twice
+        part = next(p for p in (Path(self.root) / "ar").rglob("part-*.jsonl") if "train" in str(p))
+        prog_file = next(p for p in (Path(self.root) / "_state" / "progress").glob("*train*"))
+        lines = part.read_bytes().splitlines(keepends=True)
+        part.write_bytes(b"".join(lines) + lines[0])
+        prog = json.loads(prog_file.read_text())
+        prog["out_bytes"] = part.stat().st_size
+        prog_file.write_text(json.dumps(prog))
+        res = verify(self.root)
+        self.assertEqual(len(res["bad"]), 1)
+        self.assertIn("written twice", next(iter(res["bad"].values())))
+        verify(self.root, reset=True)
+        self.assertFalse(prog_file.exists())
+        run_worker(self._cfg("h:1"))  # any free worker redoes it from scratch
+        self.assertEqual(verify(self.root)["bad"], {})
+        self._check_complete(resumed=True)  # the redone chunk was transcribed twice
 
     def test_crash_mid_chunk_then_resume(self) -> None:
         run_worker(self._cfg("h:0"), stop_after_windows=2)  # dies after 2 commits

@@ -1,0 +1,142 @@
+# QASR v8.0 Stage 2 continuation: 10 nodes x 8 H100 80 GB.
+# Fresh optimizer/scheduler from models/bck/full/v1; corrected full_v1 targets only.
+# Per-device batch ar/en/hi/ml/zh = 10/6/2/1/1; global batch = 1600.
+# 75,469 updates cover the reported 99,196,711 eligible training records.
+# Run the v8.0 preflight scan to confirm counts before the 80-GPU launch.
+# Do not lower batch size without changing quotas and recomputing the step budget.
+# New-run initialization: resume_from_checkpoint must remain null.
+# To restart v8.0, pass --resume-from-checkpoint <v80/full/checkpoint-N>.
+model_name_or_path: /lustrefs/shared/shahin.konadath/workspace/train/stt/v2/qasr_v2/models/bck/full/v1
+output_dir: /lustrefs/shared/shahin.konadath/workspace/train/stt/v2/qasr_v2/output/v80/full
+freeze_audio_tower: false
+freeze_language_model: false
+train_manifest:
+  ar:
+  - /lustrefs/shared/shahin.konadath/workspace/train/stt/v2/qasr_v2/asr_cleaned_manifests/full_v1/ar/data/train_ar_ar_ae.jsonl
+  - /lustrefs/shared/shahin.konadath/workspace/train/stt/v2/qasr_v2/asr_cleaned_manifests/full_v1/ar/data/train_ar_ar_ae_train.jsonl
+  - /lustrefs/shared/shahin.konadath/workspace/train/stt/v2/qasr_v2/asr_cleaned_manifests/full_v1/ar/data/train_ar_camel_race.jsonl
+  - /lustrefs/shared/shahin.konadath/workspace/train/stt/v2/qasr_v2/asr_cleaned_manifests/full_v1/ar/data/train_ar_dialect_gulf.jsonl
+  - /lustrefs/shared/shahin.konadath/workspace/train/stt/v2/qasr_v2/asr_cleaned_manifests/full_v1/ar/data/train_ar_el_ar_v1.jsonl
+  - /lustrefs/shared/shahin.konadath/workspace/train/stt/v2/qasr_v2/asr_cleaned_manifests/full_v1/ar/data/train_ar_el_gen_v5.jsonl
+  - /lustrefs/shared/shahin.konadath/workspace/train/stt/v2/qasr_v2/asr_cleaned_manifests/full_v1/ar/data/train_ar_inworld_full.jsonl
+  - /lustrefs/shared/shahin.konadath/workspace/train/stt/v2/qasr_v2/asr_cleaned_manifests/full_v1/ar/data/train_ar_khalid_msa.jsonl
+  - /lustrefs/shared/shahin.konadath/workspace/train/stt/v2/qasr_v2/asr_cleaned_manifests/full_v1/ar/data/train_ar_q3asr.jsonl
+  - /lustrefs/shared/shahin.konadath/workspace/train/stt/v2/qasr_v2/asr_cleaned_manifests/full_v1/ar/data/train_ar_qudratech_batch2.jsonl
+  - /lustrefs/shared/shahin.konadath/workspace/train/stt/v2/qasr_v2/asr_cleaned_manifests/full_v1/ar/data/train_ar_qudratech_phase4.jsonl
+  - /lustrefs/shared/shahin.konadath/workspace/train/stt/v2/qasr_v2/asr_cleaned_manifests/full_v1/ar/data/train_ar_se_v1.jsonl
+  - /lustrefs/shared/shahin.konadath/workspace/train/stt/v2/qasr_v2/asr_cleaned_manifests/full_v1/ar/data/train_ar_spotify_v1.jsonl
+  en:
+  - /lustrefs/shared/shahin.konadath/workspace/train/stt/v2/qasr_v2/asr_cleaned_manifests/full_v1/en/data/train_en_anispeech.jsonl
+  - /lustrefs/shared/shahin.konadath/workspace/train/stt/v2/qasr_v2/asr_cleaned_manifests/full_v1/en/data/train_en_commentary.jsonl
+  - /lustrefs/shared/shahin.konadath/workspace/train/stt/v2/qasr_v2/asr_cleaned_manifests/full_v1/en/data/train_en_expresso.jsonl
+  - /lustrefs/shared/shahin.konadath/workspace/train/stt/v2/qasr_v2/asr_cleaned_manifests/full_v1/en/data/train_en_hifi_tts.jsonl
+  - /lustrefs/shared/shahin.konadath/workspace/train/stt/v2/qasr_v2/asr_cleaned_manifests/full_v1/en/data/train_en_inworld.jsonl
+  - /lustrefs/shared/shahin.konadath/workspace/train/stt/v2/qasr_v2/asr_cleaned_manifests/full_v1/en/data/train_en_q3asr.jsonl
+  hi:
+  - /lustrefs/shared/shahin.konadath/workspace/train/stt/v2/qasr_v2/asr_cleaned_manifests/full_v1/hi/data/train_hi_q3asr.jsonl
+  ml:
+  - /lustrefs/shared/shahin.konadath/workspace/train/stt/v2/qasr_v2/asr_cleaned_manifests/full_v1/ml/data/train_ml_itn_punct.jsonl
+  zh:
+  - /lustrefs/shared/shahin.konadath/workspace/train/stt/v2/qasr_v2/asr_cleaned_manifests/full_v1/zh/data/train_zh_q3asr.jsonl
+eval_manifest:
+  ar:
+  - /lustrefs/shared/shahin.konadath/workspace/train/stt/v2/qasr_v2/asr_cleaned_manifests/full_v1/ar/data/eval_ar_ar_ae.jsonl
+  - /lustrefs/shared/shahin.konadath/workspace/train/stt/v2/qasr_v2/asr_cleaned_manifests/full_v1/ar/data/eval_ar_inworld.jsonl
+  en:
+  - /lustrefs/shared/shahin.konadath/workspace/train/stt/v2/qasr_v2/asr_cleaned_manifests/full_v1/en/data/eval_en_inworld.jsonl
+  hi:
+  - /lustrefs/shared/shahin.konadath/workspace/train/stt/v2/qasr_v2/asr_cleaned_manifests/full_v1/hi/data/eval_hi_inworld.jsonl
+  ml:
+  - /lustrefs/shared/shahin.konadath/workspace/train/stt/v2/qasr_v2/asr_cleaned_manifests/full_v1/ml/data/eval_ml_inworld.jsonl
+  zh:
+  - /lustrefs/shared/shahin.konadath/workspace/train/stt/v2/qasr_v2/asr_cleaned_manifests/full_v1/zh/data/eval_zh_inworld.jsonl
+audio_root: null
+language: ar
+punctuation: true
+min_duration_seconds: 0.1
+max_duration_seconds: 35.0
+max_target_length: 512
+truncate_long_transcripts: false
+validate_audio_paths: false
+eval_log_samples: 5
+eval_generation_max_new_tokens: 768
+num_train_epochs: 1.0
+max_steps: 75469
+per_device_train_batch_size: 20
+per_device_eval_batch_size: 4
+gradient_accumulation_steps: 1
+learning_rate: 2.0e-05
+weight_decay: 0.01
+lr_scheduler_type: warmup_stable_decay
+lr_scheduler_kwargs:
+  num_decay_steps: 7500
+  min_lr_ratio: 0.1
+warmup_steps: 1000
+max_grad_norm: 1.0
+balanced_sampling: true
+sampling_temperature: 0.5
+sampling_strategy: weighted_stratified
+llm_lr_factor: 0.5
+embed_lr_factor: 0.25
+label_smoothing: 0.1
+non_speech_manifest: null
+ctc_loss_weight: 0.0
+eval_wer_samples_per_language: 100
+logging_steps: 10
+eval_steps: 2500
+save_steps: 2500
+save_total_limit: 6
+smoke_test: false
+smoke_test_max_steps: 2
+smoke_test_train_samples: 256
+smoke_test_eval_samples: 16
+dataloader_num_workers: 12
+dataloader_pin_memory: true
+dataloader_persistent_workers: true
+gradient_checkpointing: true
+bf16: true
+fp16: false
+tf32: true
+torch_compile: false
+optim: adamw_torch
+deepspeed: configs/v8.0/deepspeed_zero2.json
+ddp_find_unused_parameters: false
+report_to: wandb
+wandb_project: qasr
+run_name: qasr-v80-p2-full-v1
+seed: 42
+data_seed: 42
+resume_from_checkpoint: null
+attn_implementation: sdpa
+augmentation:
+  spec_augment:
+    enabled: true
+    num_time_masks: 2
+    max_time_mask_ratio: 0.05
+    num_freq_masks: 2
+    max_freq_mask_ratio: 0.15
+    p: 0.37
+  speed_perturb:
+    enabled: true
+    rate_range:
+    - 0.85
+    - 1.15
+    p: 0.37
+  noise_injection:
+    enabled: true
+    noise_dir: /lustrefs/shared/shahin.konadath/workspace/train/stt/musan
+    snr_range:
+    - 5.0
+    - 20.0
+    p: 0.37
+  codec_augment:
+    enabled: true
+    p: 0.37
+expected_world_size: 80
+language_batch_counts:
+  ar: 10
+  en: 6
+  hi: 2
+  ml: 1
+  zh: 1
+eval_wer_global_language_budget: true

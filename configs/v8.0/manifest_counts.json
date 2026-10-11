@@ -1,0 +1,45 @@
+{
+  "source": "User-reported full_v1 assemble output, 2026-10-11",
+  "counts": {
+    "ar": {
+      "eval_ar_ar_ae": 2101,
+      "eval_ar_inworld": 20431,
+      "train_ar_ar_ae": 209144,
+      "train_ar_ar_ae_train": 302773,
+      "train_ar_camel_race": 3975,
+      "train_ar_dialect_gulf": 1184631,
+      "train_ar_el_ar_v1": 57080,
+      "train_ar_el_gen_v5": 55408,
+      "train_ar_inworld_full": 19250867,
+      "train_ar_khalid_msa": 1866,
+      "train_ar_q3asr": 39219002,
+      "train_ar_qudratech_batch2": 7800,
+      "train_ar_qudratech_phase4": 5896,
+      "train_ar_se_v1": 2795,
+      "train_ar_spotify_v1": 73439
+    },
+    "en": {
+      "eval_en_expresso": 16,
+      "eval_en_inworld": 18456,
+      "train_en_anispeech": 23589,
+      "train_en_commentary": 6484,
+      "train_en_expresso": 30928,
+      "train_en_hifi_tts": 323632,
+      "train_en_inworld": 18438404,
+      "train_en_q3asr": 14027273
+    },
+    "hi": {
+      "eval_hi_inworld": 115,
+      "train_hi_q3asr": 5511368
+    },
+    "ml": {
+      "eval_ml_inworld": 60,
+      "eval_ml_inworld_2": 0,
+      "train_ml_itn_punct": 306175
+    },
+    "zh": {
+      "eval_zh_inworld": 19612,
+      "train_zh_q3asr": 154182
+    }
+  }
+}

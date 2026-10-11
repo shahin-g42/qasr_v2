@@ -22,7 +22,11 @@ from .eval_callback import WEREvalCallback
 from .losses import make_smoothed_causal_lm_loss
 from .modeling import QASRForConditionalGeneration
 from .processing import QASRProcessor
-from .sampling import LanguageBalancedSampler, StratifiedLanguageSampler
+from .sampling import (
+    LanguageBalancedSampler,
+    StratifiedLanguageSampler,
+    WeightedStratifiedLanguageSampler,
+)
 
 LOGGER = logging.getLogger("qasr")
 
@@ -158,6 +162,7 @@ class PredictionLoggingTrainer(Trainer):
         balanced_sampling: bool = False,
         sampling_temperature: float = 0.5,
         sampling_strategy: str = "balanced",
+        language_batch_counts: dict[str, int] | None = None,
         allow_partial_epoch: bool = False,
         llm_lr_factor: float = 1.0,
         embed_lr_factor: float = 1.0,
@@ -174,6 +179,7 @@ class PredictionLoggingTrainer(Trainer):
         self._balanced_sampling = balanced_sampling and bool(balanced_parts)
         self._sampling_temperature = sampling_temperature
         self._sampling_strategy = sampling_strategy
+        self._language_batch_counts = language_batch_counts
         self._allow_partial_epoch = allow_partial_epoch
         self._llm_lr_factor = llm_lr_factor
         self._embed_lr_factor = embed_lr_factor
@@ -198,13 +204,18 @@ class PredictionLoggingTrainer(Trainer):
         # TrainingArguments leaves data_seed as None unless explicitly set;
         # the samplers need a real int, so fall back to the run seed.
         data_seed = self.args.data_seed if self.args.data_seed is not None else self.args.seed
-        if self._sampling_strategy == "stratified":
-            sampler = StratifiedLanguageSampler(
+        if self._sampling_strategy in ("stratified", "weighted_stratified"):
+            sampler_cls = (WeightedStratifiedLanguageSampler
+                           if self._sampling_strategy == "weighted_stratified" else StratifiedLanguageSampler)
+            extra = ({"language_batch_counts": self._language_batch_counts}
+                     if self._sampling_strategy == "weighted_stratified" else {})
+            sampler = sampler_cls(
                 self._balanced_parts,
                 batch_size=self.args.per_device_train_batch_size,
                 seed=data_seed,
                 num_replicas=self.args.world_size,
                 rank=self.args.process_index,
+                **extra,
             )
             if self.args.process_index == 0:
                 repeats = ", ".join(
@@ -212,11 +223,11 @@ class PredictionLoggingTrainer(Trainer):
                     for lang, factor in sorted(sampler.repeat_factors.items())
                 )
                 LOGGER.info(
-                    "Stratified sampling: %d languages, %d per language per batch, "
-                    "%d draws/language/epoch (%s)",
+                    "Stratified sampling: %d languages, batch quotas %s, "
+                    "%d batches/rank/epoch (%s)",
                     len(sampler.languages),
-                    sampler.per_language,
-                    sampler.epoch_draws,
+                    self._language_batch_counts or dict.fromkeys(sampler.languages, sampler.per_language),
+                    sampler.num_batches,
                     repeats,
                 )
             # Full-coverage guard: max_steps in the YAMLs is computed for a
@@ -507,6 +518,9 @@ def run(config: TrainConfig) -> None:
         config.smoke_test and config.smoke_test_eval_samples > 0
     )
     training_args = _training_arguments(config, has_eval)
+    if (not config.smoke_test and config.expected_world_size is not None
+            and training_args.world_size != config.expected_world_size):
+        raise ValueError(f"Expected {config.expected_world_size} ranks, got {training_args.world_size}")
     processor = QASRProcessor.from_pretrained(config.model_name_or_path, trust_remote_code=True)
     model = QASRForConditionalGeneration.from_pretrained(
         config.model_name_or_path,
@@ -696,6 +710,7 @@ def run(config: TrainConfig) -> None:
         else config.eval_generation_max_new_tokens,
         balanced_parts=balanced_parts,
         sampling_strategy=config.sampling_strategy,
+        language_batch_counts=config.language_batch_counts,
         allow_partial_epoch=config.smoke_test,
         balanced_sampling=config.balanced_sampling,
         sampling_temperature=config.sampling_temperature,
@@ -716,6 +731,7 @@ def run(config: TrainConfig) -> None:
             seed=config.seed,
             dataset_kwargs=dataset_kwargs,
             max_new_tokens=config.eval_generation_max_new_tokens,
+            global_language_budget=config.eval_wer_global_language_budget,
         ).bind_trainer(trainer)
         trainer.add_callback(wer_callback)
         LOGGER.info(

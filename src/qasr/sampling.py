@@ -293,11 +293,13 @@ class StratifiedLanguageSampler(Sampler[int]):
     def __len__(self) -> int:
         return self.num_samples
 
-    def _language_indices(self, language: str, rng: np.random.Generator) -> np.ndarray:
+    def _language_indices(self, language: str, rng: np.random.Generator,
+                          draws_per_rank: int | None = None) -> np.ndarray:
         """Global dataset indices this rank draws for one language, shuffled."""
         size = self.language_sizes[language]
-        lo = self.rank * self.draws_per_rank
-        positions = np.arange(lo, lo + self.draws_per_rank, dtype=np.int64)
+        draws = self.draws_per_rank if draws_per_rank is None else draws_per_rank
+        lo = self.rank * draws
+        positions = np.arange(lo, lo + draws, dtype=np.int64)
         cycles = positions // size
         offsets = positions % size
 
@@ -343,8 +345,57 @@ class StratifiedLanguageSampler(Sampler[int]):
         return map(int, interleaved)
 
 
+class WeightedStratifiedLanguageSampler(StratifiedLanguageSampler):
+    """Fixed language counts per device batch, with full distributed coverage.
+
+    The epoch has max_l ceil(n_l / (world_size * quota_l)) batches per rank.
+    Each language gets its own contiguous per-rank position range, using the
+    same deterministic cycle bijections as the equal-share sampler. Smaller
+    languages repeat; every eligible record is visited at least once.
+    """
+
+    def __init__(self, parts: Sequence[Any], *, batch_size: int, seed: int,
+                 language_batch_counts: dict[str, int], num_replicas: int = 1,
+                 rank: int = 0) -> None:
+        languages = {getattr(part, "language", None) or "und" for part in parts}
+        if set(language_batch_counts) != languages:
+            raise ValueError("language_batch_counts must specify exactly the dataset languages")
+        if any(type(n) is not int or n < 1 for n in language_batch_counts.values()):
+            raise ValueError("language_batch_counts values must be positive integers")
+        if sum(language_batch_counts.values()) != batch_size:
+            raise ValueError("language_batch_counts must sum to per_device_train_batch_size")
+        # Reuse span validation and mapping; equal-share epoch fields are not
+        # used by this subclass's iterator or repeat-factor calculation.
+        super().__init__(parts, batch_size=len(languages), seed=seed,
+                         num_replicas=num_replicas, rank=rank)
+        self.batch_size = batch_size
+        self.language_batch_counts = dict(language_batch_counts)
+        self.num_batches = max(
+            math.ceil(size / (num_replicas * self.language_batch_counts[lang]))
+            for lang, size in self.language_sizes.items()
+        )
+        self.num_samples = self.num_batches * batch_size
+
+    @property
+    def repeat_factors(self) -> dict[str, float]:
+        return {lang: self.num_batches * self.num_replicas * self.language_batch_counts[lang] / size
+                for lang, size in self.language_sizes.items()}
+
+    def __iter__(self):
+        rng = np.random.default_rng([self.seed & 0x7FFFFFFF, self.epoch, self.rank])
+        batches = np.empty((self.num_batches, self.batch_size), dtype=np.int64)
+        offset = 0
+        for lang in self.languages:
+            quota = self.language_batch_counts[lang]
+            indices = self._language_indices(lang, rng, self.num_batches * quota)
+            batches[:, offset:offset + quota] = indices.reshape(self.num_batches, quota)
+            offset += quota
+        return map(int, batches.reshape(-1))
+
+
 __all__ = [
     "LanguageBalancedSampler",
     "StratifiedLanguageSampler",
+    "WeightedStratifiedLanguageSampler",
     "language_mix_weights",
 ]

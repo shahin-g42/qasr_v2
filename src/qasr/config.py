@@ -125,6 +125,9 @@ class TrainConfig:
     #                 is seen at least once per epoch (smaller languages repeat).
     #                 Requires per_device_train_batch_size % num_languages == 0.
     sampling_strategy: str = "balanced"
+    # Opt-in fixed per-device language quotas; old strategies remain unchanged.
+    language_batch_counts: dict[str, int] | None = None
+    expected_world_size: int | None = None
     # Per-group learning rates: encoder+projector at `learning_rate`, the
     # pretrained LLM body at `learning_rate * llm_lr_factor`, and the tied
     # token embeddings at `learning_rate * embed_lr_factor` (drift control).
@@ -145,6 +148,8 @@ class TrainConfig:
     ctc_loss_weight: float = 0.0
     # Per-language WER/CER eval callback.
     eval_wer_samples_per_language: int = 100
+    # v8.0 opts into a true per-language cap across all its manifests.
+    eval_wer_global_language_budget: bool = False
 
     # Augmentation configuration. Each sub-key maps to an augmentation type.
     # All augmentations are disabled by default; enable them in the YAML config.
@@ -211,11 +216,28 @@ class TrainConfig:
             raise ValueError("smoke_test_eval_samples must be non-negative")
         if self.warmup_steps < 0:
             raise ValueError("warmup_steps must be non-negative")
-        if self.sampling_strategy not in ("balanced", "stratified"):
+        if self.sampling_strategy not in ("balanced", "stratified", "weighted_stratified"):
             raise ValueError(
-                "sampling_strategy must be 'balanced' or 'stratified', "
+                "sampling_strategy must be 'balanced', 'stratified' or 'weighted_stratified', "
                 f"got {self.sampling_strategy!r}"
             )
+        if self.expected_world_size is not None and (
+            type(self.expected_world_size) is not int or self.expected_world_size < 1
+        ):
+            raise ValueError("expected_world_size must be a positive integer")
+        if self.sampling_strategy == "weighted_stratified":
+            if not self.balanced_sampling:
+                raise ValueError("weighted_stratified requires balanced_sampling")
+            quotas = self.language_batch_counts
+            languages = {lang for _, lang in self.train_manifest_specs + self.non_speech_manifest_specs}
+            if not isinstance(quotas, dict) or set(quotas) != languages:
+                raise ValueError("language_batch_counts must specify exactly the dataset languages")
+            if any(type(n) is not int or n < 1 for n in quotas.values()):
+                raise ValueError("language_batch_counts values must be positive integers")
+            if sum(quotas.values()) != self.per_device_train_batch_size:
+                raise ValueError("language_batch_counts must sum to per_device_train_batch_size")
+        elif self.language_batch_counts is not None:
+            raise ValueError("language_batch_counts requires sampling_strategy: weighted_stratified")
         if self.balanced_sampling and self.eval_split_ratio:
             # Both samplers index the UNSPLIT combined dataset; an eval split
             # shrinks the train dataset underneath them -> wrong-record fetches

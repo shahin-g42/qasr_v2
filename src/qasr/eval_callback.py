@@ -22,7 +22,7 @@ import torch
 from transformers import TrainerCallback
 
 from .audio import load_mono_audio
-from .data import JsonlSpeechDataset
+from .data import CombinedSpeechDataset, JsonlSpeechDataset
 from .evaluate import error_counts
 
 LOGGER = logging.getLogger("qasr.eval_callback")
@@ -42,6 +42,8 @@ class WEREvalCallback(TrainerCallback):
         dataset_kwargs: Extra ``JsonlSpeechDataset`` constructor kwargs
             (duration filters, audio root, ...).
         max_new_tokens: Greedy decode budget per utterance.
+        global_language_budget: Cap samples across manifests of each language;
+            False preserves the legacy per-manifest budget.
     """
 
     def __init__(
@@ -53,6 +55,7 @@ class WEREvalCallback(TrainerCallback):
         seed: int = 42,
         dataset_kwargs: dict[str, Any] | None = None,
         max_new_tokens: int = 256,
+        global_language_budget: bool = False,
     ) -> None:
         if samples_per_language < 0:
             raise ValueError("samples_per_language must be non-negative")
@@ -62,6 +65,7 @@ class WEREvalCallback(TrainerCallback):
         self.seed = int(seed)
         self.dataset_kwargs = dict(dataset_kwargs or {})
         self.max_new_tokens = int(max_new_tokens)
+        self.global_language_budget = global_language_budget
         # Indexing 100M-line manifests is expensive; build each part lazily
         # once (rank 0 only) and reuse it for every evaluation.
         self._datasets: dict[tuple[str, str], JsonlSpeechDataset] = {}
@@ -126,8 +130,10 @@ class WEREvalCallback(TrainerCallback):
     ) -> dict[str, float] | None:
         totals = {"word_errors": 0, "word_count": 0, "char_errors": 0, "char_count": 0}
         decoded = 0
-        for path, manifest_language in manifests:
-            dataset = self._dataset_for(path, manifest_language)
+        datasets = [self._dataset_for(path, manifest_language) for path, manifest_language in manifests]
+        if self.global_language_budget and len(datasets) > 1:
+            datasets = [CombinedSpeechDataset(datasets)]
+        for dataset in datasets:
             for index in self._sample_indices(dataset, language):
                 feature = dataset[index]
                 try:

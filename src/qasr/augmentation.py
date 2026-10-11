@@ -314,11 +314,13 @@ class NoiseInjection:
                         repeats = (length // len(noise)) + 1
                         noise = np.tile(noise, repeats)
                     noise = noise[:length]
+                    self.last_noise_source = str(noise_path)
                     return noise
                 except Exception as exc:
                     LOGGER.debug("Failed to load noise file %s: %s", noise_path, exc)
 
         # Fallback: Gaussian noise with random amplitude
+        self.last_noise_source = "gaussian"
         amplitude = random.uniform(0.005, 0.02)
         return np.random.randn(length).astype(np.float32) * amplitude
 
@@ -530,7 +532,8 @@ class AudioAugmenter:
     def has_spec_augmentation(self) -> bool:
         return self.spec_augment is not None
 
-    def augment_waveform(self, waveform: np.ndarray) -> np.ndarray:
+    def augment_waveform(self, waveform: np.ndarray, *, min_audio_seconds: float | None = None,
+                         max_audio_seconds: float | None = None) -> np.ndarray:
         """Apply all waveform-level augmentations in sequence.
 
         Order: speed → noise → codec. Speed is applied first because it
@@ -539,14 +542,22 @@ class AudioAugmenter:
         if not self.has_waveform_augmentation:
             return waveform
 
+        def in_bounds(candidate):
+            return ((min_audio_seconds is None or len(candidate) >= round(min_audio_seconds * self.sampling_rate))
+                    and (max_audio_seconds is None or len(candidate) <= round(max_audio_seconds * self.sampling_rate)))
+
         if self.speed_perturb is not None:
-            waveform = self.speed_perturb(waveform, self.sampling_rate)
+            candidate = self.speed_perturb(waveform, self.sampling_rate)
+            if in_bounds(candidate):
+                waveform = candidate
 
         if self.noise_injection is not None:
             waveform = self.noise_injection(waveform, self.sampling_rate)
 
         if self.codec_augment is not None:
-            waveform = self.codec_augment(waveform, self.sampling_rate)
+            candidate = self.codec_augment(waveform, self.sampling_rate)
+            if in_bounds(candidate):
+                waveform = candidate
 
         return waveform
 

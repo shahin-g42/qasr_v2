@@ -1,0 +1,26 @@
+# Separate from the v8.0 training configs. Freeze once per RUN_ID.
+source_root: /lustrefs/shared/shahin.konadath/workspace/train/stt/v2/qasr_v2/asr_cleaned_manifests/full_v1
+# Load locally and snapshot the tokenizer into the run; no model/GPU inference.
+tokenizer_path: /lustrefs/shared/shahin.konadath/workspace/train/stt/v2/qasr_v2/models/bck/full/v1
+preview_count: 100
+pair_weights:
+  ar-en: 40
+  hi-en: 20
+  ml-en: 5
+  zh-en: 5
+  ar-hi: 20
+  ar-ml: 5
+  ar-zh: 5
+language_policy: first  # preserves the sampler's language quotas; major also supported
+min_source_seconds: 0.5
+max_source_seconds: 10.0
+max_seconds: 35.0
+sample_rate: 16000
+gap_seconds: 0.10
+segment_counts: [2, 2, 2, 3, 3, 4]
+max_target_tokens: 512
+max_attempts: 3
+# Preview-only reuse bound; online training samples partners with replacement.
+max_source_uses: 200
+chunk_mb: 4
+seed: 42

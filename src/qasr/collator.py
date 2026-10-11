@@ -19,6 +19,10 @@ class QASRDataCollator:
     max_audio_seconds: float
     max_target_length: int
     augmenter: AudioAugmenter | None = None
+    enforce_augmented_duration: bool = False
+    code_switcher: Any = None
+    code_switch_probability: float = 0.4
+    audit_callback: Any = None
 
     def __post_init__(self) -> None:
         self.sampling_rate = int(self.processor.feature_extractor.sampling_rate)
@@ -75,6 +79,13 @@ class QASRDataCollator:
     def __call__(self, features: list[dict[str, Any]]) -> dict[str, torch.Tensor]:
         if not features:
             raise ValueError("Cannot collate an empty batch")
+        audits = []
+        if self.code_switcher is not None:
+            mixed = [self.code_switcher.augment(feature, self.code_switch_probability) for feature in features]
+            features = [item[0] for item in mixed]
+            audits = [item[1] for item in mixed]
+        if self.audit_callback is not None:
+            self.audit_callback(features, audits)
         transcript_lengths = [
             len(
                 self.processor.tokenizer(
@@ -94,7 +105,14 @@ class QASRDataCollator:
 
         # Apply waveform-level augmentations (speed, noise, codec)
         if self.augmenter is not None and self.augmenter.has_waveform_augmentation:
-            waveforms = [self.augmenter.augment_waveform(w) for w in waveforms]
+            bounds = ({"min_audio_seconds": self.min_audio_seconds,
+                       "max_audio_seconds": self.max_audio_seconds}
+                      if self.enforce_augmented_duration else {})
+            waveforms = [self.augmenter.augment_waveform(w, **bounds) for w in waveforms]
+        if self.enforce_augmented_duration:
+            for feature, waveform in zip(features, waveforms, strict=True):
+                validate_audio_duration(waveform, path=feature["audio_path"], sampling_rate=self.sampling_rate,
+                    min_audio_seconds=self.min_audio_seconds, max_audio_seconds=self.max_audio_seconds)
 
         try:
             batch = self.processor.prepare_training_batch(

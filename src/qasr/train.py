@@ -46,8 +46,15 @@ def _sample_subset(dataset: Any, count: int, seed: int) -> Subset | None:
     remaining = count - len(selected)
     if remaining:
         selected_set = set(selected)
-        candidates = [index for index in range(len(dataset)) if index not in selected_set]
-        selected.extend(rng.sample(candidates, remaining))
+        # Sample ranks in the complement without allocating one Python int
+        # per corpus record (hundreds of millions in online code-switch runs).
+        excluded = sorted(selected_set)
+        for index in rng.sample(range(len(dataset) - len(excluded)), remaining):
+            for blocked in excluded:
+                if blocked > index:
+                    break
+                index += 1
+            selected.append(index)
     rng.shuffle(selected)
     return Subset(dataset, selected)
 
@@ -503,6 +510,42 @@ def _apply_freezing(model: QASRForConditionalGeneration, config: TrainConfig) ->
     )
 
 
+def _build_code_switcher(config, processor, training_args, train_parts):
+    if not config.code_switch_index:
+        return
+    from .code_switch import OnlineCodeSwitch
+    mixer = OnlineCodeSwitch(config.code_switch_index, processor.tokenizer, allow_pilot=config.smoke_test)
+    indexed_sources = {s["path"]: s for s in mixer.index["sources"]}
+    indexed_train = {path for path in indexed_sources if Path(path).name.startswith("train_")}
+    if {str(Path(path).resolve()) for path in config.train_manifest_paths} != indexed_train:
+        raise ValueError("Code-switch index and training manifests differ")
+    for path, expected in indexed_sources.items():
+        actual = Path(path).stat()
+        if (actual.st_size, actual.st_mtime_ns) != (expected["size"], expected["mtime_ns"]):
+            raise ValueError(f"Indexed source manifest changed: {path}")
+    cfg = mixer.cfg
+    if (cfg["sample_rate"] != int(processor.feature_extractor.sampling_rate)
+            or cfg["max_seconds"] > config.max_duration_seconds
+            or cfg["max_target_tokens"] > config.max_target_length):
+        raise ValueError("Code-switch index audio/token limits differ from training")
+    # A resumed optimizer/sampler must see the same frozen partner index.
+    import hashlib
+    index_hash = hashlib.sha256(Path(config.code_switch_index).read_bytes()).hexdigest()
+    receipt_path = Path(training_args.output_dir) / "code_switch_index.json"
+    if receipt_path.exists():
+        receipt = json.loads(receipt_path.read_text())
+        if receipt["sha256"] != index_hash:
+            raise ValueError("Output directory belongs to a different code-switch index")
+    elif config.resume_from_checkpoint and not config.smoke_test:
+        raise ValueError("Cannot resume online mixing without the original index receipt")
+    if training_args.should_save:
+        from data_processing.code_switch.common import atomic_json
+        atomic_json(receipt_path, {"path": config.code_switch_index, "sha256": index_hash})
+    LOGGER.info("Code switching: per-example p=%.3f; policy=%s; original dataset size unchanged",
+                config.code_switch_probability, cfg["language_policy"])
+    return mixer
+
+
 def run(config: TrainConfig) -> None:
     logging.basicConfig(level=logging.INFO, format="%(asctime)s | %(levelname)s | %(name)s | %(message)s")
     os.environ["WANDB_PROJECT"] = config.wandb_project
@@ -554,6 +597,7 @@ def run(config: TrainConfig) -> None:
         for path, language in config.non_speech_manifest_specs
     ]
     train_parts.extend(non_speech_parts)
+    code_switcher = _build_code_switcher(config, processor, training_args, train_parts)
     full_train = train_parts[0] if len(train_parts) == 1 else CombinedSpeechDataset(train_parts)
     eval_parts = [
         JsonlSpeechDataset(path, language=language, **dataset_kwargs)
@@ -643,6 +687,9 @@ def run(config: TrainConfig) -> None:
         max_audio_seconds=config.max_duration_seconds,
         max_target_length=config.max_target_length,
         augmenter=augmenter,
+        enforce_augmented_duration=bool(config.code_switch_index),
+        code_switcher=code_switcher,
+        code_switch_probability=config.code_switch_probability,
     )
     # Clean collator for evaluation: augmentation is training-only.
     eval_collator = (
@@ -654,7 +701,7 @@ def run(config: TrainConfig) -> None:
             max_target_length=config.max_target_length,
             augmenter=None,
         )
-        if augmenter is not None
+        if augmenter is not None or config.code_switch_index
         else None
     )
 

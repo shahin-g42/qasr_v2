@@ -62,3 +62,8 @@ logs/asr_load_test/
 
 # ASR-assisted cleaning runs (scripts/corpus/run_asr_clean.sh)
 asr_cleaned_manifests/
+
+# Offline short-clip indexes and listening previews for online code switching
+code_switch_indexes/
+
+dataloader_checks/

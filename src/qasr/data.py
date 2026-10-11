@@ -414,7 +414,9 @@ class ResilientAudioDataset:
             feature = self.dataset[candidate_index]
             try:
                 transcript_ids, transcript = self._validate_transcript(feature)
-                waveform = load_mono_audio(feature["audio_path"], self.sampling_rate)
+                waveform = feature.get("waveform")
+                if waveform is None:
+                    waveform = load_mono_audio(feature["audio_path"], self.sampling_rate)
                 validate_audio_duration(
                     waveform,
                     path=feature["audio_path"],

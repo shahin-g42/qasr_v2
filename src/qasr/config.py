@@ -154,6 +154,9 @@ class TrainConfig:
     # Augmentation configuration. Each sub-key maps to an augmentation type.
     # All augmentations are disabled by default; enable them in the YAML config.
     augmentation: dict[str, Any] | None = None
+    # Per-example code-switch augmentation using a frozen offline partner index.
+    code_switch_index: str | None = None
+    code_switch_probability: float = 0.4
 
     @classmethod
     def from_yaml(cls, path: str | Path) -> TrainConfig:
@@ -184,6 +187,13 @@ class TrainConfig:
             field_name="eval_manifest",
             required=False,
         )
+        if self.code_switch_index is not None:
+            if not isinstance(self.code_switch_index, str) or not self.code_switch_index:
+                raise ValueError("code_switch_index must be a non-empty path")
+            if not self.balanced_sampling or self.sampling_strategy != "weighted_stratified":
+                raise ValueError("Online code switching requires weighted_stratified sampling")
+            if not 0 <= self.code_switch_probability <= 1:
+                raise ValueError("code_switch_probability must be in [0, 1]")
         if self.bf16 and self.fp16:
             raise ValueError("bf16 and fp16 cannot both be enabled")
         if self.min_duration_seconds < 0:

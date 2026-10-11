@@ -31,10 +31,18 @@ import json
 import logging
 import os
 import socket
+import sys
 import threading
 import time
 from collections import Counter, deque
-from concurrent.futures import FIRST_COMPLETED, Future, ThreadPoolExecutor, wait
+from concurrent.futures import (
+    FIRST_COMPLETED,
+    Future,
+    ProcessPoolExecutor,
+    ThreadPoolExecutor,
+    as_completed,
+    wait,
+)
 from dataclasses import asdict, dataclass, field
 from pathlib import Path
 
@@ -825,7 +833,52 @@ def run_child(cfg_dict: dict, log_file: str) -> None:
         raise
 
 
-def verify(run_root: str, reset: bool = False) -> dict:
+def _verify_part(part: str, out_bytes: int, written: int) -> str:
+    """Check one committed prefix in a child process; return a reason or empty string.
+
+    Stream records instead of holding the part and a split copy in memory in
+    every process. Only the audio-path set grows with the size of one chunk.
+    """
+    try:
+        size = os.path.getsize(part)
+    except OSError:
+        size = -1
+    if size < out_bytes:
+        return f"part file {size} bytes < committed {out_bytes}"
+    seen: set[str] = set()
+    n = 0
+    remaining = out_bytes
+    try:
+        with open(part, "rb") as fh:
+            while remaining > 0:
+                line = fh.readline(remaining)
+                if not line:
+                    return f"part file {out_bytes - remaining} bytes < committed {out_bytes}"
+                remaining -= len(line)
+                n += 1
+                try:
+                    rec = json.loads(line)
+                except (json.JSONDecodeError, UnicodeDecodeError):
+                    return f"unparseable line {n}"
+                if not isinstance(rec, dict):
+                    return f"line {n} is not an object"
+                if tuple(rec) != OUTPUT_KEYS:
+                    return f"line {n} has columns {list(rec)}"
+                audio = rec["audio_filepath"]
+                if not isinstance(audio, str):
+                    return f"line {n} has non-string audio_filepath"
+                if audio in seen:
+                    return f"audio written twice: {audio}"
+                seen.add(audio)
+    except OSError as exc:
+        return f"cannot read part file: {exc}"
+    if n != written:
+        return f"{n} records on disk, progress counted {written}"
+    return ""
+
+
+def verify(run_root: str, reset: bool = False, *, jobs: int | None = None,
+           progress: bool = False) -> dict:
     """Check every chunk's committed output; with ``reset``, return bad chunks to the pool.
 
     A chunk is bad when its part file is shorter than the committed size,
@@ -835,46 +888,55 @@ def verify(run_root: str, reset: bool = False) -> dict:
     last two. Reset deletes the chunk's progress, part, rejects, review and
     claim, so a worker redoes it from scratch. Only reset while no worker is
     running on those chunks.
+
+    Independent chunks are scanned in separate processes (all available CPU
+    cores by default, capped at the number of committed chunks). ``jobs=1``
+    runs in this process. Progress goes to stderr when requested. All scans
+    finish before the parent resets any bad chunks.
     """
+    if jobs is None:
+        jobs = len(os.sched_getaffinity(0)) if hasattr(os, "sched_getaffinity") else os.cpu_count() or 1
+    if jobs < 1:
+        raise ValueError("jobs must be at least 1")
     plan = load_plan(run_root)
     paths = RunPaths(run_root)
-    bad: dict[str, str] = {}
-    checked = 0
+    started = time.monotonic()
+    if progress:
+        print(f"verify: reading progress for {len(plan['chunks']):,} planned chunks", file=sys.stderr, flush=True)
+    tasks = []
     for c in plan["chunks"]:
         p = paths.progress_of(c)
-        if not p:
-            continue
+        if p:
+            tasks.append((c["id"], str(paths.part(c)), p.get("out_bytes", 0), p.get("counts", {}).get("written", 0)))
+    jobs = min(jobs, len(tasks))
+    if progress:
+        print(f"verify: checking {len(tasks):,} committed chunks with {jobs} processes", file=sys.stderr, flush=True)
+    bad: dict[str, str] = {}
+    checked = 0
+    last_report = started
+
+    def record(cid: str, why: str) -> None:
+        nonlocal checked, last_report
         checked += 1
-        part = paths.part(c)
-        try:
-            size = part.stat().st_size
-        except OSError:
-            size = -1
-        if size < p.get("out_bytes", 0):
-            bad[c["id"]] = f"part file {size} bytes < committed {p.get('out_bytes', 0)}"
-            continue
-        seen: set[str] = set()
-        n = 0
-        why = ""
-        with open(part, "rb") as fh:
-            for line in fh.read(p.get("out_bytes", 0)).splitlines():
-                n += 1
-                try:
-                    rec = json.loads(line)
-                except json.JSONDecodeError:
-                    why = f"unparseable line {n}"
-                    break
-                if tuple(rec) != OUTPUT_KEYS:
-                    why = f"line {n} has columns {list(rec)}"
-                    break
-                if rec["audio_filepath"] in seen:
-                    why = f"audio written twice: {rec['audio_filepath']}"
-                    break
-                seen.add(rec["audio_filepath"])
-        if not why and n != p.get("counts", {}).get("written", 0):
-            why = f"{n} records on disk, progress counted {p.get('counts', {}).get('written', 0)}"
         if why:
-            bad[c["id"]] = why
+            bad[cid] = why
+        now = time.monotonic()
+        if progress and (checked == len(tasks) or now - last_report >= 5):
+            print(f"verify: {checked:,}/{len(tasks):,} chunks checked ({100 * checked / len(tasks):.1f}%), "
+                  f"{len(bad):,} bad; elapsed {now - started:.1f}s", file=sys.stderr, flush=True)
+            last_report = now
+
+    if jobs == 1:
+        for cid, part, out_bytes, written in tasks:
+            record(cid, _verify_part(part, out_bytes, written))
+    elif jobs > 1:
+        with ProcessPoolExecutor(max_workers=jobs) as pool:
+            pending = {pool.submit(_verify_part, part, out_bytes, written): cid
+                       for cid, part, out_bytes, written in tasks}
+            for future in as_completed(pending):
+                record(pending[future], future.result())
+    # Stable reports regardless of the order in which child processes finish.
+    bad = dict(sorted(bad.items()))
     if reset:
         by_id = {c["id"]: c for c in plan["chunks"]}
         for cid in bad:

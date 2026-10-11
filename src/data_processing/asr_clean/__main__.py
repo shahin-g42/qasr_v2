@@ -73,6 +73,7 @@ def main(argv: list[str] | None = None) -> int:
 
     v = sub.add_parser("verify", help="check committed output of every chunk; --reset returns bad ones")
     v.add_argument("--run-root", required=True)
+    v.add_argument("--jobs", type=int, help="verification processes (default: all available CPU cores; 1 for serial)")
     v.add_argument("--reset", action="store_true",
                    help="delete bad chunks' outputs and progress so they are redone (stop their workers first)")
 
@@ -200,7 +201,9 @@ def main(argv: list[str] | None = None) -> int:
         return 0
 
     if args.cmd == "verify":
-        res = verify(args.run_root, reset=args.reset)
+        if args.jobs is not None and args.jobs < 1:
+            ap.error("--jobs must be at least 1")
+        res = verify(args.run_root, reset=args.reset, jobs=args.jobs, progress=True)
         print(f"checked {res['checked']} chunks: {len(res['bad'])} bad")
         for cid, why in sorted(res["bad"].items()):
             print(f"  {cid}: {why}")

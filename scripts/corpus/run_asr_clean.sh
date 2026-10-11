@@ -4,7 +4,9 @@
 #   RUN_ID=asrc1 bash scripts/corpus/run_asr_clean.sh plan      # once, any node
 #   RUN_ID=asrc1 bash scripts/corpus/run_asr_clean.sh run       # on EACH of the 8 LLM nodes
 #   RUN_ID=asrc1 bash scripts/corpus/run_asr_clean.sh status    # anywhere, any time
-#   RUN_ID=asrc1 bash scripts/corpus/run_asr_clean.sh verify [--reset]  # check committed output
+#   RUN_ID=asrc1 bash scripts/corpus/run_asr_clean.sh verify [--jobs 32] [--reset]
+#     Checks chunks in parallel (all available CPU cores by default), with progress.
+#     JOBS=32 also limits verification processes. Stop affected workers before --reset.
 #   RUN_ID=asrc1 bash scripts/corpus/run_asr_clean.sh peek -n 5 [--rejects] [--only-changed]
 #   RUN_ID=asrc1 bash scripts/corpus/run_asr_clean.sh assemble  # when sources finish
 #   RUN_ID=asrc1 bash scripts/corpus/run_asr_clean.sh stop      # on a node: stop its workers
@@ -87,7 +89,10 @@ case "${1:-}" in
     exec "$PY" -m data_processing.asr_clean status --run-root "$ROOT" ${EXTRA[@]+"${EXTRA[@]}"}
     ;;
   verify)
-    exec "$PY" -m data_processing.asr_clean verify --run-root "$ROOT" ${EXTRA[@]+"${EXTRA[@]}"}
+    VERIFY_ARGS=()
+    if [ -n "${JOBS:-}" ]; then VERIFY_ARGS+=(--jobs "$JOBS"); fi
+    exec "$PY" -m data_processing.asr_clean verify --run-root "$ROOT" \
+      ${VERIFY_ARGS[@]+"${VERIFY_ARGS[@]}"} ${EXTRA[@]+"${EXTRA[@]}"}
     ;;
   peek)
     exec "$PY" -m data_processing.asr_clean peek --run-root "$ROOT" ${EXTRA[@]+"${EXTRA[@]}"}

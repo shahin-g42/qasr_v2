@@ -94,15 +94,15 @@ Startup logging begins before conda activation and is saved under
 preflight stages, and entry into torchrun. GPU visibility is checked before the
 expensive automatic preflight. Explicit `--preflight` remains usable without GPUs.
 
-If a full eight-GPU machine has an inherited `CUDA_VISIBLE_DEVICES=0`, start each
-rank with an explicit selection, for example on master:
+Both v8.1 full-node launchers default to GPUs `0,1,2,3,4,5,6,7` after conda
+activation, so an inherited `CUDA_VISIBLE_DEVICES=0` does not restrict the run.
+No extra prefix is required:
 
 ```bash
-GPU_IDS=0,1,2,3,4,5,6,7 bash scripts/run_v81_phase2_12node.sh 0
+bash scripts/run_v81_phase2_12node.sh 0
 ```
 
-Use the same prefix with ranks 1–11 on their corresponding full eight-GPU nodes.
-`GPU_IDS` is applied after conda activation; without it, the launcher preserves
-the resulting environment selection. Do not use this override to exceed a
-scheduler-assigned allocation. All twelve launchers must pass the visibility
-check before the distributed run can begin.
+Use ranks 1–11 on their corresponding full eight-GPU nodes. Set `GPU_IDS` only
+when intentionally selecting a different GPU list; an unset or empty value uses
+all eight GPUs. The visible count must still match `NPROC_PER_NODE`. These are
+full-node launchers: use them within an allocation providing all requested GPUs.

@@ -62,7 +62,7 @@ def test_launcher_limits_and_smoke(args, env, ok):
 
 
 @pytest.mark.parametrize('launcher,nodes', [('run_v81_phase2_node.sh', '10'), ('run_v81_phase2_12node.sh', '12')])
-@pytest.mark.parametrize('gpu_ids,expected', [('', '0'), ('0,1,2,3,4,5,6,7', '0,1,2,3,4,5,6,7')])
+@pytest.mark.parametrize('gpu_ids,expected', [(None, '0,1,2,3,4,5,6,7'), ('', '0,1,2,3,4,5,6,7'), ('2,3', '2,3')])
 def test_gpu_override_after_conda_and_early_logs(tmp_path, launcher, nodes, gpu_ids, expected):
     """Exercise actual shell ordering with mocked external programs, without GPUs."""
     bins = tmp_path / 'bin'
@@ -89,10 +89,12 @@ printf 'torchrun|%s\\n' "$CUDA_VISIBLE_DEVICES" >> "$TEST_TRACE"
     config = tmp_path / 'config.yaml'
     config.write_text('{}')
     command = ['bash', str(Path('scripts', launcher).resolve()), '0', 'master']
+    base_env = {key: value for key, value in os.environ.items() if key != 'GPU_IDS'}
     result = subprocess.run(command, text=True, capture_output=True, env={
-        **os.environ, 'PATH': str(bins) + os.pathsep + os.environ['PATH'], 'DRY_RUN': '0',
+        **base_env, 'PATH': str(bins) + os.pathsep + os.environ['PATH'], 'DRY_RUN': '0',
         'PROJECT_DIR': str(tmp_path), 'CONFIG': str(config), 'NNODES': nodes,
-        'NPROC_PER_NODE': '8', 'CUDA_VISIBLE_DEVICES': '7', 'GPU_IDS': gpu_ids,
+        'NPROC_PER_NODE': '8', 'CUDA_VISIBLE_DEVICES': '7',
+        **({'GPU_IDS': gpu_ids} if gpu_ids is not None else {}),
         'TEST_TRACE': str(trace), 'USER': 'qasr_launcher_test',
     })
     assert result.returncode == 0, result.stdout + result.stderr

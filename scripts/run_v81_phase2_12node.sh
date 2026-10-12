@@ -78,10 +78,8 @@ echo "Startup: activating conda environment $CONDA_ENV"
 eval "$(conda shell.bash hook)"
 conda deactivate 2>/dev/null || true
 conda activate "$CONDA_ENV"
-# Explicit override is applied AFTER activation, which may set environment variables.
-if [[ -n "${GPU_IDS:-}" ]]; then
-  export CUDA_VISIBLE_DEVICES="$GPU_IDS"
-fi
+# Full-node launchers default to all eight GPUs, applied AFTER conda activation.
+export CUDA_VISIBLE_DEVICES="${GPU_IDS:-0,1,2,3,4,5,6,7}"
 echo "Startup: CUDA_VISIBLE_DEVICES=${CUDA_VISIBLE_DEVICES-<unset>}; NVIDIA_VISIBLE_DEVICES=${NVIDIA_VISIBLE_DEVICES-<unset>}"
 export PYTHONPATH="$PROJECT_DIR/src${PYTHONPATH:+:$PYTHONPATH}"
 echo "Startup: checking Python/Transformers ($(command -v python))"
@@ -100,8 +98,7 @@ if actual != expected:
         f"Expected {expected} visible GPUs, got {actual}; "
         f"CUDA_VISIBLE_DEVICES={os.environ.get('CUDA_VISIBLE_DEVICES', '<unset>')}, "
         f"NVIDIA_VISIBLE_DEVICES={os.environ.get('NVIDIA_VISIBLE_DEVICES', '<unset>')}. "
-        "Check the GPU allocation and environment. On a full eight-GPU node, "
-        "set GPU_IDS=0,1,2,3,4,5,6,7 when invoking this launcher. "
+        "Check the GPU allocation, driver and GPU_IDS selection. "
         "The override is applied after conda activation."
     )
 for i in range(expected):

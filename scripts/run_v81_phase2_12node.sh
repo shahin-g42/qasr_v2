@@ -55,6 +55,13 @@ if [[ "${DRY_RUN:-0}" == 1 ]]; then
   printf '%q ' "${CMD[@]}"; printf '\n'
   exit 0
 fi
+echo "Startup: node rank $NODE_RANK/$NNODES; initializing logs"
+mkdir -p "$PROJECT_DIR/output/v81/logs_12node"
+LOG_FILE="$PROJECT_DIR/output/v81/logs_12node/$(date +%Y%m%d-%H%M%S)-rank${NODE_RANK}-$$.log"
+exec > >(tee -a "$LOG_FILE") 2>&1
+echo "QASR v8.1 Stage 2: rank $NODE_RANK/$NNODES, master $MASTER_ADDR:$MASTER_PORT, config $CONFIG"
+echo "Startup log: $LOG_FILE"
+export PYTHONUNBUFFERED=1
 export HF_HOME="${HF_CACHE:-${HF_HOME:-$PROJECT_DIR/.cache}}"
 export TOKENIZERS_PARALLELISM=false
 export OMP_NUM_THREADS=1
@@ -66,32 +73,54 @@ export CUDA_DEVICE_MAX_CONNECTIONS=1
 export TORCH_EXTENSIONS_DIR="/tmp/${USER}_qasr_v81_torch_ext"
 export TRITON_CACHE_DIR="/tmp/${USER}_qasr_v81_triton"
 mkdir -p "$TORCH_EXTENSIONS_DIR" "$TRITON_CACHE_DIR"
+echo "Startup: before conda, CUDA_VISIBLE_DEVICES=${CUDA_VISIBLE_DEVICES-<unset>}"
+echo "Startup: activating conda environment $CONDA_ENV"
 eval "$(conda shell.bash hook)"
 conda deactivate 2>/dev/null || true
 conda activate "$CONDA_ENV"
-export PYTHONPATH="$PROJECT_DIR/src${PYTHONPATH:+:$PYTHONPATH}"
-python -c 'import transformers; assert transformers.__version__.startswith("5.14."), transformers.__version__'
-if (( PREFLIGHT )); then
-  CHECK_ARGS=()
-  for arg in "$@"; do [[ "$arg" == --preflight ]] || CHECK_ARGS+=("$arg"); done
-  exec python scripts/preflight_v81.py --config "$CONFIG" "${CHECK_ARGS[@]}"
+# Explicit override is applied AFTER activation, which may set environment variables.
+if [[ -n "${GPU_IDS:-}" ]]; then
+  export CUDA_VISIBLE_DEVICES="$GPU_IDS"
 fi
-CHECK_ARGS=(--config "$CONFIG")
-if (( SMOKE )); then CHECK_ARGS+=(--smoke-test); fi
-if [[ -n "$RESUME" ]]; then CHECK_ARGS+=(--resume-from-checkpoint "$RESUME"); fi
-python scripts/preflight_v81.py "${CHECK_ARGS[@]}"
+echo "Startup: CUDA_VISIBLE_DEVICES=${CUDA_VISIBLE_DEVICES-<unset>}; NVIDIA_VISIBLE_DEVICES=${NVIDIA_VISIBLE_DEVICES-<unset>}"
+export PYTHONPATH="$PROJECT_DIR/src${PYTHONPATH:+:$PYTHONPATH}"
+echo "Startup: checking Python/Transformers ($(command -v python))"
+python -c 'import transformers; assert transformers.__version__.startswith("5.14."), transformers.__version__'
+if (( ! PREFLIGHT )); then
+echo "Startup: checking visible GPUs"
 python - "$NPROC_PER_NODE" <<'PY'
+import os
 import sys
 import torch
 expected = int(sys.argv[1])
-assert torch.cuda.device_count() == expected, f"Expected {expected} visible GPUs, got {torch.cuda.device_count()}"
+actual = torch.cuda.device_count()
+print(f"PyTorch {torch.__version__}, CUDA {torch.version.cuda}, visible GPUs: {actual}/{expected}", flush=True)
+if actual != expected:
+    raise RuntimeError(
+        f"Expected {expected} visible GPUs, got {actual}; "
+        f"CUDA_VISIBLE_DEVICES={os.environ.get('CUDA_VISIBLE_DEVICES', '<unset>')}, "
+        f"NVIDIA_VISIBLE_DEVICES={os.environ.get('NVIDIA_VISIBLE_DEVICES', '<unset>')}. "
+        "Check the GPU allocation and environment. On a full eight-GPU node, "
+        "set GPU_IDS=0,1,2,3,4,5,6,7 when invoking this launcher. "
+        "The override is applied after conda activation."
+    )
 for i in range(expected):
     p = torch.cuda.get_device_properties(i)
     print(f"GPU {i}: {p.name}, {p.total_memory / 2**30:.1f} GiB")
     assert torch.cuda.is_bf16_supported(), "BF16 support is required"
 PY
-mkdir -p "$PROJECT_DIR/output/v81/logs_12node"
-LOG_FILE="$PROJECT_DIR/output/v81/logs_12node/$(date +%Y%m%d-%H%M%S)-rank${NODE_RANK}.log"
-exec > >(tee -a "$LOG_FILE") 2>&1
-echo "QASR v8.1 Stage 2: rank $NODE_RANK/$NNODES, master $MASTER_ADDR:$MASTER_PORT, config $CONFIG"
+fi
+if (( PREFLIGHT )); then
+  CHECK_ARGS=()
+  for arg in "$@"; do [[ "$arg" == --preflight ]] || CHECK_ARGS+=("$arg"); done
+  echo "Startup: running requested preflight"
+  exec python -u scripts/preflight_v81.py --config "$CONFIG" "${CHECK_ARGS[@]}"
+fi
+CHECK_ARGS=(--config "$CONFIG")
+if (( SMOKE )); then CHECK_ARGS+=(--smoke-test); fi
+if [[ -n "$RESUME" ]]; then CHECK_ARGS+=(--resume-from-checkpoint "$RESUME"); fi
+echo "Startup: running preflight (checkpoint, manifests, processor and index)"
+python -u scripts/preflight_v81.py "${CHECK_ARGS[@]}"
+
+echo "Startup: launching torchrun; waiting for all $NNODES nodes at $MASTER_ADDR:$MASTER_PORT"
 exec "${CMD[@]}"

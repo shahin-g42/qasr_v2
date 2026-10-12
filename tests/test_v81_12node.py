@@ -59,3 +59,46 @@ def test_launcher_limits_and_smoke(args, env, ok):
     if ok:
         assert '--master_addr=localhost' in result.stdout
         assert '--smoke-test' in result.stdout
+
+
+@pytest.mark.parametrize('launcher,nodes', [('run_v81_phase2_node.sh', '10'), ('run_v81_phase2_12node.sh', '12')])
+@pytest.mark.parametrize('gpu_ids,expected', [('', '0'), ('0,1,2,3,4,5,6,7', '0,1,2,3,4,5,6,7')])
+def test_gpu_override_after_conda_and_early_logs(tmp_path, launcher, nodes, gpu_ids, expected):
+    """Exercise actual shell ordering with mocked external programs, without GPUs."""
+    bins = tmp_path / 'bin'
+    bins.mkdir()
+    trace = tmp_path / 'trace'
+    programs = {
+        'conda': '''#!/bin/bash
+if [[ "$1" == shell.bash ]]; then
+  echo 'conda() { if [[ "$1" == activate ]]; then export CUDA_VISIBLE_DEVICES=0; fi; }'
+fi
+''',
+        'python': '''#!/bin/bash
+printf 'python|%s|%s\\n' "$CUDA_VISIBLE_DEVICES" "$*" >> "$TEST_TRACE"
+if [[ "$1" == - ]]; then cat >/dev/null; fi
+''',
+        'torchrun': '''#!/bin/bash
+printf 'torchrun|%s\\n' "$CUDA_VISIBLE_DEVICES" >> "$TEST_TRACE"
+''',
+    }
+    for name, body in programs.items():
+        path = bins / name
+        path.write_text(body)
+        path.chmod(0o755)
+    config = tmp_path / 'config.yaml'
+    config.write_text('{}')
+    command = ['bash', str(Path('scripts', launcher).resolve()), '0', 'master']
+    result = subprocess.run(command, text=True, capture_output=True, env={
+        **os.environ, 'PATH': str(bins) + os.pathsep + os.environ['PATH'], 'DRY_RUN': '0',
+        'PROJECT_DIR': str(tmp_path), 'CONFIG': str(config), 'NNODES': nodes,
+        'NPROC_PER_NODE': '8', 'CUDA_VISIBLE_DEVICES': '7', 'GPU_IDS': gpu_ids,
+        'TEST_TRACE': str(trace), 'USER': 'qasr_launcher_test',
+    })
+    assert result.returncode == 0, result.stdout + result.stderr
+    assert all(line.split('|')[1] == expected for line in trace.read_text().splitlines())
+    assert result.stdout.index('initializing logs') < result.stdout.index('activating conda')
+    assert result.stdout.index('checking visible GPUs') < result.stdout.index('running preflight')
+    logs = list((tmp_path / 'output/v81').glob('logs*/*.log'))
+    assert len(logs) == 1
+    assert 'activating conda' in logs[0].read_text()

@@ -87,3 +87,22 @@ pass `--resume-from-checkpoint` with the same complete checkpoint under
 `output/v81/full_12node` on all twelve machines. No indexing/assembly rerun is
 needed for changing the training machine count. Longer mixed samples still need
 cluster GPU-memory validation at batch size 20; local tests cannot establish it.
+
+
+Startup logging begins before conda activation and is saved under
+`output/v81/logs_12node`. It reports activation, Python imports, GPU visibility,
+preflight stages, and entry into torchrun. GPU visibility is checked before the
+expensive automatic preflight. Explicit `--preflight` remains usable without GPUs.
+
+If a full eight-GPU machine has an inherited `CUDA_VISIBLE_DEVICES=0`, start each
+rank with an explicit selection, for example on master:
+
+```bash
+GPU_IDS=0,1,2,3,4,5,6,7 bash scripts/run_v81_phase2_12node.sh 0
+```
+
+Use the same prefix with ranks 1–11 on their corresponding full eight-GPU nodes.
+`GPU_IDS` is applied after conda activation; without it, the launcher preserves
+the resulting environment selection. Do not use this override to exceed a
+scheduler-assigned allocation. All twelve launchers must pass the visibility
+check before the distributed run can begin.

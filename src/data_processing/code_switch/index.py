@@ -12,8 +12,13 @@ import sqlite3
 import time
 import uuid
 from collections import Counter
-from concurrent.futures import ProcessPoolExecutor, as_completed
+from concurrent.futures import (
+    ProcessPoolExecutor,
+    ThreadPoolExecutor,
+    as_completed,
+)
 from pathlib import Path
+from queue import Empty, SimpleQueue
 
 import yaml
 
@@ -428,7 +433,7 @@ def _verify_source_hash(source):
     return Path(source['path']).name, time.monotonic() - started
 
 
-def _verification_snapshot(root, p):
+def _verification_snapshot(root, p, jobs=1):
     """Metadata change detector for reusing a completed verification under the lock.
 
     This covers index artifacts, not the millions of source audio files. Audio
@@ -440,18 +445,41 @@ def _verification_snapshot(root, p):
     paths.extend(Path(source['path']) for source in p['sources'])
     for chunk in p['chunks']:
         paths.extend(chunk_paths(root, chunk)[:3])
-    snapshot = {}
-    for path in paths:
+    workers = min(max(1, jobs), 32, len(paths))
+    print(f'verify: snapshotting {len(paths):,} file signatures with {workers} threads', flush=True)
+    started = last_report = time.monotonic()
+
+    def signature(path):
         try:
             st = path.stat()
-            snapshot[str(path)] = [st.st_size, st.st_mtime_ns, st.st_ctime_ns, st.st_ino]
+            return [st.st_size, st.st_mtime_ns, st.st_ctime_ns, st.st_ino]
         except FileNotFoundError:
-            snapshot[str(path)] = None
+            return None
+
+    snapshot = {}
+    completed = SimpleQueue()
+    with ThreadPoolExecutor(max_workers=workers) as pool:
+        futures = {}
+        for path in paths:
+            future = pool.submit(signature, path)
+            futures[future] = str(path)
+            future.add_done_callback(completed.put)
+        while futures:
+            try:
+                future = completed.get(timeout=5)
+                snapshot[futures.pop(future)] = future.result()
+            except Empty:
+                pass
+            now = time.monotonic()
+            if now - last_report >= 5 or not futures:
+                print(f'verify: signatures {len(snapshot):,}/{len(paths):,} '
+                      f'({now - started:.1f}s elapsed)', flush=True)
+                last_report = now
     return snapshot
 
 
-def _save_verification(root, before, p, audio=False, metadata_only=False):
-    after = _verification_snapshot(root, p)
+def _save_verification(root, before, p, audio=False, metadata_only=False, jobs=1):
+    after = _verification_snapshot(root, p, jobs)
     if after != before:
         raise ValueError('Index inputs changed during verification; verify again')
     atomic_json(Path(root) / '_state/verified.json', {
@@ -463,6 +491,7 @@ def _save_verification(root, before, p, audio=False, metadata_only=False):
 def verify_unlocked(root, p, jobs, audio=False, metadata_only=False):
     if audio and metadata_only:
         raise ValueError('--audio and --metadata-only are mutually exclusive')
+    print('verify: checking frozen manifest metadata, exclusions and tokenizer', flush=True)
     check_frozen(root, p)
     bad = {}
     with ProcessPoolExecutor(max_workers=jobs) as pool:
@@ -485,6 +514,7 @@ def verify_unlocked(root, p, jobs, audio=False, metadata_only=False):
 
 
 def verify(root, jobs, reset=False, audio=False, metadata_only=False):
+    print(f'verify: starting; jobs={jobs}; loading plan from {root}', flush=True)
     root = Path(root).resolve()
     with lock(root / '_state/lifecycle.lock'):
         p = load_plan(root)
@@ -492,7 +522,7 @@ def verify(root, jobs, reset=False, audio=False, metadata_only=False):
             raise ValueError('Published indexes are immutable; use a new RUN_ID to replace them')
         # A failed explicit audit must invalidate any previous success receipt.
         (root / '_state/verified.json').unlink(missing_ok=True)
-        before = _verification_snapshot(root, p)
+        before = _verification_snapshot(root, p, jobs)
         bad = verify_unlocked(root, p, jobs, audio, metadata_only)
         published = read_json(root / 'assembled/index.json')
         if published:
@@ -508,7 +538,7 @@ def verify(root, jobs, reset=False, audio=False, metadata_only=False):
                     for path in chunk_paths(root, c)[:3]:
                         path.unlink(missing_ok=True)
         if not bad:
-            _save_verification(root, before, p, audio, metadata_only)
+            _save_verification(root, before, p, audio, metadata_only, jobs)
         return bad
 
 
@@ -558,6 +588,7 @@ def _assemble_language(task):
 
 
 def assemble(root, jobs):
+    print(f'assemble: starting; jobs={jobs}; loading plan from {root}', flush=True)
     root = Path(root).resolve()
     with lock(root / '_state/lifecycle.lock'):
         p = load_plan(root)
@@ -565,7 +596,7 @@ def assemble(root, jobs):
         if output.exists():
             raise ValueError('assembled/ is already published; do not mutate an index used by training')
         check_frozen(root, p)
-        before = _verification_snapshot(root, p)
+        before = _verification_snapshot(root, p, jobs)
         receipt = read_json(root / '_state/verified.json', {})
         if (receipt.get('snapshot') == before
                 and receipt.get('plan_sha256') == digest(root / '_state/plan.json')):
@@ -576,7 +607,7 @@ def assemble(root, jobs):
             bad = verify_unlocked(root, p, jobs)
             if bad:
                 raise ValueError(f'{len(bad)} chunks incomplete/bad; run verify for details')
-            _save_verification(root, before, p)
+            _save_verification(root, before, p, jobs=jobs)
         temporary = root / '_assembling'
         temporary.mkdir(exist_ok=True)
         tasks = [(str(root), str(temporary), lang, [c for c in p['chunks'] if c['lang'] == lang]) for lang in LANGS]
@@ -619,7 +650,7 @@ def assemble(root, jobs):
                   'root': str(root), 'plan_sha256': digest(root / '_state/plan.json'),
                   'sources': p['sources'], 'tokenizer_hashes': p['tokenizer_hashes'],
                   'tokenizer_fingerprint': p['tokenizer_fingerprint']}
-        if _verification_snapshot(root, p) != before:
+        if _verification_snapshot(root, p, jobs) != before:
             raise ValueError('Index inputs changed during assembly; verify again')
         atomic_json(temporary / 'index.json', result)
         sync_dir(temporary)

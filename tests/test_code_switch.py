@@ -481,3 +481,23 @@ def test_cross_language_conflict_still_rejected_after_cached_verify(corpus):
     with pytest.raises(ValueError, match='Conflicting language pools'):
         assemble(root, jobs=2)
     assert not (root / 'assembled').exists()
+
+
+def test_signature_snapshot_parallel_equivalence_and_progress(tmp_path, capsys):
+    from data_processing.code_switch.index import _verification_snapshot
+    root = tmp_path / 'run'
+    (root / '_state').mkdir(parents=True)
+    (root / '_state/plan.json').write_text('{}')
+    p = {'tokenizer_hashes': {}, 'sources': [], 'chunks': [{'id': str(i)} for i in range(20)]}
+    # Missing files must retain the same sentinel; populated paths retain exact signatures.
+    part = chunk_paths(root, p['chunks'][0])[0]
+    part.parent.mkdir()
+    part.write_text('data')
+    serial = _verification_snapshot(root, p, jobs=1)
+    parallel = _verification_snapshot(root, p, jobs=88)
+    assert parallel == serial
+    assert parallel[str(part)] is not None
+    assert sum(value is None for value in parallel.values()) == 60
+    output = capsys.readouterr().out
+    assert '32 threads' in output
+    assert 'signatures 62/62' in output

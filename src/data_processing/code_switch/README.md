@@ -264,3 +264,12 @@ roughly 30 seconds at chunk boundaries, followed by database hashing and
 cross-language checks. Duplicate checks scan the smaller pool and probe the
 larger pool's unique index. The published schema and training reader are unchanged.
 Do not restart indexing or delete completed chunks to apply these improvements.
+
+
+Startup logging includes the initial file-signature scan before manifest hashing.
+That scan covers roughly three files per indexing chunk plus frozen inputs, uses
+`min(JOBS, 32)` metadata threads, and reports completed signatures/elapsed time
+every five seconds while waiting. The final signature recheck uses the same path.
+The thread cap limits metadata pressure on Lustre; JOBS still controls the later
+verification process pool. The shell wrapper prints before Python starts, helping
+distinguish Python startup from plan loading and filesystem work.

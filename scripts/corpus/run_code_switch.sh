@@ -25,5 +25,6 @@ if [[ "$COMMAND" == run && "${FOREGROUND:-0}" != 1 ]]; then
   nohup "$PY" -m data_processing.code_switch "${ARGS[@]}" "$@" > "$LOG" 2>&1 &
   echo "Supervisor started (pid $!); check $LOG for startup/lock errors."
 else
+  echo "code-switch $COMMAND: starting Python ($PY), run root: $ROOT"
   exec "$PY" -m data_processing.code_switch "${ARGS[@]}" "$@"
 fi

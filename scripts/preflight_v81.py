@@ -1,4 +1,4 @@
-"""Validate the online code-switch index and compute the 80-GPU coverage budget."""
+"""Validate the online code-switch index and compute the configured world-size coverage budget."""
 import argparse
 import json
 import math
@@ -45,6 +45,8 @@ def main():
                     seed=cfg.seed, language_batch_counts=cfg.language_batch_counts, num_replicas=cfg.expected_world_size)
         steps = math.ceil(sampler.num_batches / cfg.gradient_accumulation_steps)
         print(f'Original eligible counts: {dict(originals)}; full coverage: {steps:,} updates')
+        if not args.smoke_test and steps != cfg.max_steps:
+            raise ValueError(f'Coverage budget differs: configured max_steps={cfg.max_steps}, computed={steps}')
         print('Run code-switch verify --audio separately for a full source/index integrity check.')
     print('v8.1 preflight passed; GPU memory/throughput still require a cluster rehearsal.')
 

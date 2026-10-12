@@ -161,7 +161,8 @@ bash scripts/run_v81_phase2_node.sh "$RANK" "$MASTER" --smoke-test
 bash scripts/run_v81_phase2_node.sh "$RANK" "$MASTER"
 ```
 
-Use 051 only if it is actually your rank-0 machine. The launcher activates qasr3.
+Use 051 only if it is actually your rank-0 machine. The launcher uses your active shell environment. Set `ACTIVATE_CONDA=1` to
+activate qasr3 automatically instead.
 Output goes to `output/v81/full`; logs go to `output/v81/logs`. The config has
 `max_steps: 75469`, retaining the original v8.0 weighted epoch budget because
 code switching is now an augmentation of existing entries.

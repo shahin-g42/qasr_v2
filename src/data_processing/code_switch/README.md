@@ -98,8 +98,9 @@ RUN_ID=cs_v1 bash scripts/corpus/run_code_switch.sh stop
 # Resume: run the same run command. Completed chunks are retained.
 RUN_ID=cs_v1 PROCS=8 bash scripts/corpus/run_code_switch.sh run
 
-# After workers exit. Headers by default; --audio re-decodes and hashes sources.
-RUN_ID=cs_v1 JOBS=16 bash scripts/corpus/run_code_switch.sh verify --audio
+# After workers exit. Validate frozen manifests, committed hashes and counters.
+# No source-audio opens: indexing already decoded/hashes each eligible clip.
+RUN_ID=cs_v1 JOBS=16 bash scripts/corpus/run_code_switch.sh verify --metadata-only
 RUN_ID=cs_v1 JOBS=5 bash scripts/corpus/run_code_switch.sh assemble
 RUN_ID=cs_v1 bash scripts/corpus/run_code_switch.sh peek -n 2 --export-audio
 ```
@@ -126,7 +127,8 @@ waveform hashes, and checks individual token budgets. Eval UUID basenames are
 excluded conservatively across path aliases. Assembly deduplicates basenames
 within each language and refuses conflicting identities across languages.
 
-`assemble` verifies all chunks and builds five read-only SQLite pools in parallel,
+`assemble` reuses a current successful verification receipt, or verifies first if
+no matching receipt exists, then builds five read-only SQLite pools in parallel,
 with exactly one writer per temporary database. Training workers use immutable,
 read-only connections. There is no multi-node SQLite writer or shared write ledger.
 Assembly checks unique-combination capacity and writes `_reports/inventory.json`.
@@ -229,3 +231,36 @@ separate candidate if deployment includes telephony. No new acoustic transforms
 are enabled by this change. Existing time/frequency masking already covers the
 main SpecAugment operations; [Park et al.](https://arxiv.org/abs/1904.08779) supports
 this baseline, not a universal guarantee for this model or these languages.
+
+
+## Verification and assembly cost
+
+Default `verify` checks every eligible source audio header. `verify --audio`
+fully decodes and hashes every eligible source again. Either may take hours on
+Lustre: more workers can increase metadata-server contention rather than throughput.
+`verify --metadata-only` still hashes every frozen source manifest and every
+committed part/reject file, validates records/counters, and checks the frozen
+tokenizer and eval exclusions. It does not check current audio availability or
+contents. Use this mode after indexing when audio is unchanged; use the stronger
+modes for an explicit audio audit. Training checks hashes of partners it decodes.
+
+Verification hashes/parses each chunk file in one pass. Manifest hashes retain
+the original whole-file SHA256 format, so one huge manifest is still handled by
+one worker. Progress now reports files/chunks in completion order, with periodic
+byte counts for large manifests; it no longer waits for the first submitted task
+before showing other completions.
+
+The success receipt captures size, mtime, ctime and inode for frozen manifests,
+plan/tokenizer/exclusions and all part/reject/progress files. Assembly reuses it
+only when those signatures still match under the lifecycle lock; changes force
+reverification. A failed explicit verification invalidates the old receipt.
+Audio auditing is point-in-time: the receipt does not track every source audio
+file. Old receipts without signatures need one verification with the updated
+code; the existing plan and completed indexing chunks remain compatible.
+
+Assembly has at most five SQLite writers, one per language, regardless of JOBS.
+Arabic/English can dominate elapsed time. Each writer reports progress every
+roughly 30 seconds at chunk boundaries, followed by database hashing and
+cross-language checks. Duplicate checks scan the smaller pool and probe the
+larger pool's unique index. The published schema and training reader are unchanged.
+Do not restart indexing or delete completed chunks to apply these improvements.

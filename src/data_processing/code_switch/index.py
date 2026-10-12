@@ -12,7 +12,7 @@ import sqlite3
 import time
 import uuid
 from collections import Counter
-from concurrent.futures import ProcessPoolExecutor
+from concurrent.futures import ProcessPoolExecutor, as_completed
 from pathlib import Path
 
 import yaml
@@ -367,20 +367,20 @@ def status(root):
 
 
 def _verify_one(task):
-    root, chunk, cfg, audio = task
+    root, chunk, cfg, audio, metadata_only = task
     import soundfile as sf
     part, rejects, progress, _ = chunk_paths(root, chunk)
     try:
         st = read_json(progress, {})
         if not st.get('done') or st['offset'] != chunk['end']:
             raise ValueError('incomplete chunk')
-        for path, size, expected in ((part, st['bytes'], st['sha256']),
-                                     (rejects, st['reject_bytes'], st['reject_sha256'])):
-            if path.stat().st_size != size or digest(path) != expected:
-                raise ValueError(f'committed size/hash mismatch: {path.name}')
+        if part.stat().st_size != st['bytes'] or rejects.stat().st_size != st['reject_bytes']:
+            raise ValueError('committed size mismatch')
+        part_hash, reject_hash = hashlib.sha256(), hashlib.sha256()
         n = 0
-        with part.open() as f:
+        with part.open('rb') as f:
             for raw in f:
+                part_hash.update(raw)
                 row = json.loads(raw)
                 if row['language'] != chunk['lang'] or not row['text'].strip():
                     raise ValueError('language/text mismatch')
@@ -391,13 +391,18 @@ def _verify_one(task):
                     waveform = load_mono_audio(row['audio_filepath'], cfg['sample_rate'])
                     if len(waveform) != row['frames'] or hashlib.sha256(waveform.tobytes()).hexdigest() != row['waveform_sha256']:
                         raise ValueError('source audio content or duration changed')
-                else:
+                elif not metadata_only:
                     info = sf.info(row['audio_filepath'])
                     if abs(info.duration - row['duration']) > 2 / cfg['sample_rate']:
                         raise ValueError('source header duration changed')
                 n += 1
-        with rejects.open() as f:
-            reject_counts = Counter(json.loads(raw)['reason'] for raw in f)
+        reject_counts = Counter()
+        with rejects.open('rb') as f:
+            for raw in f:
+                reject_hash.update(raw)
+                reject_counts[json.loads(raw)['reason']] += 1
+        if part_hash.hexdigest() != st['sha256'] or reject_hash.hexdigest() != st['reject_sha256']:
+            raise ValueError('committed hash mismatch')
         if n != st['kept'] or reject_counts != Counter(st['rejects']) or n + sum(reject_counts.values()) != st['processed']:
             raise ValueError('committed counters mismatch')
         return chunk['id'], None
@@ -406,33 +411,89 @@ def _verify_one(task):
 
 
 def _verify_source_hash(source):
-    if digest(source['path']) != source['sha256']:
+    started = time.monotonic()
+    hasher = hashlib.sha256()
+    size = 0
+    next_report = 4 << 30
+    with open(source['path'], 'rb') as stream:
+        for block in iter(lambda: stream.read(8 << 20), b''):
+            hasher.update(block)
+            size += len(block)
+            if size >= next_report:
+                print(f"verify: {Path(source['path']).name}: {size / (1 << 30):.1f}/"
+                      f"{source['size'] / (1 << 30):.1f} GiB hashed", flush=True)
+                next_report += 4 << 30
+    if hasher.hexdigest() != source['sha256']:
         raise ValueError(f"Frozen manifest hash differs: {source['path']}")
+    return Path(source['path']).name, time.monotonic() - started
 
 
-def verify_unlocked(root, p, jobs, audio=False):
+def _verification_snapshot(root, p):
+    """Metadata change detector for reusing a completed verification under the lock.
+
+    This covers index artifacts, not the millions of source audio files. Audio
+    validation remains a point-in-time audit; training hashes decoded partners.
+    """
+    root = Path(root)
+    paths = [root / '_state/plan.json', root / '_state/excluded.json']
+    paths.extend(root / '_state/tokenizer' / name for name in p['tokenizer_hashes'])
+    paths.extend(Path(source['path']) for source in p['sources'])
+    for chunk in p['chunks']:
+        paths.extend(chunk_paths(root, chunk)[:3])
+    snapshot = {}
+    for path in paths:
+        try:
+            st = path.stat()
+            snapshot[str(path)] = [st.st_size, st.st_mtime_ns, st.st_ctime_ns, st.st_ino]
+        except FileNotFoundError:
+            snapshot[str(path)] = None
+    return snapshot
+
+
+def _save_verification(root, before, p, audio=False, metadata_only=False):
+    after = _verification_snapshot(root, p)
+    if after != before:
+        raise ValueError('Index inputs changed during verification; verify again')
+    atomic_json(Path(root) / '_state/verified.json', {
+        'plan_sha256': digest(Path(root) / '_state/plan.json'), 'at': time.time(),
+        'decoded_audio': audio, 'mode': 'audio' if audio else 'metadata' if metadata_only else 'headers',
+        'snapshot': after})
+
+
+def verify_unlocked(root, p, jobs, audio=False, metadata_only=False):
+    if audio and metadata_only:
+        raise ValueError('--audio and --metadata-only are mutually exclusive')
     check_frozen(root, p)
     bad = {}
     with ProcessPoolExecutor(max_workers=jobs) as pool:
-        print(f"verify: hashing {len(p['sources'])} frozen manifests with {jobs} processes", flush=True)
-        for _ in pool.map(_verify_source_hash, p['sources']):
-            pass
-        tasks = [(str(root), c, p['config'], audio) for c in p['chunks']]
-        for i, (cid, error) in enumerate(pool.map(_verify_one, tasks), 1):
+        print(f"verify: hashing {len(p['sources'])} frozen manifests; "
+              f"at most {min(jobs, len(p['sources']))} concurrent files", flush=True)
+        futures = [pool.submit(_verify_source_hash, source) for source in p['sources']]
+        for i, future in enumerate(as_completed(futures), 1):
+            name, elapsed = future.result()
+            print(f'verify: manifests {i}/{len(futures)}: {name} ({elapsed:.1f}s)', flush=True)
+        mode = 'metadata only (no audio opens)' if metadata_only else 'decoded audio' if audio else 'audio headers'
+        print(f'verify: checking {len(p["chunks"])} chunks, mode={mode}, jobs={jobs}', flush=True)
+        futures = [pool.submit(_verify_one, (str(root), c, p['config'], audio, metadata_only)) for c in p['chunks']]
+        for i, future in enumerate(as_completed(futures), 1):
+            cid, error = future.result()
             if error:
                 bad[cid] = error
-            if i % 100 == 0 or i == len(tasks):
-                print(f'verify: {i}/{len(tasks)} chunks, {len(bad)} bad', flush=True)
+            if i == 1 or i % 100 == 0 or i == len(futures):
+                print(f'verify: {i}/{len(futures)} chunks, {len(bad)} bad', flush=True)
     return bad
 
 
-def verify(root, jobs, reset=False, audio=False):
-    root = Path(root)
+def verify(root, jobs, reset=False, audio=False, metadata_only=False):
+    root = Path(root).resolve()
     with lock(root / '_state/lifecycle.lock'):
         p = load_plan(root)
         if reset and (root / 'assembled').exists():
             raise ValueError('Published indexes are immutable; use a new RUN_ID to replace them')
-        bad = verify_unlocked(root, p, jobs, audio)
+        # A failed explicit audit must invalidate any previous success receipt.
+        (root / '_state/verified.json').unlink(missing_ok=True)
+        before = _verification_snapshot(root, p)
+        bad = verify_unlocked(root, p, jobs, audio, metadata_only)
         published = read_json(root / 'assembled/index.json')
         if published:
             if published['plan_sha256'] != digest(root / '_state/plan.json'):
@@ -447,8 +508,7 @@ def verify(root, jobs, reset=False, audio=False):
                     for path in chunk_paths(root, c)[:3]:
                         path.unlink(missing_ok=True)
         if not bad:
-            atomic_json(root / '_state/verified.json', {'plan_sha256': digest(root / '_state/plan.json'),
-                                                       'at': time.time(), 'decoded_audio': audio})
+            _save_verification(root, before, p, audio, metadata_only)
         return bad
 
 
@@ -470,7 +530,10 @@ def _assemble_language(task):
     db = sqlite3.connect(path)
     db.execute('CREATE TABLE pool (id INTEGER PRIMARY KEY, audio_key TEXT UNIQUE NOT NULL, record TEXT NOT NULL)')
     count, duplicates, total_seconds = 0, 0, 0.0
-    for chunk in chunks:
+    started = time.monotonic()
+    last_report = started
+    print(f'assemble: {lang}: building from {len(chunks)} chunks', flush=True)
+    for chunk_number, chunk in enumerate(chunks, 1):
         with chunk_paths(root, chunk)[0].open() as f:
             for raw in f:
                 row = json.loads(raw)
@@ -482,7 +545,12 @@ def _assemble_language(task):
                 else:
                     duplicates += 1
         db.commit()
+        if time.monotonic() - last_report >= 30 or chunk_number == len(chunks):
+            print(f'assemble: {lang}: {chunk_number}/{len(chunks)} chunks, {count:,} unique records, '
+                  f'{count / max(1, time.monotonic() - started):.0f} records/s', flush=True)
+            last_report = time.monotonic()
     db.close()
+    print(f'assemble: {lang}: hashing completed SQLite file', flush=True)
     with path.open('rb') as f:
         os.fsync(f.fileno())
     return lang, {'count': count, 'duplicates': duplicates, 'seconds': total_seconds,
@@ -496,12 +564,24 @@ def assemble(root, jobs):
         output = root / 'assembled'
         if output.exists():
             raise ValueError('assembled/ is already published; do not mutate an index used by training')
-        bad = verify_unlocked(root, p, jobs)
-        if bad:
-            raise ValueError(f'{len(bad)} chunks incomplete/bad; run verify for details')
+        check_frozen(root, p)
+        before = _verification_snapshot(root, p)
+        receipt = read_json(root / '_state/verified.json', {})
+        if (receipt.get('snapshot') == before
+                and receipt.get('plan_sha256') == digest(root / '_state/plan.json')):
+            print(f"assemble: reusing successful {receipt.get('mode', 'unknown')} verification; "
+                  "all index input signatures unchanged", flush=True)
+        else:
+            print('assemble: no current verification receipt; verifying first', flush=True)
+            bad = verify_unlocked(root, p, jobs)
+            if bad:
+                raise ValueError(f'{len(bad)} chunks incomplete/bad; run verify for details')
+            _save_verification(root, before, p)
         temporary = root / '_assembling'
         temporary.mkdir(exist_ok=True)
         tasks = [(str(root), str(temporary), lang, [c for c in p['chunks'] if c['lang'] == lang]) for lang in LANGS]
+        print(f'assemble: {min(jobs, len(LANGS))} SQLite writers (one per language); '
+              'increasing jobs beyond five does not increase database writers', flush=True)
         with ProcessPoolExecutor(max_workers=min(jobs, len(LANGS))) as pool:
             pools = dict(pool.map(_assemble_language, tasks))
         # Pools must have disjoint source identities, including path aliases.
@@ -510,7 +590,12 @@ def assemble(root, jobs):
                 db.execute(f'ATTACH DATABASE ? AS {lang}', (str(temporary / f'{lang}.sqlite'),))
             for i, a in enumerate(LANGS):
                 for b in LANGS[i+1:]:
-                    if db.execute(f'SELECT 1 FROM {a}.pool a JOIN {b}.pool b USING(audio_key) LIMIT 1').fetchone():
+                    small, large = sorted((a, b), key=lambda lang: pools[lang]['count'])
+                    print(f'assemble: checking identities {small} -> {large}', flush=True)
+                    # CROSS JOIN fixes the outer scan to the smaller pool; the
+                    # large pool is probed through its unique audio_key index.
+                    if db.execute(f'SELECT 1 FROM {small}.pool a CROSS JOIN {large}.pool b '
+                                  'WHERE b.audio_key=a.audio_key LIMIT 1').fetchone():
                         raise ValueError(f'Conflicting language pools share audio identities: {a}, {b}')
         cfg = p['config']
         targets = allocate(p['preview_samples'], cfg['pair_weights'])
@@ -534,6 +619,8 @@ def assemble(root, jobs):
                   'root': str(root), 'plan_sha256': digest(root / '_state/plan.json'),
                   'sources': p['sources'], 'tokenizer_hashes': p['tokenizer_hashes'],
                   'tokenizer_fingerprint': p['tokenizer_fingerprint']}
+        if _verification_snapshot(root, p) != before:
+            raise ValueError('Index inputs changed during assembly; verify again')
         atomic_json(temporary / 'index.json', result)
         sync_dir(temporary)
         os.replace(temporary, output)

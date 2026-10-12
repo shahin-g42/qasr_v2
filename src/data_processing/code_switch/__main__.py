@@ -35,7 +35,9 @@ def main(argv=None):
             cmd.add_argument('--all', action='store_true')
         if name == 'verify':
             cmd.add_argument('--reset', action='store_true')
-            cmd.add_argument('--audio', action='store_true', help='fully decode eligible audio again (default: headers)')
+            modes = cmd.add_mutually_exclusive_group()
+            modes.add_argument('--audio', action='store_true', help='fully decode eligible audio again (default: headers)')
+            modes.add_argument('--metadata-only', action='store_true', help='hash/validate manifests and index records without reopening source audio')
         if name == 'peek':
             cmd.add_argument('-n', type=positive, default=2, help='examples per pair')
             cmd.add_argument('--export-audio', action='store_true')
@@ -53,7 +55,7 @@ def main(argv=None):
         elif args.command == 'status':
             print(json.dumps(status(root), indent=2))
         elif args.command == 'verify':
-            bad = verify(root, args.jobs, args.reset, args.audio)
+            bad = verify(root, args.jobs, args.reset, args.audio, args.metadata_only)
             print(json.dumps({'bad': bad, 'reset': args.reset}, indent=2))
             return int(bool(bad))
         elif args.command == 'assemble':

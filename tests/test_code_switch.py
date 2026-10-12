@@ -336,7 +336,7 @@ def test_verify_reports_corrupt_progress_as_bad_chunk(tmp_path):
     progress = tmp_path / '_state/progress/0000000.json'
     progress.parent.mkdir(parents=True)
     progress.write_text('{broken progress')
-    cid, error = _verify_one((tmp_path, {'id': '0000000', 'end': 0}, {}, False))
+    cid, error = _verify_one((tmp_path, {'id': '0000000', 'end': 0}, {}, False, False))
     assert cid == '0000000'
     assert error
 
@@ -417,3 +417,67 @@ def test_cluster_cli_with_real_index_and_spawn_workers(corpus):
     assert report['counts']['substitutions'] == 0
     assert report['counts']['anchor:ar'] == 30
     assert report['counts']['label:ar'] == 30
+
+
+def test_verification_receipt_reuse_and_metadata_mode(corpus, monkeypatch):
+    import data_processing.code_switch.index as indexing
+    root, config, _ = corpus
+    frozen = plan(root, config, jobs=1, samples=28)
+    run(root, procs=2)
+    # Metadata mode must work even when the original audio is offline.
+    audio = root.parent / 'ar-1.wav'
+    hidden = audio.with_suffix('.offline')
+    audio.rename(hidden)
+    assert not verify(root, jobs=2, metadata_only=True)
+    receipt = read_json(root / '_state/verified.json')
+    assert receipt['mode'] == 'metadata'
+    # A failed header audit must invalidate that prior receipt.
+    assert verify(root, jobs=1)
+    assert not (root / '_state/verified.json').exists()
+    hidden.rename(audio)
+    assert not verify(root, jobs=2, metadata_only=True)
+    # Reuse is conditional on all input signatures, not simply receipt existence.
+    before = indexing._verification_snapshot(root, frozen)
+    part = chunk_paths(root, frozen['chunks'][0])[0]
+    import os
+    st = part.stat()
+    original = part.read_bytes()
+    part.write_bytes(original)
+    os.utime(part, ns=(st.st_atime_ns, st.st_mtime_ns))
+    assert indexing._verification_snapshot(root, frozen) != before  # ctime catches it
+    assert not verify(root, jobs=2, metadata_only=True)
+    def no_repeat(*args, **kwargs):
+        raise AssertionError('assemble repeated verification despite unchanged receipt')
+    monkeypatch.setattr(indexing, 'verify_unlocked', no_repeat)
+    assemble(root, jobs=2)
+
+
+def test_stale_receipt_cannot_hide_corrupted_chunk(corpus):
+    import os
+    root, config, _ = corpus
+    frozen = plan(root, config, jobs=1, samples=28)
+    run(root, procs=2)
+    assert not verify(root, jobs=2, metadata_only=True)
+    part = chunk_paths(root, frozen['chunks'][0])[0]
+    st = part.stat()
+    raw = part.read_bytes()
+    # Change the committed bytes but preserve both size and mtime.
+    part.write_bytes(raw.replace(b'"text":', b'"texx":', 1))
+    os.utime(part, ns=(st.st_atime_ns, st.st_mtime_ns))
+    with pytest.raises(ValueError, match='incomplete/bad'):
+        assemble(root, jobs=2)
+    assert not (root / 'assembled').exists()
+
+
+def test_cross_language_conflict_still_rejected_after_cached_verify(corpus):
+    root, config, _ = corpus
+    english = root.parent / 'source/en/data/train_en.jsonl'
+    rows = [json.loads(line) for line in english.read_text().splitlines()]
+    rows[1]['audio_filepath'] = str(root.parent / 'ar-1.wav')
+    english.write_text(''.join(json.dumps(row) + '\n' for row in rows))
+    plan(root, config, jobs=1, samples=28)
+    run(root, procs=2)
+    assert not verify(root, jobs=2, metadata_only=True)
+    with pytest.raises(ValueError, match='Conflicting language pools'):
+        assemble(root, jobs=2)
+    assert not (root / 'assembled').exists()

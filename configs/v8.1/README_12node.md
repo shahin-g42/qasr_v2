@@ -29,8 +29,8 @@ On each node, start in the shared repository:
 cd /lustrefs/shared/shahin.konadath/workspace/train/stt/v2/qasr_v2
 ```
 
-The launcher uses the environment already active in your shell by default.
-Set `ACTIVATE_CONDA=1` to opt into activation of `CONDA_ENV` (default: qasr3).
+The launcher deactivates the current conda environment and automatically activates
+`CONDA_ENV`, defaulting to `/lustrefs/shared/shahin.konadath/workspace/conda/envs/qasr3`.
 The Transformers version check remains enabled. Before
 launching, run the full manifest scan once on the master. This can take time;
 it confirms the computed coverage budget matches the config and fails on mismatch.

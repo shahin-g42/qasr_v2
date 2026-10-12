@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # QASR v8.1 Stage 2. Run on each node: NODE_RANK (0-11), optional MASTER_ADDR (defaults to inception-H100-hpc-051).
 # NNODES=1 ... 0 localhost --smoke-test is the one-node rehearsal.
-# Uses the active shell environment. Set ACTIVATE_CONDA=1 to activate CONDA_ENV.
+# Automatically activates CONDA_ENV (default: qasr3) before preflight/training.
 # DRY_RUN=1 prints the command without activating conda or launching training.
 set -euo pipefail
 if [[ $# -lt 1 ]]; then
@@ -66,11 +66,9 @@ export CUDA_DEVICE_MAX_CONNECTIONS=1
 export TORCH_EXTENSIONS_DIR="/tmp/${USER}_qasr_v81_torch_ext"
 export TRITON_CACHE_DIR="/tmp/${USER}_qasr_v81_triton"
 mkdir -p "$TORCH_EXTENSIONS_DIR" "$TRITON_CACHE_DIR"
-if [[ "${ACTIVATE_CONDA:-0}" == 1 ]]; then
-  eval "$(conda shell.bash hook)"
-  conda deactivate 2>/dev/null || true
-  conda activate "$CONDA_ENV"
-fi
+eval "$(conda shell.bash hook)"
+conda deactivate 2>/dev/null || true
+conda activate "$CONDA_ENV"
 export PYTHONPATH="$PROJECT_DIR/src${PYTHONPATH:+:$PYTHONPATH}"
 python -c 'import transformers; assert transformers.__version__.startswith("5.14."), transformers.__version__'
 if (( PREFLIGHT )); then

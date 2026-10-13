@@ -173,6 +173,16 @@ def parser():
     source.add_argument("--eval-per-language", type=int, default=50)
     source.add_argument("--non-speech-per-language", type=int, default=50)
     source.add_argument(
+        "--sampling",
+        choices=("records", "full"),
+        default="records",
+        help="records: cache a uniform sample with one raw read; full: parse/audit every row",
+    )
+    source.add_argument("--candidates-per-manifest", type=int, default=2000)
+    source.add_argument(
+        "--sample-cache", help="Reusable candidate cache; defaults beside the run directory"
+    )
+    source.add_argument(
         "--musan",
         action="store_true",
         help="Prepare empty-target noise panels from the YAML noise_injection.noise_dir",
@@ -193,6 +203,8 @@ def dispatch(args):
                 qasr_source=args.qasr_source,
                 checkpoint=args.checkpoint,
                 musan=args.musan,
+                sampling=args.sampling,
+                candidates_per_manifest=args.candidates_per_manifest,
             )
         if not args.output:
             raise ValueError("--output is required unless --inspect is used")
@@ -208,6 +220,9 @@ def dispatch(args):
             max_steps=args.max_steps,
             hash_audio=args.hash_audio,
             musan=args.musan,
+            sampling=args.sampling,
+            candidates_per_manifest=args.candidates_per_manifest,
+            sample_cache=args.sample_cache,
         )
     if args.command == "panel":
         result = prepare_panel(

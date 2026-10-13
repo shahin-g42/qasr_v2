@@ -251,3 +251,55 @@ def test_musan_requires_source_and_cannot_mix_with_explicit_manifest(configured)
     path.write_text(yaml.safe_dump(config))
     with pytest.raises(ValueError, match="either --musan"):
         prepare_from_training_config(path, path.parent / "out", musan=True)
+
+
+def test_record_sampling_parses_only_candidates_and_preserves_each_manifest(
+    configured, tmp_path, monkeypatch
+):
+    from collections import Counter
+
+    import qasr.data
+
+    path, config, make_row = configured
+    first_manifest = Path(config["train_manifest"]["en"][0])
+    first_manifest.write_text(
+        "".join(json.dumps(make_row(f"candidate-{i}")) + "\n" for i in range(100))
+    )
+    calls = Counter()
+    original_parser = qasr.data.parse_record
+
+    def counted_parser(record, **kwargs):
+        calls[str(kwargs["manifest_path"])] += 1
+        return original_parser(record, **kwargs)
+
+    monkeypatch.setattr(qasr.data, "parse_record", counted_parser)
+    out = tmp_path / "lab"
+    result = prepare_from_training_config(
+        path,
+        out,
+        train_per_language=4,
+        eval_per_language=1,
+        candidates_per_manifest=8,
+        seeds=[42],
+    )
+    assert calls[str(first_manifest)] == 8
+    assert result["sampling"]["mode"] == "records"
+    assert result["full_training_overlap_check"] is False
+    train_metadata, _ = load_panel(out / "train-panel")
+    sources = train_metadata["provenance"]["sources"]
+    en_sources = [row for row in sources if row["language"] == "en"]
+    assert len(en_sources) == 2
+    assert all(row["selected_records"] == row["sample_quota"] == 2 for row in en_sources)
+    validation_metadata, _ = load_panel(out / "validation-panel")
+    assert validation_metadata["provenance"]["leakage"]["status"] == "sampled_candidates_only"
+    calls.clear()
+    full = prepare_from_training_config(
+        path,
+        tmp_path / "full",
+        train_per_language=4,
+        eval_per_language=1,
+        sampling="full",
+        seeds=[42],
+    )
+    assert calls[str(first_manifest)] == 100
+    assert full["full_training_overlap_check"] is True

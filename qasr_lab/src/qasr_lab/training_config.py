@@ -7,6 +7,7 @@ import heapq
 import json
 import sys
 from collections import Counter, defaultdict
+from contextlib import nullcontext
 from pathlib import Path
 
 from .checkpoints import use_qasr_source
@@ -28,7 +29,38 @@ def _load_config(path, qasr_source=None):
     return config, source
 
 
-def inspect_training_config(path, *, qasr_source=None, checkpoint=None, musan=False):
+def _sampling_settings(config, sampling, candidates_per_manifest):
+    if sampling not in ("records", "full"):
+        raise ValueError("sampling must be records or full")
+    if type(candidates_per_manifest) is not int or candidates_per_manifest < 1:
+        raise ValueError("candidates_per_manifest must be a positive integer")
+    manifests = len(
+        config.train_manifest_specs + config.eval_manifest_specs + config.non_speech_manifest_specs
+    )
+    return {
+        "mode": sampling,
+        "candidates_per_manifest": candidates_per_manifest if sampling == "records" else None,
+        "maximum_records_parsed": manifests * candidates_per_manifest
+        if sampling == "records"
+        else None,
+        "source_read": "one full raw read per uncached manifest"
+        if sampling == "records"
+        else "full parse of every manifest",
+        "selection": "uniform record candidates, then per-manifest quotas within each language"
+        if sampling == "records"
+        else "global per-language hash ranking",
+    }
+
+
+def inspect_training_config(
+    path,
+    *,
+    qasr_source=None,
+    checkpoint=None,
+    musan=False,
+    sampling="records",
+    candidates_per_manifest=2000,
+):
     config, source = _load_config(path, qasr_source)
     from .musan import configured_musan_directory
 
@@ -48,6 +80,7 @@ def inspect_training_config(path, *, qasr_source=None, checkpoint=None, musan=Fa
         "production_world_size": config.expected_world_size,
         "test_panel": None,
         "evaluation_role": "Existing configured validation data; not a new held-out test set.",
+        "sampling": _sampling_settings(config, sampling, candidates_per_manifest),
     }
 
 
@@ -59,24 +92,69 @@ def _identity_index(samples):
     return result
 
 
-def _collect(specs, config, tokenizer, limit, *, empty_target_ok=False, protected=None):
+def _collect(
+    specs,
+    config,
+    tokenizer,
+    limit,
+    *,
+    empty_target_ok=False,
+    protected=None,
+    sampling="full",
+    candidates_per_manifest=2000,
+    sample_cache=None,
+):
     from qasr.data import _UnusableTranscript, parse_record
 
     heaps, selected = defaultdict(list), {}
     sources, overlaps = [], []
     audio_root = Path(config.audio_root).expanduser().resolve() if config.audio_root else None
+    quotas = {}
+    if sampling == "records":
+        by_language = defaultdict(list)
+        for filename, language in specs:
+            by_language[language].append(str(Path(filename).expanduser().resolve()))
+        for language, filenames in by_language.items():
+            for index, filename in enumerate(sorted(filenames)):
+                quotas[(filename, language)] = limit // len(filenames) + (
+                    index < limit % len(filenames)
+                )
+        specs = sorted(specs, key=lambda spec: (spec[1], str(Path(spec[0]).resolve())))
     seen_specs = set()
     for filename, language in specs:
         path = Path(filename).expanduser().resolve()
         if (path, language) in seen_specs:
             raise ValueError(f"Manifest configured twice for {language}: {path}")
         seen_specs.add((path, language))
-        print(f"Scanning {language}: {path}", file=sys.stderr, flush=True)
+        sample_metadata = None
+        quota = quotas[(str(path), language)] if sampling == "records" else limit
+        if sampling == "records":
+            from .manifest_sampling import sample_record_lines
+
+            records, sample_metadata = sample_record_lines(
+                path,
+                limit=candidates_per_manifest,
+                seed=config.data_seed,
+                cache_directory=sample_cache,
+            )
+            print(
+                f"Parsing {len(records):,} sampled {language} records; retain up to {quota}: {path}",
+                file=sys.stderr,
+                flush=True,
+            )
+        else:
+            print(f"Scanning all {language} records: {path}", file=sys.stderr, flush=True)
         sha = hashlib.sha256()
         counts = Counter()
-        with path.open("rb") as handle:
-            for line_number, line in enumerate(handle, 1):
-                sha.update(line)
+        with path.open("rb") if sampling == "full" else nullcontext() as handle:
+            lines = (
+                enumerate(handle, 1)
+                if sampling == "full"
+                else ((row["line_number"], row["record_json"]) for row in records)
+            )
+            for line_number, line in lines:
+                if sampling == "full":
+                    sha.update(line)
                 if not line.strip():
                     continue
                 counts["input_rows"] += 1
@@ -127,7 +205,7 @@ def _collect(specs, config, tokenizer, limit, *, empty_target_ok=False, protecte
                     )
                 sample_id = digest(audio)[:24]
                 rank = int(digest([config.data_seed, sample_id]), 16)
-                heap = heaps[language]
+                heap = heaps[(str(path), language) if sampling == "records" else language]
                 if sample_id in selected:
                     old = selected[sample_id]
                     if (
@@ -138,7 +216,7 @@ def _collect(specs, config, tokenizer, limit, *, empty_target_ok=False, protecte
                         raise ValueError(f"Conflicting annotations for selected audio: {audio}")
                     counts["duplicate_selected_audio"] += 1
                     continue
-                if len(heap) == limit and -rank <= heap[0][0]:
+                if quota == 0 or (len(heap) == quota and -rank <= heap[0][0]):
                     continue
                 # Tokenize only candidates that can enter the bounded selection.
                 token_ids = tokenizer.encode(parsed["text"], add_special_tokens=False)
@@ -158,18 +236,30 @@ def _collect(specs, config, tokenizer, limit, *, empty_target_ok=False, protecte
                 )
                 sample.update(manifest_filepath=str(path), manifest_line=line_number)
                 entry = (-rank, sample_id, sample)
-                if len(heap) == limit:
+                if len(heap) == quota:
                     removed = heapq.heapreplace(heap, entry)[2]
                     del selected[removed["id"]]
                 else:
                     heapq.heappush(heap, entry)
                 selected[sample_id] = sample
+        if sampling == "records":
+            kept = len(heaps[(str(path), language)])
+            print(
+                f"  Selected {kept}/{quota} records from sampled candidates",
+                file=sys.stderr,
+                flush=True,
+            )
         sources.append(
             {
                 "path": str(path),
                 "language": language,
-                "sha256": sha.hexdigest(),
+                "sha256": sample_metadata["sha256"] if sample_metadata else sha.hexdigest(),
                 "counts": dict(counts),
+                "sampling": sample_metadata or {"method": "full", "all_records_considered": True},
+                "selected_records": len(heaps[(str(path), language)])
+                if sampling == "records"
+                else None,
+                "sample_quota": quota if sampling == "records" else None,
             }
         )
     samples = sorted(selected.values(), key=lambda sample: sample["id"])
@@ -194,11 +284,15 @@ def prepare_from_training_config(
     max_steps=200,
     hash_audio=False,
     musan=False,
+    sampling="records",
+    candidates_per_manifest=2000,
+    sample_cache=None,
 ):
     for value in (train_per_language, eval_per_language, non_speech_per_language, max_steps):
         if type(value) is not int or value < 1:
             raise ValueError("Sample limits and max_steps must be positive integers")
     config, source = _load_config(path, qasr_source)
+    sampling_settings = _sampling_settings(config, sampling, candidates_per_manifest)
     musan_directory = None
     if musan:
         from .musan import configured_musan_directory, noise_directory, prepare_musan_noise
@@ -228,6 +322,16 @@ def prepare_from_training_config(
         if not Path(filename).expanduser().is_file():
             raise FileNotFoundError(filename)
     out = fresh_directory(output)
+    sample_cache = (
+        str(Path(sample_cache).expanduser().resolve())
+        if sample_cache
+        else str(out.parent / "manifest-sample-cache")
+    )
+    collect_options = {
+        "sampling": sampling,
+        "candidates_per_manifest": candidates_per_manifest,
+        "sample_cache": sample_cache,
+    }
     write_json(
         out / "source-config.json",
         {
@@ -236,6 +340,8 @@ def prepare_from_training_config(
             "values": config.to_dict(),
             "checkpoint_selected": checkpoint,
             "musan_directory_selected": musan_directory,
+            "sampling": sampling_settings,
+            "sample_cache": sample_cache if sampling == "records" else None,
             "environment": environment(),
         },
     )
@@ -247,6 +353,7 @@ def prepare_from_training_config(
             config,
             processor.tokenizer,
             eval_per_language,
+            **collect_options,
         )
         # Hash validation before the training scan so supplied training hashes can match copies.
         if hash_audio:
@@ -268,9 +375,8 @@ def prepare_from_training_config(
                 max_seconds=config.max_duration_seconds,
                 protected=protected,
             )
-            # Compare full configured speech manifests with original noise paths/hashes,
-            # not just with the derived crop filenames. They must not contain these
-            # supposed empty-target recordings as transcribed speech in either split.
+            # Compare parsed speech candidates with original noise paths/hashes,
+            # not just derived crop filenames. Full mode checks every speech row.
             protected = _identity_index(
                 [
                     *validation,
@@ -286,6 +392,7 @@ def prepare_from_training_config(
             processor.tokenizer,
             train_per_language,
             protected=protected,
+            **collect_options,
         )
         silence, silence_sources = [], []
         if musan_panels:
@@ -299,6 +406,7 @@ def prepare_from_training_config(
                 non_speech_per_language,
                 empty_target_ok=True,
                 protected=protected,
+                **collect_options,
             )
             overlaps.extend(silence_overlaps)
             validate_samples([*train, *silence])
@@ -313,6 +421,17 @@ def prepare_from_training_config(
                 if sample.get("audio_sha256") and sample["audio_sha256"] != actual:
                     raise ValueError(f"Audio checksum mismatch: {sample['id']}")
                 sample["audio_sha256"] = actual
+        # Hashes computed after collection can also reveal copied sampled audio.
+        evaluation_keys = set(_identity_index(validation))
+        if musan_panels:
+            evaluation_keys.update(_identity_index(musan_panels["validation"]))
+        for sample in [*train, *silence]:
+            if evaluation_keys.intersection(identity_keys(sample, "/")):
+                raise ValueError(f"Selected training/validation audio overlap: {sample['id']}")
+        full_overlap_check = all(
+            source.get("sampling", {}).get("all_records_considered", False)
+            for source in train_sources + (silence_sources if not musan else [])
+        )
         provenance = {
             "training_config": str(Path(path).resolve()),
             "config_sha256": file_hash(path),
@@ -320,6 +439,7 @@ def prepare_from_training_config(
             "language_assignment": "configuration manifest groups",
             "data_parser": "qasr.data.parse_record",
             "selected_audio_hashes_computed": hash_audio,
+            "sampling": sampling_settings,
         }
         save_panel(
             train,
@@ -340,9 +460,11 @@ def prepare_from_training_config(
                 "role": "existing_configured_validation",
                 "warning": "Not a new test set; prior checkpoint exposure is not established.",
                 "leakage": {
-                    "status": "checked",
+                    "status": "checked" if full_overlap_check else "sampled_candidates_only",
                     "examples": [],
-                    "scope": "Selected validation vs all parsed configured training/non-speech rows; paths, supplied hashes and corpus-qualified identities.",
+                    "scope": "Selected validation vs all parsed configured training/non-speech rows; paths, supplied hashes and corpus-qualified identities."
+                    if full_overlap_check
+                    else "Selected validation vs sampled training/non-speech candidates only; the unsampled corpus is not checked.",
                     "excluded_manifests": train_sources + silence_sources,
                 },
             },
@@ -449,11 +571,18 @@ def prepare_from_training_config(
         )
         result = {
             **inspect_training_config(
-                path, qasr_source=qasr_source, checkpoint=checkpoint, musan=musan
+                path,
+                qasr_source=qasr_source,
+                checkpoint=checkpoint,
+                musan=musan,
+                sampling=sampling,
+                candidates_per_manifest=candidates_per_manifest,
             ),
             "status": "prepared",
             "output": str(out),
             "seeds": seeds,
+            "sample_cache": sample_cache if sampling == "records" else None,
+            "full_training_overlap_check": full_overlap_check,
             "selected_train": len(train),
             "selected_validation": len(validation),
             "selected_non_speech": len(silence),

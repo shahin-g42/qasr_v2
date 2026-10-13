@@ -45,15 +45,21 @@ CUDA_VISIBLE_DEVICES=0 python -u -m qasr_lab train \
   --config "$QASR_LAB_RUN/smoke.json"
 ~~~
 
-The 10-node YAML can be supplied instead; its checkpoint and dataset lists currently match the 12-node YAML. Inspection does not scan manifests, load weights, or start a job. Preparation reads the local checkpoint's processor/tokenizer without loading model weights. It streams each configured evaluation/training manifest, reports scan progress, checks the selected audio paths, and writes only to the new lab directory. Full manifest scans can take time on the shared filesystem.
+The 10-node YAML can be supplied instead; its checkpoint and dataset lists currently match the 12-node YAML. Inspection does not scan manifests, load weights, or start a job. Preparation reads the local checkpoint's processor/tokenizer without loading model weights. The default `--sampling records` makes one raw read through each uncached manifest, retains a uniform random sample of record lines, and parses only that small sample. It writes the candidate cache and prepared panels under lab outputs. It does not parse or resolve audio paths for every row in a large corpus.
 
-The adapter reads model_name_or_path, train_manifest, eval_manifest, optional non_speech_manifest, audio_root, duration limits, transcript-token limit, learning rates, precision, gradient checkpointing, and generation-token limit. Language assignments come from the YAML groups, using the production parse_record behavior, including text/transcript fallback and /vast remapping. Missing durations are read from audio metadata. Overlong candidate transcripts are rejected without truncation. The sampling cap applies across all manifests for a language. It checks selected validation records against all parsed configured training/non-speech records, including records outside the selected training panel.
+The adapter reads model_name_or_path, train_manifest, eval_manifest, optional non_speech_manifest, audio_root, duration limits, transcript-token limit, learning rates, precision, gradient checkpointing, and generation-token limit. Language assignments come from the YAML groups, using the production parse_record behavior, including text/transcript fallback and /vast remapping. Missing candidate durations are read from audio metadata. Overlong candidate transcripts are rejected without truncation.
+
+`--candidates-per-manifest 2000` controls the reservoir size. Reservoir sampling gives every nonblank record line the same chance of inclusion, regardless of byte length; it does not require a line count or seek to random bytes. With 22 training and 6 validation manifests, at most 56,000 candidate records are parsed. The final per-language budget is divided approximately equally across that language's manifests, then eligible candidates are selected deterministically. For example, 500 Arabic training samples across 13 manifests means up to 38 or 39 from each, rather than 500 from each. Quotas are caps: filtering, duplicates or small manifests can produce fewer examples. Per-manifest selected counts are printed and recorded; raise the candidate budget if too few eligible examples remain. This source-balanced pilot does not reproduce full-corpus source proportions.
+
+Candidates are cached in `qasr_lab/outputs/manifest-sample-cache/` when using the example output paths. `--sample-cache` selects another location. The cache stores sampled raw records, line numbers, byte offsets, the full manifest hash from the original pass, and the selection seed. Unchanged files reuse the sample without rereading the original manifest. Cache lookup checks the resolved source path, size, modification/change timestamps, seed, and candidate limit; it does not rehash the entire source on a cache hit. Each completed manifest is cached separately, so an interruption only loses the unfinished manifest's pass. All seeds and variants then share the same frozen panels. A first uncached pass still reads all manifest text; the command reports record throughput, and its wall time depends on filesystem speed.
+
+In record-sampling mode, overlap checks cover the sampled training candidates and the selected validation panel. They do not establish that validation is absent from the unsampled 90-million-record corpus. This limitation is recorded as `sampled_candidates_only` when any training source is subsampled. Supplied identity/hash metadata and selected audio hashes are still checked. Use `--sampling full` explicitly to restore the expensive whole-manifest parse/audit and global per-language ranking; it does not use the candidate cache. Neither mode establishes that an existing checkpoint has never seen the validation data.
 
 The configured model_name_or_path is used exactly. The v8.1 files currently point to models/bck/full/v1; the adapter does not guess a newer checkpoint from output_dir or resume an optimizer state. Use --checkpoint with an explicit local directory when intentionally starting from a newer QASR model.
 
 Preparation creates:
 
-- train-panel and validation-panel, plus a non-speech-panel only if configured.
+- train-panel and validation-panel, plus a non-speech-panel when configured or requested with MUSAN.
 - base-42.json / base-43.json and seed-42 / seed-43 plans with separate run directories.
 - smoke.json with two optimizer steps and small subsets of both panels.
 - eval-initial.json and eval-variant-seed.json configurations for generated transcripts.
@@ -76,6 +82,7 @@ export QASR_LAB_RUN="$PWD/qasr_lab/outputs/v81-musan-$(date +%Y%m%d-%H%M%S)"
 python -m qasr_lab from-training-config \
   --config configs/v8.1/02_full_12node.yaml \
   --output "$QASR_LAB_RUN" --musan \
+  --sampling records --candidates-per-manifest 2000 \
   --train-per-language 500 --eval-per-language 50 \
   --non-speech-per-language 50 --seeds 42 43 --hash-audio
 ~~~

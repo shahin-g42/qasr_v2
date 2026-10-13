@@ -12,7 +12,7 @@ dependencies = []
 
 [project.optional-dependencies]
 audio = ["numpy>=2", "scipy>=1.14", "soundfile>=0.13"]
-hf = ["torch>=2.10", "transformers>=5.14.1,<5.15", "accelerate>=1.10", "librosa>=0.11", "safetensors>=0.5", "numpy>=2", "scipy>=1.14", "soundfile>=0.13"]
+hf = ["torch>=2.10", "transformers>=5.14.1,<5.15", "accelerate>=1.10", "librosa>=0.11", "safetensors>=0.5", "numpy>=2", "scipy>=1.14", "soundfile>=0.13", "PyYAML>=6"]
 dev = ["pytest>=8.3", "ruff>=0.16"]
 
 [project.scripts]

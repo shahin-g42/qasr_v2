@@ -161,10 +161,45 @@ def parser():
     plan.add_argument("--output", required=True)
     train = commands.add_parser("train", help="Run one isolated, single-device pilot")
     train.add_argument("--config", required=True)
+    source = commands.add_parser(
+        "from-training-config", help="Prepare lab panels and pilots from an existing QASR YAML"
+    )
+    source.add_argument("--config", required=True)
+    source.add_argument("--output")
+    source.add_argument("--inspect", action="store_true")
+    source.add_argument("--qasr-source")
+    source.add_argument("--checkpoint", help="Explicitly override model_name_or_path")
+    source.add_argument("--train-per-language", type=int, default=500)
+    source.add_argument("--eval-per-language", type=int, default=50)
+    source.add_argument("--non-speech-per-language", type=int, default=50)
+    source.add_argument("--seeds", type=int, nargs="+")
+    source.add_argument("--max-steps", type=int, default=200)
+    source.add_argument("--hash-audio", action="store_true")
     return root
 
 
 def dispatch(args):
+    if args.command == "from-training-config":
+        from .training_config import inspect_training_config, prepare_from_training_config
+
+        if args.inspect:
+            return inspect_training_config(
+                args.config, qasr_source=args.qasr_source, checkpoint=args.checkpoint
+            )
+        if not args.output:
+            raise ValueError("--output is required unless --inspect is used")
+        return prepare_from_training_config(
+            args.config,
+            args.output,
+            qasr_source=args.qasr_source,
+            checkpoint=args.checkpoint,
+            train_per_language=args.train_per_language,
+            eval_per_language=args.eval_per_language,
+            non_speech_per_language=args.non_speech_per_language,
+            seeds=args.seeds,
+            max_steps=args.max_steps,
+            hash_audio=args.hash_audio,
+        )
     if args.command == "panel":
         result = prepare_panel(
             args.manifest,

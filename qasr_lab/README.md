@@ -25,7 +25,61 @@ qasr_lab/.venv-sdk/bin/python -m pip install -e './qasr_lab[audio]' qwen-asr
 
 Keep the original checkpoint's supported SDK version. The qwen-sdk backend follows the [official Qwen3-ASR SDK](https://github.com/QwenLM/Qwen3-ASR). The hf-qwen backend is for checkpoints in the native HF Qwen3-ASR format; the formats are not interchangeable.
 
-## 1. Freeze evaluation panels first
+## Use the existing v8.1 configuration
+
+When the production YAML already defines the checkpoint and language-grouped datasets, use it directly. With qasr3 active and both qasr_lab/src and src on PYTHONPATH, run from the repository root:
+
+~~~sh
+python -m qasr_lab from-training-config \
+  --config configs/v8.1/02_full_12node.yaml --inspect
+
+export QASR_LAB_RUN="$PWD/qasr_lab/outputs/v81-pilot-$(date +%Y%m%d-%H%M%S)"
+
+python -m qasr_lab from-training-config \
+  --config configs/v8.1/02_full_12node.yaml \
+  --output "$QASR_LAB_RUN" \
+  --train-per-language 500 --eval-per-language 50 \
+  --seeds 42 43 --hash-audio
+
+CUDA_VISIBLE_DEVICES=0 python -u -m qasr_lab train \
+  --config "$QASR_LAB_RUN/smoke.json"
+~~~
+
+The 10-node YAML can be supplied instead; its checkpoint and dataset lists currently match the 12-node YAML. Inspection does not scan manifests, load weights, or start a job. Preparation reads the local checkpoint's processor/tokenizer without loading model weights. It streams each configured evaluation/training manifest, reports scan progress, checks the selected audio paths, and writes only to the new lab directory. Full manifest scans can take time on the shared filesystem.
+
+The adapter reads model_name_or_path, train_manifest, eval_manifest, optional non_speech_manifest, audio_root, duration limits, transcript-token limit, learning rates, precision, gradient checkpointing, and generation-token limit. Language assignments come from the YAML groups, using the production parse_record behavior, including text/transcript fallback and /vast remapping. Missing durations are read from audio metadata. Overlong candidate transcripts are rejected without truncation. The sampling cap applies across all manifests for a language. It checks selected validation records against all parsed configured training/non-speech records, including records outside the selected training panel.
+
+The configured model_name_or_path is used exactly. The v8.1 files currently point to models/bck/full/v1; the adapter does not guess a newer checkpoint from output_dir or resume an optimizer state. Use --checkpoint with an explicit local directory when intentionally starting from a newer QASR model.
+
+Preparation creates:
+
+- train-panel and validation-panel, plus a non-speech-panel only if configured.
+- base-42.json / base-43.json and seed-42 / seed-43 plans with separate run directories.
+- smoke.json with two optimizer steps and small subsets of both panels.
+- eval-initial.json and eval-variant-seed.json configurations for generated transcripts.
+- source-config.json and prepared.json with provenance, scan/filter counts, and the pilot settings.
+
+These are small adaptation pilots: batch size 1, accumulation 8, 200 steps, cosine scheduling, and the trainable-component choices described below. They do not reproduce production world size, weighted language quotas, augmentation, online code switching, label smoothing, or the full training schedule. The production YAML and pipeline remain unchanged.
+
+The current v8.1 files contain 22 training manifests, 6 validation manifests, and no non-speech manifest. They do not define a separate test set. The adapter therefore labels the evaluation panel as existing configured validation data and never creates a fictional held-out test panel. A later independent test set is still needed for final claims.
+
+After the smoke test passes, each plan can run on one GPU. For example:
+
+~~~sh
+CUDA_VISIBLE_DEVICES=0 python -u -m qasr_lab train \
+  --config "$QASR_LAB_RUN/seed-42/control.json"
+~~~
+
+The four current variants across seeds 42 and 43 fit eight independent GPU jobs. Evaluate the starting checkpoint before the pilots, and compare trained checkpoints against both it and their appropriate adaptation control:
+
+~~~sh
+CUDA_VISIBLE_DEVICES=0 python -m qasr_lab run \
+  --model "$QASR_LAB_RUN/eval-initial.json" \
+  --panel "$QASR_LAB_RUN/validation-panel" \
+  --output "$QASR_LAB_RUN/evaluation-initial"
+~~~
+
+## 1. Freeze panels from manually specified manifests
 
 Input is JSONL, one clip per row:
 

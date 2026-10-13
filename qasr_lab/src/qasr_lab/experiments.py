@@ -27,6 +27,7 @@ DEFAULTS = {
     "warmup_steps": 20,
     "max_grad_norm": 1.0,
     "max_audio_seconds": 35.0,
+    "min_audio_seconds": 0.01,
     "max_target_tokens": 512,
     "trainable": "projector",
     "upper_layers": 4,
@@ -90,7 +91,7 @@ def load_experiment(path):
         raise ValueError("warmup_steps must be less than max_steps")
     for key in ("encoder_lr", "projector_lr", "decoder_lr", "max_grad_norm", "max_audio_seconds"):
         positive_number(config[key], key)
-    for key in ("weight_decay", "ctc_weight"):
+    for key in ("weight_decay", "ctc_weight", "min_audio_seconds"):
         if (
             isinstance(config[key], bool)
             or not isinstance(config[key], (float, int))
@@ -98,6 +99,8 @@ def load_experiment(path):
             or config[key] < 0
         ):
             raise ValueError(f"{key} must be finite and nonnegative")
+    if config["max_audio_seconds"] <= config["min_audio_seconds"]:
+        raise ValueError("max_audio_seconds must exceed min_audio_seconds")
     for key in ("gradient_checkpointing", "mask_pool_padding"):
         if not isinstance(config[key], bool):
             raise ValueError(f"{key} must be boolean")
@@ -320,7 +323,7 @@ def run_experiment(config_path):
         base_collator = QASRDataCollator(
             processor=processor,
             language="en",
-            min_audio_seconds=0.01,
+            min_audio_seconds=config["min_audio_seconds"],
             max_audio_seconds=config["max_audio_seconds"],
             max_target_length=config["max_target_tokens"],
         )

@@ -28,8 +28,11 @@ def _load_config(path, qasr_source=None):
     return config, source
 
 
-def inspect_training_config(path, *, qasr_source=None, checkpoint=None):
+def inspect_training_config(path, *, qasr_source=None, checkpoint=None, musan=False):
     config, source = _load_config(path, qasr_source)
+    from .musan import configured_musan_directory
+
+    musan_directory = configured_musan_directory(config) if musan else None
     return {
         "config": str(Path(path).resolve()),
         "qasr_source": source,
@@ -38,6 +41,8 @@ def inspect_training_config(path, *, qasr_source=None, checkpoint=None):
         "eval_manifests": len(config.eval_manifest_specs),
         "languages": sorted({language for _, language in config.train_manifest_specs}),
         "non_speech_manifests": len(config.non_speech_manifest_specs),
+        "musan_directory": musan_directory,
+        "musan_partition": "noise_only" if musan else None,
         "duration_range_seconds": [config.min_duration_seconds, config.max_duration_seconds],
         "max_target_tokens": config.max_target_length,
         "production_world_size": config.expected_world_size,
@@ -188,11 +193,20 @@ def prepare_from_training_config(
     seeds=None,
     max_steps=200,
     hash_audio=False,
+    musan=False,
 ):
     for value in (train_per_language, eval_per_language, non_speech_per_language, max_steps):
         if type(value) is not int or value < 1:
             raise ValueError("Sample limits and max_steps must be positive integers")
     config, source = _load_config(path, qasr_source)
+    musan_directory = None
+    if musan:
+        from .musan import configured_musan_directory, noise_directory, prepare_musan_noise
+
+        if config.non_speech_manifest_specs:
+            raise ValueError("Use either --musan or configured non_speech_manifest, not both")
+        musan_directory = configured_musan_directory(config)
+        noise_directory(musan_directory)
     seeds = [config.seed, config.seed + 1] if seeds is None else seeds
     if (
         not seeds
@@ -221,6 +235,7 @@ def prepare_from_training_config(
             "sha256": file_hash(path),
             "values": config.to_dict(),
             "checkpoint_selected": checkpoint,
+            "musan_directory_selected": musan_directory,
             "environment": environment(),
         },
     )
@@ -241,6 +256,30 @@ def prepare_from_training_config(
                     raise ValueError(f"Audio checksum mismatch: {sample['id']}")
                 sample["audio_sha256"] = actual
         protected = _identity_index(validation)
+        musan_provenance, musan_panels = None, None
+        if musan:
+            musan_panels, originals, musan_provenance = prepare_musan_noise(
+                musan_directory,
+                out / "musan-audio",
+                languages={language for _, language in config.train_manifest_specs},
+                per_language=non_speech_per_language,
+                seed=config.data_seed,
+                min_seconds=config.min_duration_seconds,
+                max_seconds=config.max_duration_seconds,
+                protected=protected,
+            )
+            # Compare full configured speech manifests with original noise paths/hashes,
+            # not just with the derived crop filenames. They must not contain these
+            # supposed empty-target recordings as transcribed speech in either split.
+            protected = _identity_index(
+                [
+                    *validation,
+                    *originals["train"],
+                    *originals["validation"],
+                    *musan_panels["train"],
+                    *musan_panels["validation"],
+                ]
+            )
         train, train_sources, overlaps = _collect(
             config.train_manifest_specs,
             config,
@@ -249,6 +288,9 @@ def prepare_from_training_config(
             protected=protected,
         )
         silence, silence_sources = [], []
+        if musan_panels:
+            silence = musan_panels["train"]
+            silence_sources = [{"musan_provenance": str(out / "musan-audio/provenance.json")}]
         if config.non_speech_manifest_specs:
             silence, silence_sources, silence_overlaps = _collect(
                 config.non_speech_manifest_specs,
@@ -315,7 +357,14 @@ def prepare_from_training_config(
                     **provenance,
                     "sources": silence_sources,
                     "per_language_limit": non_speech_per_language,
+                    "musan": musan_provenance,
                 },
+            )
+        if musan_panels:
+            save_panel(
+                musan_panels["validation"],
+                out / "non-speech-validation-panel",
+                {**provenance, "musan": musan_provenance},
             )
         base = {
             **DEFAULTS,
@@ -399,13 +448,18 @@ def prepare_from_training_config(
             },
         )
         result = {
-            **inspect_training_config(path, qasr_source=qasr_source, checkpoint=checkpoint),
+            **inspect_training_config(
+                path, qasr_source=qasr_source, checkpoint=checkpoint, musan=musan
+            ),
             "status": "prepared",
             "output": str(out),
             "seeds": seeds,
             "selected_train": len(train),
             "selected_validation": len(validation),
             "selected_non_speech": len(silence),
+            "selected_non_speech_validation": len(musan_panels["validation"])
+            if musan_panels
+            else 0,
             "experiments": sum(len(plan["experiments"]) for plan in plans),
             "pilot_settings": {
                 "steps": max_steps,

@@ -63,6 +63,42 @@ These are small adaptation pilots: batch size 1, accumulation 8, 200 steps, cosi
 
 The current v8.1 files contain 22 training manifests, 6 validation manifests, and no non-speech manifest. They do not define a separate test set. The adapter therefore labels the evaluation panel as existing configured validation data and never creates a fictional held-out test panel. A later independent test set is still needed for final claims.
 
+### Reuse the configured MUSAN directory
+
+Add `--musan` to prepare empty-target noise examples using `augmentation.noise_injection.noise_dir` from the same YAML. The v8.1 path is `/lustrefs/shared/shahin.konadath/workspace/train/stt/musan`. This is an opt-in lab setting; it does not change the production YAML or augmentation.
+
+~~~sh
+python -m qasr_lab from-training-config \
+  --config configs/v8.1/02_full_12node.yaml --musan --inspect
+
+export QASR_LAB_RUN="$PWD/qasr_lab/outputs/v81-musan-$(date +%Y%m%d-%H%M%S)"
+
+python -m qasr_lab from-training-config \
+  --config configs/v8.1/02_full_12node.yaml \
+  --output "$QASR_LAB_RUN" --musan \
+  --train-per-language 500 --eval-per-language 50 \
+  --non-speech-per-language 50 --seeds 42 43 --hash-audio
+~~~
+
+Only the standard `noise/` partition is read. The [MUSAN paper](https://arxiv.org/abs/1510.08484) describes this partition as excluding intelligible speech, although indistinct crowd voices can occur. The speech and music partitions are excluded; music can contain vocals. This trusts the corpus labels and does not run a speech detector. The loader requires the standard 16 kHz mono WAV format and fails explicitly for a missing partition or incompatible file.
+
+The lab hashes eligible source files, groups byte-identical copies, reserves 20% of unique recordings for diagnostics, and creates one deterministic crop of at most 10 seconds per selected recording (subject to the configured duration limits). Sampling caps apply after the split. Crops and their source hashes/offsets are saved under `musan-audio/`; the original corpus is unchanged. Decoder prompt languages are distributed across configured languages; this does not assign a spoken language to noise. The limit of 50 per language is a cap, not a requirement when the partition has fewer recordings.
+
+`non-speech-panel/` feeds only the additional `non_speech` training variant. `non-speech-validation-panel/` contains different source recordings and is used for generation-based diagnostics. This makes five variants per seed, or ten jobs for two seeds; run at most eight simultaneously on the 8-GPU machine. Compare `non_speech` with `control`, using both the ordinary speech validation panel and the noise diagnostic panel. Other variants and the CTC smoke test retain their original speech-only data. A configured `non_speech_manifest` and `--musan` cannot be combined in one preparation run.
+
+To measure the initial checkpoint's false-transcription rate:
+
+~~~sh
+CUDA_VISIBLE_DEVICES=0 python -m qasr_lab run \
+  --model "$QASR_LAB_RUN/eval-initial.json" \
+  --panel "$QASR_LAB_RUN/non-speech-validation-panel" \
+  --output "$QASR_LAB_RUN/evaluation-initial-noise"
+~~~
+
+After training, use the same panel with `eval-control-42.json` and `eval-non_speech-42.json`, writing each result to its own new output directory. Repeat for seed 43. Report false-transcription rate and generated words/characters per minute alongside speech WER/CER. These MUSAN recordings may already have been used in production augmentation, so the noise panel is a diagnostic split for this pilot, not an independent held-out test set.
+
+### Launch and evaluate the prepared pilots
+
 After the smoke test passes, each plan can run on one GPU. For example:
 
 ~~~sh
@@ -70,7 +106,7 @@ CUDA_VISIBLE_DEVICES=0 python -u -m qasr_lab train \
   --config "$QASR_LAB_RUN/seed-42/control.json"
 ~~~
 
-The four current variants across seeds 42 and 43 fit eight independent GPU jobs. Evaluate the starting checkpoint before the pilots, and compare trained checkpoints against both it and their appropriate adaptation control:
+The four default variants across seeds 42 and 43 fit eight independent GPU jobs; adding non-speech gives ten. Evaluate the starting checkpoint before the pilots, and compare trained checkpoints against both it and their appropriate adaptation control:
 
 ~~~sh
 CUDA_VISIBLE_DEVICES=0 python -m qasr_lab run \

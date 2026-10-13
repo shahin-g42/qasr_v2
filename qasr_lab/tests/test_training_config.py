@@ -89,6 +89,9 @@ def test_inspect_real_v81_configs_reads_source_paths_without_scanning():
         assert result["checkpoint"].endswith("/models/bck/full/v1")
         assert result["test_panel"] is None
         assert result["non_speech_manifests"] == 0
+        musan = inspect_training_config(repo / "configs/v8.1" / filename, musan=True)
+        assert musan["musan_directory"].endswith("/stt/musan")
+        assert musan["musan_partition"] == "noise_only"
 
 
 def test_config_builds_capped_panels_plans_and_smoke_without_touching_inputs(configured, tmp_path):
@@ -193,3 +196,58 @@ def test_cli_inspect_and_missing_eval_fail_explicitly(configured, capsys):
     path.write_text(yaml.safe_dump(config))
     with pytest.raises(ValueError, match="explicit eval_manifest"):
         inspect_training_config(path)
+
+
+def test_musan_from_yaml_adds_training_variant_and_separate_noise_diagnostics(configured, tmp_path):
+    from .test_musan import make_corpus
+
+    path, config, _ = configured
+    root = tmp_path / "musan"
+    make_corpus(root)
+    config["augmentation"] = {"noise_injection": {"enabled": True, "noise_dir": str(root)}}
+    path.write_text(yaml.safe_dump(config))
+    original_config = file_hash(path)
+    out = tmp_path / "lab"
+    result = prepare_from_training_config(
+        path, out, seeds=[42], musan=True, non_speech_per_language=2
+    )
+    assert result["experiments"] == 5
+    assert result["selected_non_speech"] == result["selected_non_speech_validation"] == 4
+    assert result["non_speech_manifests"] == 0  # Source YAML remains unchanged.
+    assert file_hash(path) == original_config
+    _, speech = load_panel(out / "validation-panel")
+    _, noise = load_panel(out / "non-speech-validation-panel")
+    assert all(row["text"] for row in speech)
+    assert all(row["text"] == "" for row in noise)
+    variant = load_experiment(out / "seed-42/non_speech.json")
+    assert variant["comparison_baseline"] == "control"
+    assert variant["non_speech_panel"] == str(out / "non-speech-panel")
+    assert "non_speech_panel" not in load_experiment(out / "seed-42/control.json")
+    assert result["test_panel"] is None
+    crop = read_json(out / "musan-audio/provenance.json")["crops"][0]
+    with Path(config["train_manifest"]["en"][0]).open("a") as handle:
+        handle.write(
+            json.dumps(
+                {
+                    "audio_filepath": crop["source"]["path"],
+                    "duration": 0.3,
+                    "text": "incorrectly transcribed noise",
+                }
+            )
+            + "\n"
+        )
+    # Original source paths are checked even though the panels point to derived crops.
+    with pytest.raises(ValueError, match="training/validation overlap"):
+        prepare_from_training_config(
+            path, tmp_path / "overlap", seeds=[42], musan=True, non_speech_per_language=2
+        )
+
+
+def test_musan_requires_source_and_cannot_mix_with_explicit_manifest(configured):
+    path, config, _ = configured
+    with pytest.raises(ValueError, match="requires augmentation"):
+        inspect_training_config(path, musan=True)
+    config["non_speech_manifest"] = {"en": "/not/scanned.jsonl"}
+    path.write_text(yaml.safe_dump(config))
+    with pytest.raises(ValueError, match="either --musan"):
+        prepare_from_training_config(path, path.parent / "out", musan=True)

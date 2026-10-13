@@ -172,6 +172,11 @@ def parser():
     source.add_argument("--train-per-language", type=int, default=500)
     source.add_argument("--eval-per-language", type=int, default=50)
     source.add_argument("--non-speech-per-language", type=int, default=50)
+    source.add_argument(
+        "--musan",
+        action="store_true",
+        help="Prepare empty-target noise panels from the YAML noise_injection.noise_dir",
+    )
     source.add_argument("--seeds", type=int, nargs="+")
     source.add_argument("--max-steps", type=int, default=200)
     source.add_argument("--hash-audio", action="store_true")
@@ -184,7 +189,10 @@ def dispatch(args):
 
         if args.inspect:
             return inspect_training_config(
-                args.config, qasr_source=args.qasr_source, checkpoint=args.checkpoint
+                args.config,
+                qasr_source=args.qasr_source,
+                checkpoint=args.checkpoint,
+                musan=args.musan,
             )
         if not args.output:
             raise ValueError("--output is required unless --inspect is used")
@@ -199,6 +207,7 @@ def dispatch(args):
             seeds=args.seeds,
             max_steps=args.max_steps,
             hash_audio=args.hash_audio,
+            musan=args.musan,
         )
     if args.command == "panel":
         result = prepare_panel(

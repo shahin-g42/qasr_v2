@@ -1,0 +1,12 @@
+{
+  "id": "native-cohere",
+  "backend": "cohere",
+  "checkpoint": "/replace/with/cohere-transcribe-checkpoint",
+  "device": "cuda:0",
+  "dtype": "bfloat16",
+  "max_new_tokens": 768,
+  "warmup_samples": 3,
+  "language_hints": true,
+  "hash_weights": true,
+  "max_audio_seconds": 35
+}

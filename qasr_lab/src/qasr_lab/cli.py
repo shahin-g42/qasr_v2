@@ -158,9 +158,17 @@ def parser():
     )
     plan.add_argument("--base", required=True)
     plan.add_argument("--non-speech-panel")
+    plan.add_argument(
+        "--include-ctc", action="store_true", help="Opt in to the auxiliary CTC pilot"
+    )
     plan.add_argument("--output", required=True)
     train = commands.add_parser("train", help="Run one isolated, single-device pilot")
     train.add_argument("--config", required=True)
+    train.add_argument(
+        "--baseline-smoke",
+        action="store_true",
+        help="Reuse prepared panels for a two-step baseline; disable CTC/bridge/masked pooling and use a new output directory",
+    )
     source = commands.add_parser(
         "from-training-config", help="Prepare lab panels and pilots from an existing QASR YAML"
     )
@@ -172,6 +180,9 @@ def parser():
     source.add_argument("--train-per-language", type=int, default=500)
     source.add_argument("--eval-per-language", type=int, default=50)
     source.add_argument("--non-speech-per-language", type=int, default=50)
+    source.add_argument(
+        "--include-ctc", action="store_true", help="Opt in to the auxiliary CTC pilot"
+    )
     source.add_argument(
         "--sampling",
         choices=("records", "full"),
@@ -223,6 +234,7 @@ def dispatch(args):
             sampling=args.sampling,
             candidates_per_manifest=args.candidates_per_manifest,
             sample_cache=args.sample_cache,
+            include_ctc=args.include_ctc,
         )
     if args.command == "panel":
         result = prepare_panel(
@@ -272,7 +284,12 @@ def dispatch(args):
     if args.command == "plan":
         from .experiments import create_plan
 
-        result = create_plan(args.base, args.output, non_speech_panel=args.non_speech_panel)
+        result = create_plan(
+            args.base,
+            args.output,
+            non_speech_panel=args.non_speech_panel,
+            include_ctc=args.include_ctc,
+        )
         return {
             "output": str(Path(args.output).resolve()),
             "experiments": len(result["experiments"]),
@@ -280,7 +297,7 @@ def dispatch(args):
     if args.command == "train":
         from .experiments import run_experiment
 
-        return run_experiment(args.config)
+        return run_experiment(args.config, baseline_smoke=args.baseline_smoke)
     raise ValueError("Unknown command")
 
 

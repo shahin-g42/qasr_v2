@@ -61,11 +61,22 @@ Preparation creates:
 
 - train-panel and validation-panel, plus a non-speech-panel when configured or requested with MUSAN.
 - base-42.json / base-43.json and seed-42 / seed-43 plans with separate run directories.
-- smoke.json with two optimizer steps and small subsets of both panels.
+- smoke.json with two optimizer steps of the baseline (CTC off), and small subsets of both panels.
 - eval-initial.json and eval-variant-seed.json configurations for generated transcripts.
 - source-config.json and prepared.json with provenance, scan/filter counts, and the pilot settings.
 
 These are small adaptation pilots: batch size 1, accumulation 8, 200 steps, cosine scheduling, and the trainable-component choices described below. They do not reproduce production world size, weighted language quotas, augmentation, online code switching, label smoothing, or the full training schedule. The production YAML and pipeline remain unchanged.
+
+CTC is disabled by default, matching the current v8.1 recipe (`ctc_loss_weight: 0.0`). New plans contain `control`, `upper_encoder`, and `residual_bridge`; MUSAN adds `non_speech`. Add `--include-ctc` to `from-training-config` or `plan` only when intentionally testing the auxiliary loss. Even with that option, `smoke.json` remains the baseline.
+
+For an already prepared run whose old smoke configuration enables CTC, retry without rebuilding panels:
+
+~~~sh
+CUDA_VISIBLE_DEVICES=0 python -u -m qasr_lab train \
+  --config "$QASR_LAB_RUN/smoke.json" --baseline-smoke
+~~~
+
+`--baseline-smoke` reuses the referenced train/validation panels and checkpoint, sets two steps, trains the existing projector, and disables CTC, the residual bridge, and masked pooling. It prints and writes to a new `smoke-control-<id>` directory beside the original output, preserving failed runs and input JSON. It does not resume optimizer state. Existing `ctc.json` files are not deleted or rewritten; leave them unused until opting into that experiment.
 
 The current v8.1 files contain 22 training manifests, 6 validation manifests, and no non-speech manifest. They do not define a separate test set. The adapter therefore labels the evaluation panel as existing configured validation data and never creates a fictional held-out test panel. A later independent test set is still needed for final claims.
 
@@ -91,7 +102,7 @@ Only the standard `noise/` partition is read. The [MUSAN paper](https://arxiv.or
 
 The lab hashes eligible source files, groups byte-identical copies, reserves 20% of unique recordings for diagnostics, and creates one deterministic crop of at most 10 seconds per selected recording (subject to the configured duration limits). Sampling caps apply after the split. Crops and their source hashes/offsets are saved under `musan-audio/`; the original corpus is unchanged. Decoder prompt languages are distributed across configured languages; this does not assign a spoken language to noise. The limit of 50 per language is a cap, not a requirement when the partition has fewer recordings.
 
-`non-speech-panel/` feeds only the additional `non_speech` training variant. `non-speech-validation-panel/` contains different source recordings and is used for generation-based diagnostics. This makes five variants per seed, or ten jobs for two seeds; run at most eight simultaneously on the 8-GPU machine. Compare `non_speech` with `control`, using both the ordinary speech validation panel and the noise diagnostic panel. Other variants and the CTC smoke test retain their original speech-only data. A configured `non_speech_manifest` and `--musan` cannot be combined in one preparation run.
+`non-speech-panel/` feeds only the additional `non_speech` training variant. `non-speech-validation-panel/` contains different source recordings and is used for generation-based diagnostics. With CTC disabled, this makes four variants per seed, or eight jobs for two seeds. Compare `non_speech` with `control`, using both the ordinary speech validation panel and the noise diagnostic panel. Other variants and the baseline smoke test retain their original speech-only data. A configured `non_speech_manifest` and `--musan` cannot be combined in one preparation run.
 
 To measure the initial checkpoint's false-transcription rate:
 
@@ -113,7 +124,7 @@ CUDA_VISIBLE_DEVICES=0 python -u -m qasr_lab train \
   --config "$QASR_LAB_RUN/seed-42/control.json"
 ~~~
 
-The four default variants across seeds 42 and 43 fit eight independent GPU jobs; adding non-speech gives ten. Evaluate the starting checkpoint before the pilots, and compare trained checkpoints against both it and their appropriate adaptation control:
+The three default variants across seeds 42 and 43 make six independent GPU jobs; adding non-speech gives eight. Explicitly opting into CTC adds two more. Evaluate the starting checkpoint before the pilots, and compare trained checkpoints against both it and their appropriate adaptation control:
 
 ~~~sh
 CUDA_VISIBLE_DEVICES=0 python -m qasr_lab run \
@@ -241,7 +252,7 @@ Plan creation only writes JSON configurations. Launch the variants individually:
 | non_speech | Add an empty-transcript panel to the training mixture | control |
 | upper_encoder | Also train the last four Conformer blocks, configurable | control |
 | residual_bridge | Add LayerNorm → Linear → GELU → zero-initialized Linear after the existing bridge | control |
-| ctc | Add compact transcript-only CTC, weight 0.1 | upper_encoder |
+| ctc (opt-in) | Add compact transcript-only CTC, weight 0.1; requires --include-ctc | upper_encoder |
 
 All configurations start from the same vanilla checkpoint and retain the same seed, validation panel, optimizer-step budget, batch size, accumulation, and learning rates. The CTC comparator deliberately has the same trainable encoder blocks. Adding non-speech changes the sample mixture and speech exposure; record that distinction when interpreting results.
 
@@ -252,6 +263,8 @@ CTC uses only raw transcript tokens, without language markers, prompt tokens, or
 For a checkpoint with pooling stride greater than one, set mask_pool_padding to true in a separate pilot to zero padded encoder states before convolution. Stride one is rejected as an ineffective experiment. Processor/model stride settings must already agree. The lab does not change token rates or add vLLM support.
 
 The pilot runner is an independent **single-device** PyTorch loop, without the production launcher, Trainer, augmentation, distributed sampler, or optimizer state. It uses float32 parameters/AdamW state with optional bfloat16 autocast, gradient clipping, cosine decay, and optional non-reentrant activation checkpointing. Frozen BatchNorm buffers stay fixed. Incomplete batches are dropped so accumulation has a constant batch size; small pilot panels repeat as needed.
+
+`LabQASRForConditionalGeneration` loads the existing QASR checkpoint into the same Cohere encoder, projector and Qwen decoder. With extensions disabled its parameter names and shapes match the baseline. Its lab-only fusion override casts projected audio to the actual token-embedding dtype before insertion, fixing the FP32-embedding/BF16-projector mismatch under autocast without casting master weights. Optional heads or bridge modules are created only when selected. A missing `lab_ctc_head.weight` load message is expected only for a CTC experiment initialized from a checkpoint without that head; ordinary baseline runs do not create it.
 
 It saves configuration, provenance, parameter counts, a loss/CTC journal, initial/final validation CE, and a new final checkpoint. It does not resume production runs or provide fault-tolerant intermediate optimizer checkpoints. Large models still need adequate accelerator memory; this is not a replacement for the production distributed trainer.
 

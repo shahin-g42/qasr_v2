@@ -6,6 +6,7 @@ import copy
 import math
 import os
 import time
+import uuid
 from collections import Counter
 from pathlib import Path
 
@@ -139,7 +140,7 @@ def load_experiment_panels(config):
     return train, evaluation, provenance
 
 
-def create_plan(base_config, output, *, non_speech_panel=None):
+def create_plan(base_config, output, *, non_speech_panel=None, include_ctc=False):
     base = load_experiment(base_config)
     # A controlled suite starts with a vanilla checkpoint and projector-only control.
     if (
@@ -155,12 +156,13 @@ def create_plan(base_config, output, *, non_speech_panel=None):
         "control": {},
         "upper_encoder": {"trainable": "upper_encoder"},
         "residual_bridge": {"bridge_dim": 512},
-        "ctc": {
+    }
+    if include_ctc:
+        variants["ctc"] = {
             "trainable": "upper_encoder",
             "ctc_weight": 0.1,
             "comparison_baseline": "upper_encoder",
-        },
-    }
+        }
     if non_speech_panel:
         variants["non_speech"] = {"non_speech_panel": str(Path(non_speech_panel).resolve())}
     out = fresh_directory(output)
@@ -234,7 +236,7 @@ def optimizer_groups(model, config):
     return list(groups.values())
 
 
-def run_experiment(config_path):
+def run_experiment(config_path, *, baseline_smoke=False):
     import json
     from contextlib import nullcontext
 
@@ -243,6 +245,19 @@ def run_experiment(config_path):
     from transformers import set_seed
 
     config = load_experiment(config_path)
+    if baseline_smoke:
+        config.update(
+            id="control-smoke",
+            trainable="projector",
+            ctc_weight=0.0,
+            bridge_dim=0,
+            mask_pool_padding=False,
+            max_steps=2,
+            warmup_steps=0,
+            comparison_baseline="initial-checkpoint",
+            output=str(Path(config["output"]).parent / f"smoke-control-{uuid.uuid4().hex[:8]}"),
+        )
+        config.pop("non_speech_panel", None)
     if int(os.environ.get("WORLD_SIZE", "1")) != 1:
         raise ValueError("The lab pilot runner is single-process; do not launch with torchrun")
     device = torch.device(config["device"])
@@ -263,6 +278,7 @@ def run_experiment(config_path):
     )
 
     out = fresh_directory(config["output"])
+    print(f"Lab run output: {out}", flush=True)
     write_json(out / "experiment.json", config)
     write_json(
         out / "provenance.json",
@@ -302,6 +318,12 @@ def run_experiment(config_path):
             transcript_vocabulary(processor.tokenizer, train, maximum=config["ctc_max_vocabulary"])
             if config["ctc_weight"]
             else []
+        )
+        print(
+            f"Loading existing QASR checkpoint for lab pilot {config['id']}: "
+            f"trainable={config['trainable']}, bridge_dim={config['bridge_dim']}, "
+            f"ctc_weight={config['ctc_weight']}",
+            flush=True,
         )
         model = LabQASRForConditionalGeneration.from_pretrained(
             config["checkpoint"],

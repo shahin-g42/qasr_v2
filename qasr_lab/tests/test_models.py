@@ -42,6 +42,7 @@ def tiny_config():
             subsampling_conv_stride=2,
             conv_kernel_size=3,
             max_position_embeddings=256,
+            layerdrop=0.0,
         ),
         text_config=Qwen3Config(
             vocab_size=128,
@@ -79,9 +80,35 @@ def test_default_lab_model_is_numerically_identical():
     baseline = QASRForConditionalGeneration(tiny_config()).eval()
     lab = LabQASRForConditionalGeneration(copy.deepcopy(baseline.config)).eval()
     lab.load_state_dict(baseline.state_dict(), strict=True)
+    assert lab.lab_ctc_head is None and lab.lab_ctc_weight == 0
+    assert set(lab.state_dict()) == set(baseline.state_dict())
     inputs = batch()
     with torch.no_grad():
         assert torch.equal(baseline(**inputs).logits, lab(**inputs).logits)
+
+
+@pytest.mark.parametrize("explicit_embeddings", [False, True])
+def test_bfloat16_fusion_preserves_gradients_and_uses_actual_embedding_dtype(explicit_embeddings):
+    model = LabQASRForConditionalGeneration(tiny_config()).train()
+    configure_trainable(model, "upper_encoder", upper_layers=1)
+    model.gradient_checkpointing_enable({"use_reentrant": False})
+    inputs = batch()
+    if explicit_embeddings:
+        inputs["inputs_embeds"] = model.get_input_embeddings()(inputs["input_ids"]).to(
+            torch.bfloat16
+        )
+    with torch.autocast("cpu", dtype=torch.bfloat16):
+        output = model(**inputs, use_cache=False)
+    assert torch.isfinite(output.loss)
+    output.loss.backward()
+    for weight in (
+        model.model.multi_modal_projector.linear_2.weight,
+        model.model.audio_tower.layers[-1].feed_forward1.linear1.weight,
+    ):
+        assert weight.dtype == torch.float32
+        assert weight.grad is not None and torch.isfinite(weight.grad).all()
+        assert torch.count_nonzero(weight.grad) > 0
+    assert model.lab_ctc_head is None
 
 
 def test_masked_pooling_matches_unpadded_boundary_and_gradient():
@@ -299,8 +326,10 @@ def pilot(tmp_path):
 
 
 @pytest.mark.parametrize("variant", ["control", "bridge", "ctc"])
-def test_one_step_pilot_and_inference(pilot, variant):
+@pytest.mark.parametrize("precision", ["float32", "bfloat16"])
+def test_one_step_pilot_and_inference(pilot, variant, precision):
     path, config = pilot
+    config["precision"] = precision
     if variant == "bridge":
         config["bridge_dim"] = 7
     if variant == "ctc":
@@ -313,6 +342,7 @@ def test_one_step_pilot_and_inference(pilot, variant):
         assert result["ctc_feasible_fraction"] == 1.0
     inference_config = {
         "id": variant,
+        "dtype": precision,
         "checkpoint": result["checkpoint"],
         "backend": "qasr-lab",
         "qasr_source": config["qasr_source"],
@@ -343,7 +373,13 @@ def test_one_step_pilot_and_inference(pilot, variant):
 def test_plan_ctc_has_correct_control_and_runs_are_fresh(pilot):
     path, config = pilot
     write_json(path / "config.json", config)
-    plan = create_plan(path / "config.json", path / "plan")
+    default = create_plan(path / "config.json", path / "default-plan")
+    assert {row["id"] for row in default["experiments"]} == {
+        "control",
+        "upper_encoder",
+        "residual_bridge",
+    }
+    plan = create_plan(path / "config.json", path / "plan", include_ctc=True)
     ctc = next(row for row in plan["experiments"] if row["id"] == "ctc")
     assert ctc["comparison_baseline"] == "upper_encoder"
     loaded = load_experiment(ctc["config"])
@@ -351,3 +387,32 @@ def test_plan_ctc_has_correct_control_and_runs_are_fresh(pilot):
     assert loaded["max_steps"] == config["max_steps"]
     with pytest.raises(FileExistsError):
         create_plan(path / "config.json", path / "plan")
+
+
+def test_baseline_smoke_reuses_panels_disables_extensions_and_preserves_old_run(pilot):
+    path, config = pilot
+    config.update(
+        trainable="upper_encoder",
+        ctc_weight=0.1,
+        bridge_dim=7,
+        mask_pool_padding=True,
+        precision="bfloat16",
+    )
+    config["non_speech_panel"] = str(path / "unused-non-speech-panel")
+    write_json(path / "old-smoke.json", config)
+    (path / "run").mkdir()
+    (path / "run/failure.json").write_text('{"error":"original failed run"}')
+    result = run_experiment(path / "old-smoke.json", baseline_smoke=True)
+    assert result["steps"] == 2 and result["ctc"] == {}
+    output = Path(result["checkpoint"]).parent
+    assert output != path / "run" and output.name.startswith("smoke-control-")
+    actual = read_json(output / "experiment.json")
+    assert actual["train_panel"] == config["train_panel"]
+    assert actual["eval_panel"] == config["eval_panel"]
+    assert actual["trainable"] == "projector" and actual["ctc_weight"] == 0
+    assert actual["bridge_dim"] == 0 and actual["mask_pool_padding"] is False
+    assert "non_speech_panel" not in actual
+    assert read_json(path / "old-smoke.json") == config
+    assert read_json(path / "run/failure.json")["error"] == "original failed run"
+    restored = LabQASRForConditionalGeneration.from_pretrained(result["checkpoint"])
+    assert restored.lab_ctc_head is None

@@ -287,6 +287,7 @@ def prepare_from_training_config(
     sampling="records",
     candidates_per_manifest=2000,
     sample_cache=None,
+    include_ctc=False,
 ):
     for value in (train_per_language, eval_per_language, non_speech_per_language, max_steps):
         if type(value) is not int or value < 1:
@@ -513,7 +514,12 @@ def prepare_from_training_config(
         for seed in seeds:
             base_path = out / f"base-{seed}.json"
             write_json(base_path, {**base, "seed": seed, "output": str(out / f"base-run-{seed}")})
-            plan = create_plan(base_path, out / f"seed-{seed}", non_speech_panel=silence_panel)
+            plan = create_plan(
+                base_path,
+                out / f"seed-{seed}",
+                non_speech_panel=silence_panel,
+                include_ctc=include_ctc,
+            )
             plans.append(plan)
             for entry in plan["experiments"]:
                 experiment = read_json(entry["config"])
@@ -546,7 +552,7 @@ def prepare_from_training_config(
                     "role": "smoke_subset",
                 },
             )
-        smoke = read_json(out / f"seed-{seeds[0]}" / "ctc.json")
+        smoke = read_json(out / f"seed-{seeds[0]}" / "control.json")
         smoke.update(
             max_steps=2,
             warmup_steps=0,
@@ -590,6 +596,7 @@ def prepare_from_training_config(
             if musan_panels
             else 0,
             "experiments": sum(len(plan["experiments"]) for plan in plans),
+            "ctc_pilots_included": include_ctc,
             "pilot_settings": {
                 "steps": max_steps,
                 "warmup_steps": base["warmup_steps"],

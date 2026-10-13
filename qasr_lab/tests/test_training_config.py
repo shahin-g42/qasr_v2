@@ -108,7 +108,8 @@ def test_config_builds_capped_panels_plans_and_smoke_without_touching_inputs(con
     )
     assert result["selected_train"] == 4  # cap spans both English manifests
     assert result["selected_validation"] == 2
-    assert result["experiments"] == 8
+    assert result["experiments"] == 6
+    assert result["ctc_pilots_included"] is False
     assert result["seeds"] == [42, 43]
     assert result["test_panel"] is None
     assert not (out / "test-panel").exists()
@@ -132,12 +133,13 @@ def test_config_builds_capped_panels_plans_and_smoke_without_touching_inputs(con
     assert base["batch_size"] == 1 and base["gradient_accumulation_steps"] == 8
     assert "resume_from_checkpoint" not in base
     assert Path(base["output"]).is_relative_to(out)
-    ctc = load_experiment(out / "seed-42/ctc.json")
-    assert ctc["comparison_baseline"] == "upper_encoder"
+    assert not (out / "seed-42/ctc.json").exists()
     assert read_json(out / "eval-initial.json")["backend"] == "qasr"
-    assert read_json(out / "eval-ctc-42.json")["backend"] == "qasr-lab"
+    assert read_json(out / "eval-control-42.json")["backend"] == "qasr-lab"
     smoke = load_experiment(out / "smoke.json")
     assert smoke["max_steps"] == 2
+    assert smoke["ctc_weight"] == 0 and smoke["bridge_dim"] == 0
+    assert smoke["trainable"] == "projector"
     assert smoke["train_panel"] == str(out / "smoke-train-panel")
     for file, before in originals.items():
         assert file_hash(file) == before
@@ -181,7 +183,7 @@ def test_non_speech_is_only_included_when_configured(configured, tmp_path):
     path.write_text(yaml.safe_dump(config))
     result = prepare_from_training_config(path, tmp_path / "lab", seeds=[42])
     assert result["selected_non_speech"] == 1
-    assert result["experiments"] == 5
+    assert result["experiments"] == 4
     _, silence = load_panel(tmp_path / "lab/non-speech-panel")
     assert silence[0]["text"] == ""
     assert load_experiment(tmp_path / "lab/seed-42/non_speech.json")["non_speech_panel"]
@@ -198,12 +200,27 @@ def test_cli_inspect_and_missing_eval_fail_explicitly(configured, capsys):
         inspect_training_config(path)
 
 
+def test_ctc_pilot_requires_opt_in_and_smoke_stays_baseline(configured, tmp_path):
+    path, _, _ = configured
+    out = tmp_path / "lab"
+    result = prepare_from_training_config(path, out, seeds=[42], include_ctc=True)
+    assert result["experiments"] == 4 and result["ctc_pilots_included"] is True
+    ctc = load_experiment(out / "seed-42/ctc.json")
+    assert ctc["ctc_weight"] == 0.1 and ctc["comparison_baseline"] == "upper_encoder"
+    smoke = load_experiment(out / "smoke.json")
+    assert smoke["id"] == "control" and smoke["ctc_weight"] == 0
+
+
 def test_musan_from_yaml_adds_training_variant_and_separate_noise_diagnostics(configured, tmp_path):
-    from .test_musan import make_corpus
+    import numpy as np
+    import soundfile as sf
 
     path, config, _ = configured
     root = tmp_path / "musan"
-    make_corpus(root)
+    (root / "noise/fixture").mkdir(parents=True)
+    rng = np.random.default_rng(17)
+    for index in range(20):
+        sf.write(root / "noise/fixture" / f"{index}.wav", rng.normal(0, 0.1, 4800), 16000)
     config["augmentation"] = {"noise_injection": {"enabled": True, "noise_dir": str(root)}}
     path.write_text(yaml.safe_dump(config))
     original_config = file_hash(path)
@@ -211,7 +228,7 @@ def test_musan_from_yaml_adds_training_variant_and_separate_noise_diagnostics(co
     result = prepare_from_training_config(
         path, out, seeds=[42], musan=True, non_speech_per_language=2
     )
-    assert result["experiments"] == 5
+    assert result["experiments"] == 4
     assert result["selected_non_speech"] == result["selected_non_speech_validation"] == 4
     assert result["non_speech_manifests"] == 0  # Source YAML remains unchanged.
     assert file_hash(path) == original_config

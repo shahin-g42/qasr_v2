@@ -8,10 +8,16 @@ import torch
 from qasr.configuration import QASRConfig
 from qasr.modeling import (
     QASRForConditionalGeneration,
+    QASRModel,
     QASRMultiModalProjector,
     QASRPoolingConv,
 )
 from torch import nn
+from transformers.models.qwen3_asr.modeling_qwen3_asr import (
+    Qwen3ASRModelOutputWithPast,
+    Qwen3ASRPreTrainedModel,
+)
+from transformers.utils import can_return_tuple
 
 
 class LabQASRConfig(QASRConfig):
@@ -134,6 +140,56 @@ def transcript_ctc_loss(logits, lengths, targets):
     return loss, stats
 
 
+class LabQASRModel(QASRModel):
+    """Same QASR modules and state keys, with dtype-safe audio-token insertion."""
+
+    @can_return_tuple
+    def forward(
+        self,
+        input_ids=None,
+        input_features=None,
+        input_features_mask=None,
+        attention_mask=None,
+        position_ids=None,
+        past_key_values=None,
+        inputs_embeds=None,
+        use_cache=None,
+        **kwargs,
+    ):
+        # Mirrors the pinned Transformers 5.14 Qwen3-ASR fusion path. Its
+        # masked_scatter casts only device; AMP can leave token embeddings FP32
+        # while the projector's linear output is BF16. Cast to the actual
+        # destination tensor, keeping gradients and the FP32 master weights.
+        if inputs_embeds is None:
+            inputs_embeds = self.get_input_embeddings()(input_ids)
+        audio_embeds = None
+        if input_features is not None and input_ids is not None:
+            audio_embeds = self.get_audio_features(
+                input_features, input_features_mask, return_dict=True
+            ).pooler_output
+            mask = self.get_placeholder_mask(
+                input_ids, inputs_embeds=inputs_embeds, audio_features=audio_embeds
+            )
+            inputs_embeds = inputs_embeds.masked_scatter(
+                mask, audio_embeds.to(device=inputs_embeds.device, dtype=inputs_embeds.dtype)
+            )
+        outputs = self.language_model(
+            inputs_embeds=inputs_embeds,
+            attention_mask=attention_mask,
+            position_ids=position_ids,
+            past_key_values=past_key_values,
+            use_cache=use_cache,
+            **kwargs,
+        )
+        return Qwen3ASRModelOutputWithPast(
+            last_hidden_state=outputs.last_hidden_state,
+            past_key_values=outputs.past_key_values,
+            hidden_states=outputs.hidden_states,
+            attentions=outputs.attentions,
+            audio_hidden_states=audio_embeds,
+        )
+
+
 class LabQASRForConditionalGeneration(QASRForConditionalGeneration):
     """Baseline-compatible checkpoint format with explicit lab-only extensions."""
 
@@ -144,7 +200,15 @@ class LabQASRForConditionalGeneration(QASRForConditionalGeneration):
             original = config
             config = LabQASRConfig(**original.to_dict())
             config._attn_implementation = original._attn_implementation
-        super().__init__(config)
+        # Same initialization as QASRForConditionalGeneration, substituting only
+        # the fusion override. Allocate the encoder/decoder once, not twice.
+        Qwen3ASRPreTrainedModel.__init__(self, config)
+        self.model = LabQASRModel(config)
+        self.lm_head = nn.Linear(
+            config.text_config.hidden_size, config.text_config.vocab_size, bias=False
+        )
+        self.ctc_loss_weight = 0.0
+        self.post_init()
         if getattr(config, "lab_mask_pool_padding", False) and self.model.pooling_conv is not None:
             old = self.model.pooling_conv
             new = MaskedPoolingConv(int(config.audio_config.hidden_size), old.stride)

@@ -29,7 +29,7 @@ bash gemma_speech/cluster/gqasr_stage.sh verify
 bash gemma_speech/cluster/gqasr_stage.sh test -q
 ```
 
-`download` fetches pinned upstream revisions into `gemma_speech/models/`. `export` creates `gemma_speech/gqasr/models/gqasr-base/` with pretrained core weights and a random bridge. It refuses to overwrite an existing artifact. `verify` is an offline synthetic integration check. The GQASR `test` stage runs only the five GQASR tests with tiny fixtures and needs no pretrained download. TTS tests have their own stage.
+`download` fetches pinned upstream revisions into `gemma_speech/models/`. `export` creates `gemma_speech/gqasr/models/gqasr-base/` with pretrained core weights and a random bridge. It refuses to overwrite an existing artifact. `verify` is an offline synthetic integration check. The GQASR `test` stage runs only the GQASR tests with tiny fixtures and needs no pretrained download. TTS tests have their own stage.
 
 The public core names and tensor prefixes are GQASR. Provenance and license notices retain the upstream source names. The export is a derived base requiring adaptation, not a trained recognizer.
 
@@ -40,7 +40,7 @@ bash gemma_speech/cluster/gqasr_stage.sh preflight
 bash gemma_speech/cluster/gqasr_stage.sh scan
 ```
 
-The default configs copy 22 training and 6 evaluation paths from QASR v8.1. Update those paths if the cluster mount differs. `preflight` reports readiness; `scan` reads the manifests and audio headers, filters unusable samples and builds the shared index. A successful scan reports `ready_to_train: true`. It can take substantial time on the full corpus. Do not scan independently from all ranks or mutate the corpus afterward.
+The default configs copy 22 training and 6 evaluation paths from QASR v8.1. Update those paths if the cluster mount differs. `preflight` reports readiness; `scan` reads the manifests and audio headers, filters unusable samples and builds the shared index. A successful scan reports `ready_to_train: true`. It uses all allocated CPUs by default and reports progress every five seconds. For your 96-core node, use `gqasr_stage.sh scan --scan-workers 96 --scan-temp-dir /tmp`. SQLite is built on local scratch before atomic publication to the shared index path. The full corpus still requires opening every audio header, so storage throughput affects runtime. Do not scan independently from all ranks or mutate the corpus afterward.
 
 ## 4. Train the bridge on 96 GPUs
 

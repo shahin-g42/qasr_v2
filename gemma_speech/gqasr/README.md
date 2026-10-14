@@ -33,7 +33,7 @@ QASR's online code-switching, SpecAugment, speed perturbation, noise and codec a
 
 `gqasr preflight --config CONFIG --scan --verify-audio` builds one shared SQLite index before distributed training. It streams JSONL manifests rather than copying millions of rows into each rank's Python memory. Accepted audio fields are `audio_filepath`, `wav_path`, or `audio`; text is the first usable `text` or `transcript`. Relative paths use `audio_root` or the manifest directory. `/vast/...` maps to `/lustrefs/taiga/vast40/...`.
 
-The scan reads audio headers, filters duration/target limits, rejects conflicting duplicate transcripts and train/eval path or recording-ID leakage, and checks every language has usable train and evaluation data. Identical duplicate paths within a split are counted and skipped. Blank or punctuation-only transcripts are skipped. Training preserves Arabic diacritics. Corpus WER/CER include strict and Arabic-normalized views.
+The scan uses all CPUs available to the CLI process by default. Worker processes validate audio and tokenize targets; a single ordered writer preserves deterministic sample IDs and duplicate/leakage checks. The scan reads audio headers, filters duration/target limits, rejects conflicting duplicate transcripts and train/eval path or recording-ID leakage, and checks every language has usable train and evaluation data. Identical duplicate paths within a split are counted and skipped. Blank or punctuation-only transcripts are skipped. Training preserves Arabic diacritics. Corpus WER/CER include strict and Arabic-normalized views.
 
 Treat manifests, tokenizer and audio as immutable after scanning. The index records source hashes and tokenizer identity. Rebuilding requires a new `index_path` or explicitly removing the old index yourself; the tool does not overwrite one. Missing data and malformed rows fail with a source filename and line number.
 
@@ -48,3 +48,20 @@ The bridge stage always ends at `gqasr/outputs/bridge/final/` under the default 
 ## Validation scope
 
 The package includes tests for tensor round trips, acoustic/decoder gradient checkpointing, exact multilingual sampling, data leakage, bridge-to-full training, and exact CPU checkpoint resume. Run them on the cluster with the `test` stage. `verify` additionally reloads the actual exported base offline, checks artifact hashes and GQASR names, runs a synthetic forward/backward pass and generates a few tokens. These are integration checks, not a speech-quality benchmark. Evaluate real Arabic dialects and all required languages before accepting the trained model.
+
+## Parallel scan and progress
+
+Stop an older serial scan with Ctrl+C and wait for it to exit. Restart on one allocated 96-core node:
+
+```bash
+bash gemma_speech/cluster/gqasr_stage.sh scan \
+  --scan-workers 96 --scan-chunk-size 128 --progress-seconds 5 --scan-temp-dir /tmp
+```
+
+`--scan-workers 0` (default) detects available CPUs, respecting CPU affinity and `SLURM_CPUS_PER_TASK`. Workers are lightweight spawned processes with independent native tokenizers and single-threaded numerical libraries; they load no neural models. Work queues are bounded to two batches per worker. Results are indexed in source order regardless of worker completion order.
+
+The database is built in node-local scratch (`TMPDIR` by default; explicitly use `/tmp` or your allocated local SSD directory). Ensure that directory has enough space for the completed corpus index. This avoids per-row SQLite writes over Lustre. Only the completed index is copied to a temporary file beside the destination and atomically published without overwriting an existing index.
+
+Progress is emitted every five seconds, including while waiting for a worker batch: worker count, active manifest, checked/kept/skipped rows, rows/sec, elapsed time, processed manifest-byte percentage and an approximate ETA. The percentage tracks manifest bytes, not audio bytes; ETA will vary with file sizes and storage latency. Publishing the completed database also reports copy progress.
+
+A `.scan.lock` file prevents concurrent new scans against the same index. Ctrl+C terminates workers and removes the current temporary files and lock. After an uncatchable kill or node crash, remove a stale lock only after confirming the recorded host/PID is no longer running. A failed or interrupted run never publishes an incomplete index. An existing completed index is preserved; select a fresh `index_path` to intentionally rebuild it.

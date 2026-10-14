@@ -3,7 +3,15 @@ import json
 from pathlib import Path
 
 
-def preflight(cfg, do_scan=False, verify_audio=False):
+def preflight(
+    cfg,
+    do_scan=False,
+    verify_audio=False,
+    scan_workers=0,
+    scan_chunk_size=128,
+    progress_seconds=5.0,
+    scan_temp_dir=None,
+):
     from .data import ManifestIndex, scan
     from .processing import GQASRProcessor
 
@@ -31,7 +39,15 @@ def preflight(cfg, do_scan=False, verify_audio=False):
             raise FileNotFoundError(
                 f"{len(missing)} cluster manifests are unavailable; first: {missing[0]}"
             )
-        result["index"] = scan(cfg, GQASRProcessor(cfg["base_model"]), verify_audio)
+        result["index"] = scan(
+            cfg,
+            GQASRProcessor(cfg["base_model"]),
+            verify_audio,
+            workers=scan_workers,
+            chunk_size=scan_chunk_size,
+            progress_seconds=progress_seconds,
+            temp_dir=scan_temp_dir,
+        )
     if Path(cfg["index_path"]).is_file():
         index = ManifestIndex(cfg["index_path"], "train")
         from .data import data_contract
@@ -61,6 +77,14 @@ def main():
     p.add_argument("--config", required=True)
     p.add_argument("--scan", action="store_true")
     p.add_argument("--verify-audio", action="store_true")
+    p.add_argument(
+        "--scan-workers", type=int, default=0, help="0 uses all CPUs available to this process"
+    )
+    p.add_argument("--scan-chunk-size", type=int, default=128)
+    p.add_argument("--progress-seconds", type=float, default=5.0)
+    p.add_argument(
+        "--scan-temp-dir", help="Node-local scratch directory for SQLite; defaults to TMPDIR"
+    )
     p.add_argument("--report")
     p = sub.add_parser("train")
     p.add_argument("--config", required=True)
@@ -90,7 +114,15 @@ def main():
     elif command == "preflight":
         from .config import load_config
 
-        result = preflight(load_config(args["config"]), args["scan"], args["verify_audio"])
+        result = preflight(
+            load_config(args["config"]),
+            args["scan"],
+            args["verify_audio"],
+            args["scan_workers"],
+            args["scan_chunk_size"],
+            args["progress_seconds"],
+            args["scan_temp_dir"],
+        )
     elif command == "train":
         from .train import train
 

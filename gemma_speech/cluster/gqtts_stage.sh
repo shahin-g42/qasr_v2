@@ -20,7 +20,7 @@ else
     verify)
       gqtts verify-base --model "$ROOT/gqtts/models/gqtts-base" \
         --report "$ROOT/gqtts/verification/base-$(date -u +%Y%m%dT%H%M%SZ).json" "$@" ;;
-    test) python -m pytest "$ROOT/tests/test_qwen_tts.py" "$ROOT/tests/test_gqtts_base.py" "$@" ;;
+    test) python -m pytest "$ROOT/tests/test_qwen_tts.py" "$ROOT/tests/test_gqtts_base.py" "$ROOT/tests/test_gqtts_config.py" "$@" ;;
     cache) gqtts cache --gemma "$ROOT/models/embeddinggemma2" --qwen "$ROOT/models/qwen-tts" "$@" ;;
     speaker-train|train)
       CONFIG="$ROOT/gqtts/configs/speaker.json"

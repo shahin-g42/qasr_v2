@@ -11,4 +11,6 @@ This is a modified, limited-scope copy maintained inside `gemma_speech`, not the
 - Express untied codec-head metadata in the Transformers 5 dictionary format and correct the talker's output-embedding accessor to return its codec head.
 - Supply explicit fallbacks for config attributes no longer supplied by the Transformers base configuration class; use current layer-type validation.
 
+- Accept serialized PretrainedConfig metadata in the speaker encoder config and initialize its base configuration, allowing exported nested configs to reload. Restore legacy rotary fields from Transformers 5 serialized rope_parameters for the talker and code predictor. Preserve talker-specific multimodal RoPE fields while excluding them from generic RoPE-key warnings.
+
 No Transformers globals are modified. Checkpoint tensor names and dimensions are preserved. The original SDK's CLI, 25 Hz tokenizer, gradio application and packaging metadata are not included. See the package verification records for tested paths and limitations.

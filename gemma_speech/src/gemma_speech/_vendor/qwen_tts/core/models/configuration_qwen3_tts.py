@@ -54,7 +54,9 @@ class Qwen3TTSSpeakerEncoderConfig(PretrainedConfig):
         enc_res2net_scale=8,
         enc_se_channels=128,
         sample_rate=24000,
+        **kwargs,
     ):
+        super().__init__(**kwargs)
         self.mel_dim = mel_dim
         self.enc_dim = enc_dim
         self.enc_channels = enc_channels
@@ -209,6 +211,12 @@ class Qwen3TTSTalkerCodePredictorConfig(PretrainedConfig):
         num_code_groups=32,
         **kwargs,
     ):
+        # Transformers 5 serializes legacy rope_scaling/rope_theta into
+        # rope_parameters. The retained runtime still reads the legacy fields.
+        serialized_rope = kwargs.get("rope_parameters")
+        if rope_scaling is None and serialized_rope is not None:
+            rope_theta = serialized_rope.get("rope_theta", rope_theta)
+            rope_scaling = {k: v for k, v in serialized_rope.items() if k != "rope_theta"}
         super().__init__(
             tie_word_embeddings=tie_word_embeddings,
             **kwargs,
@@ -367,6 +375,8 @@ class Qwen3TTSTalkerConfig(PretrainedConfig):
     }
     sub_configs = {"code_predictor_config": Qwen3TTSTalkerCodePredictorConfig}
 
+    ignore_keys_at_rope_validation = {"mrope_section", "interleaved"}
+
     def __init__(
         self,
         code_predictor_config=None,
@@ -402,6 +412,12 @@ class Qwen3TTSTalkerConfig(PretrainedConfig):
         codec_language_id=None,
         **kwargs,
     ):
+        # Transformers 5 serializes legacy rope_scaling/rope_theta into
+        # rope_parameters. The retained runtime still reads the legacy fields.
+        serialized_rope = kwargs.get("rope_parameters")
+        if rope_scaling is None and serialized_rope is not None:
+            rope_theta = serialized_rope.get("rope_theta", rope_theta)
+            rope_scaling = {k: v for k, v in serialized_rope.items() if k != "rope_theta"}
         super().__init__(
             tie_word_embeddings=tie_word_embeddings,
             **kwargs,

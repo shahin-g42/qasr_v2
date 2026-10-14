@@ -29,7 +29,9 @@ packages = ["src/gemma_speech", "gqasr/src/gqasr", "gqtts/src/gqtts"]
 [tool.pytest.ini_options]
 testpaths = ["tests", "gqasr/tests"]
 pythonpath = ["src", "gqasr/src", "gqtts/src"]
-addopts = "--import-mode=importlib"
+# The outer gqasr/ project directory is not the gqasr Python package.
+# importlib mode synthesizes that namespace while collecting its tests.
+addopts = "--import-mode=prepend"
 
 [tool.ruff]
 target-version = "py311"

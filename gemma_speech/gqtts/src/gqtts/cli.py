@@ -7,6 +7,14 @@ import json
 def main():
     parser = argparse.ArgumentParser(description="GQTTS speaker adaptation and TTS")
     commands = parser.add_subparsers(dest="command", required=True)
+    export = commands.add_parser("export-base")
+    for name in ("acoustic-path", "tts-path", "output"):
+        export.add_argument("--" + name, required=True)
+    export.add_argument("--seed", type=int, default=42)
+    verify = commands.add_parser("verify-base")
+    verify.add_argument("--model", required=True)
+    verify.add_argument("--device", default="cpu")
+    verify.add_argument("--report")
     cache = commands.add_parser("cache")
     for name in ("manifest", "output", "gemma", "qwen"):
         cache.add_argument("--" + name, required=True)
@@ -27,7 +35,22 @@ def main():
     p.add_argument("--talker-checkpoint")
     args = vars(parser.parse_args())
     command = args.pop("command")
-    if command == "cache":
+    if command == "export-base":
+        from .bootstrap import export_base
+
+        print(json.dumps(export_base(**args), indent=2))
+    elif command == "verify-base":
+        from pathlib import Path
+
+        from .verify import verify_base
+
+        report = args.pop("report")
+        result = verify_base(**args)
+        if report:
+            with Path(report).open("x") as f:
+                json.dump(result, f, indent=2)
+        print(json.dumps(result, indent=2))
+    elif command == "cache":
         from .speaker import cache_speaker
 
         print(json.dumps(cache_speaker(**args), indent=2))

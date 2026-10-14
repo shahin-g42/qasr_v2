@@ -1,10 +1,10 @@
 #!/usr/bin/env bash
 set -euo pipefail
 ROOT=$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)
-STAGE="${1:?Stages: download cache speaker-train train synthesize}"
+STAGE="${1:?Stages: download export verify test cache speaker-train train synthesize}"
 shift
 source "${GEMMA_SPEECH_ENV:-$ROOT/.venv}/bin/activate"
-mkdir -p "$ROOT/logs"
+mkdir -p "$ROOT/logs" "$ROOT/gqtts/verification"
 exec > >(tee "$ROOT/logs/gqtts-${STAGE}-$(date -u +%Y%m%dT%H%M%SZ)-${NODE_RANK:-local}.log") 2>&1
 export TOKENIZERS_PARALLELISM=false
 if [[ "$STAGE" == download ]]; then
@@ -14,6 +14,13 @@ if [[ "$STAGE" == download ]]; then
 else
   export HF_HUB_OFFLINE=1
   case "$STAGE" in
+    export)
+      gqtts export-base --acoustic-path "$ROOT/models/embeddinggemma2" \
+        --tts-path "$ROOT/models/qwen-tts" --output "$ROOT/gqtts/models/gqtts-base" "$@" ;;
+    verify)
+      gqtts verify-base --model "$ROOT/gqtts/models/gqtts-base" \
+        --report "$ROOT/gqtts/verification/base-$(date -u +%Y%m%dT%H%M%SZ).json" "$@" ;;
+    test) python -m pytest "$ROOT/tests/test_qwen_tts.py" "$ROOT/tests/test_gqtts_base.py" "$@" ;;
     cache) gqtts cache --gemma "$ROOT/models/embeddinggemma2" --qwen "$ROOT/models/qwen-tts" "$@" ;;
     speaker-train|train)
       CONFIG="$ROOT/gqtts/configs/speaker.json"

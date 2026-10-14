@@ -57,7 +57,7 @@ PYCODE
     ;;
   test)
     export HF_HUB_OFFLINE=1
-    python -m pytest "$ROOT/tests" "$ROOT/gqasr/tests" "$@"
+    python -m pytest "$ROOT/gqasr/tests" "$@"
     ;;
   bridge|full)
     CONFIG="$BRIDGE"

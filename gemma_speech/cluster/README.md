@@ -29,7 +29,7 @@ bash gemma_speech/cluster/gqasr_stage.sh verify
 bash gemma_speech/cluster/gqasr_stage.sh test -q
 ```
 
-`download` fetches pinned upstream revisions into `gemma_speech/models/`. `export` creates `gemma_speech/gqasr/models/gqasr-base/` with pretrained core weights and a random bridge. It refuses to overwrite an existing artifact. `verify` is an offline synthetic integration check. The `test` stage uses tiny fixtures and needs no pretrained download.
+`download` fetches pinned upstream revisions into `gemma_speech/models/`. `export` creates `gemma_speech/gqasr/models/gqasr-base/` with pretrained core weights and a random bridge. It refuses to overwrite an existing artifact. `verify` is an offline synthetic integration check. The GQASR `test` stage runs only the five GQASR tests with tiny fixtures and needs no pretrained download. TTS tests have their own stage.
 
 The public core names and tensor prefixes are GQASR. Provenance and license notices retain the upstream source names. The export is a derived base requiring adaptation, not a trained recognizer.
 
@@ -106,10 +106,34 @@ sbatch gemma_speech/cluster/submit_12node.sh gqtts speaker-train
 sbatch gemma_speech/cluster/submit_12node.sh gqtts train
 ```
 
-Cache creation supports `--shard` / `--shards`; give each shard a separate output directory and assemble cache manifests before training. Default cache commands run one process on CUDA. `GQTTS_CONFIG` selects a custom stage config. For inference, `gqtts_stage.sh synthesize` accepts `--checkpoint`, `--audio`, `--text`, `--language`, `--output` and optional `--talker-checkpoint`; run `gqtts synthesize --help` for details. GQTTS does not yet have GQASR's standalone renamed base-export format; the existing TTS assets/checkpoints remain its initialization workflow.
+Cache creation supports `--shard` / `--shards`; give each shard a separate output directory and assemble cache manifests before training. Default cache commands run one process on CUDA. `GQTTS_CONFIG` selects a custom stage config. For inference, `gqtts_stage.sh synthesize` accepts `--checkpoint`, `--audio`, `--text`, `--language`, `--output` and optional `--talker-checkpoint`; run `gqtts synthesize --help` for details. The standalone GQTTS base export is described below. Existing TTS training commands still use the teacher-based initialization workflow until the later TTS adaptation work integrates the new base.
 
 ## Logs to send back
 
 Stage console logs are saved under `gemma_speech/logs/`; GQASR verification reports are under `gemma_speech/gqasr/verification/`. Training writes `metrics.jsonl`, prediction files and checkpoints under the configured output directory. Send the stage log and any traceback first; for training include the initial parameter/global-batch report, recent metrics and node/GPU diagnostics. Slurm also captures scheduler output in its normal job log.
 
 The scripts and package structure have been checked locally. Cluster data access, real-audio quality, H100 memory consumption, NCCL connectivity and 96-GPU scaling still require your runs.
+
+## Prepare both bases, then fine-tune ASR first
+
+Keep the already exported and verified `gemma_speech/gqasr/models/gqasr-base/`. Do not rerun its export into the same directory. On one allocated cluster node:
+
+```bash
+bash gemma_speech/cluster/gqtts_stage.sh download
+bash gemma_speech/cluster/gqtts_stage.sh export
+bash gemma_speech/cluster/gqtts_stage.sh verify --device cuda
+bash gemma_speech/cluster/gqtts_stage.sh test -q
+```
+
+GQTTS writes its independent artifact to `gemma_speech/gqtts/models/gqtts-base/`; existing GQASR weights are untouched. Both replacement adapters are initially untrained. Keep source TTS assets available for later teacher caching. Do not start TTS fine-tuning yet.
+
+After both bases verify, prepare ASR data and start bridge training:
+
+```bash
+bash gemma_speech/cluster/gqasr_stage.sh test -q
+bash gemma_speech/cluster/gqasr_stage.sh preflight
+bash gemma_speech/cluster/gqasr_stage.sh scan
+sbatch gemma_speech/cluster/submit_12node.sh gqasr bridge
+```
+
+If the index was already built successfully, use `preflight` and skip `scan`. Start the full ASR stage only after bridge training completes. For machines without Slurm, use the manual per-node launch instructions above. These model operations run on the cluster; local validation of newly added export code is limited to source checks and test collection.

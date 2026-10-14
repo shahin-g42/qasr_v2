@@ -1,0 +1,19 @@
+[build-system]
+requires = ["hatchling>=1.27,<2"]
+build-backend = "hatchling.build"
+
+[project]
+name = "jev-data"
+version = "0.1.0"
+description = "CPU-only, rights-gated Arabic decision data pipelines"
+requires-python = ">=3.12"
+dependencies = ["jev-contracts==0.1.0", "PyYAML>=6.0.2,<7", "httpx>=0.27,<1"]
+
+[project.scripts]
+jev-data = "jev_data.cli:main"
+
+[tool.hatch.build.targets.wheel]
+packages = ["src/jev_data"]
+
+[tool.uv.sources]
+jev-contracts = { workspace = true }

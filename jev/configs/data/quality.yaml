@@ -1,0 +1,7 @@
+schema_version: 1
+rule_version: jev-quality-v1
+sample_families: 500
+overall_error_upper: 0.02
+cell_error_upper: 0.05
+confidence: 0.95
+near_threshold: 0.92

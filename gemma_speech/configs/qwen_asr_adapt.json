@@ -1,0 +1,43 @@
+{
+  "model": {
+    "task": "asr",
+    "model_id": "../models/embeddinggemma2",
+    "revision": "914f7f89142e33e77833254d9c9b90c3cef7303b",
+    "width": 384,
+    "layers": 4,
+    "heads": 6,
+    "dropout": 0.1,
+    "train_backbone_layers": 4,
+    "asr_upsample": 1,
+    "intermediate_ctc_weight": 0.2,
+    "asr_decoder": "qwen",
+    "qwen_train_layers": 4,
+    "qwen_audio_stride": 2,
+    "qwen_model_id": "../models/qwen-asr",
+    "local_files_only": true
+  },
+  "train_manifest": "../data/asr_train.jsonl",
+  "validation_manifest": "../data/asr_validation.jsonl",
+  "output_dir": "../outputs/qwen_asr_adapt",
+  "precision": "bf16",
+  "batch_size": 2,
+  "accumulation_steps": 1,
+  "workers": 4,
+  "max_steps": 20000,
+  "samples_per_epoch": 200000,
+  "learning_rate": 5e-05,
+  "backbone_learning_rate": 5e-06,
+  "warmup_steps": 250,
+  "max_audio_seconds": 30,
+  "eval_every": 250,
+  "save_every": 250,
+  "language_weights": {
+    "ar": 0.65,
+    "en": 0.15,
+    "hi": 0.075,
+    "zh": 0.075,
+    "ml": 0.05
+  },
+  "require_multilingual": true,
+  "max_text_tokens": 256
+}

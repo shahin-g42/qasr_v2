@@ -1,0 +1,44 @@
+# Qualification training configuration: single node, 8 H100 (shard=8, replicate=1).
+# First rung of the qualification ladder against the certified pilot release
+# releases/pilot-20261007-093230 (674 rows / 481 families: 0 critical-error
+# families, wilson95 0.0079 <= 0.02). The mesh is the only deviation from
+# h100_8x8.toml: every optimizer/precision key stays identical so the recipe
+# carries over unchanged to the 8-node production mesh (replicate = 8).
+#
+# EDIT the snapshot line before launching; preflight.sh verifies it.
+# Changing shard or replicate changes the identity: checkpoints only resume
+# into the same mesh they were written with.
+
+snapshot = "/mnt/jev/snapshots/autojev-27b"
+release = "/lustrefs/shared/shahin.konadath/workspace/train/stt/qasr/jev/releases/pilot-20261007-093230"
+run_dir = "/lustrefs/shared/shahin.konadath/workspace/train/stt/qasr/jev/runs/qual-1x8"
+
+initialization = "autojev"
+seed = 0
+epochs = 1
+
+global_batch = 256
+micro_cap = 8
+token_budget = 8192
+max_length = 8192
+
+learning_rate = 2e-6
+lr_min_ratio = 0.1
+warmup_ratio = 0.05
+weight_decay = 0.01
+beta1 = 0.9
+beta2 = 0.999
+epsilon = 1e-8
+clip_norm = 1.0
+
+dtype = "bfloat16"
+gradient_checkpointing = true
+device = "cuda"
+shard = 8
+replicate = 1
+foreach_optimizer = true
+
+eval_every = 50
+checkpoint_every = 50
+keep_checkpoints = 2
+timeout_minutes = 30.0

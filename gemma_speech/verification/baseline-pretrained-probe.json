@@ -1,0 +1,33 @@
+{
+  "kind": "pretrained tower compatibility; synthetic inputs; no speech quality claim",
+  "model_revision": "914f7f89142e33e77833254d9c9b90c3cef7303b",
+  "torch": "2.13.0",
+  "asr": {
+    "parameters": 319416736,
+    "backbone_parameters": 304824608,
+    "trainable_parameters": 14592128,
+    "loss_finite": true,
+    "trainable_gradients_finite": true,
+    "shape": [
+      2,
+      38,
+      8192
+    ],
+    "valid_audio_lengths": [
+      25,
+      38
+    ]
+  },
+  "tts": {
+    "parameters": 295046418,
+    "backbone_parameters": 271002624,
+    "trainable_parameters": 24043794,
+    "loss_finite": true,
+    "trainable_gradients_finite": true,
+    "shape": [
+      2,
+      9
+    ],
+    "valid_audio_lengths": null
+  }
+}

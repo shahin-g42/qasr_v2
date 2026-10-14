@@ -61,7 +61,7 @@ export PYTHONUNBUFFERED=1
 export HF_HOME="${HF_CACHE:-${HF_HOME:-$PROJECT_DIR/.cache}}"
 export TOKENIZERS_PARALLELISM=false
 export OMP_NUM_THREADS=1
-export NCCL_DEBUG=WARN
+export NCCL_DEBUG="${NCCL_DEBUG:-WARN}"
 export NCCL_IB_DISABLE=0
 export NCCL_NET_GDR_LEVEL=2
 export NCCL_BUFFSIZE=8388608
@@ -115,5 +115,7 @@ if [[ -n "$RESUME" ]]; then CHECK_ARGS+=(--resume-from-checkpoint "$RESUME"); fi
 echo "Startup: running preflight (checkpoint, manifests, processor and index)"
 python -u scripts/preflight_v81.py "${CHECK_ARGS[@]}"
 
-echo "Startup: launching torchrun; waiting for all $NNODES nodes at $MASTER_ADDR:$MASTER_PORT"
+echo "Startup: executing torchrun ($NNODES nodes, node rank $NODE_RANK, endpoint $MASTER_ADDR:$MASTER_PORT)"
+echo "Startup: torchrun executable: $(command -v torchrun)"
+echo "Startup: Worker entered messages confirm rendezvous completed and training processes started"
 exec "${CMD[@]}"

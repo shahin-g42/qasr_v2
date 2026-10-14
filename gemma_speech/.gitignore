@@ -1,0 +1,14 @@
+outputs/
+.venv*/
+*.wav
+models/
+data/
+dist/
+__pycache__/
+.pytest_cache/
+.ruff_cache/
+*.egg-info/
+
+logs/
+gqtts/outputs/
+gqtts/models/

@@ -1,0 +1,30 @@
+schema_version: 1
+revision: proposed-pilot-v1
+language_register:
+  MSA: 0.40
+  arabic_script_dialect: 0.30
+  code_switching_arabizi: 0.10
+  english_retention: 0.20
+primary_route:
+  approved_public: 0.30
+  native_human_grounded: 0.30
+  oracle: 0.20
+  verified_synthetic: 0.20
+task:
+  intent_routing: 0.25
+  grounded_inference: 0.25
+  sentiment_stance: 0.15
+  numeric_temporal_policy: 0.15
+  ordinal_rubric: 0.10
+  safety_answerability: 0.10
+choice_option_counts:
+  '2': 0.10
+  '3-5': 0.40
+  '6-16': 0.25
+  '17-64': 0.20
+  '65-255': 0.05
+minimum_arabic_native_origin: 0.70
+maximum_arabic_localized: 0.20
+maximum_synthetic_primary_route: 0.20
+expanded_synthetic_cap_requires_new_audit_and_ablation: 0.40
+replacement_sampling: false

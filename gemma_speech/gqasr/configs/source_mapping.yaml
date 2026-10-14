@@ -1,0 +1,46 @@
+source: /Users/shahin.konadath/Projects/codex/qasr/configs/v8.1/02_full_12node.yaml
+source_sha256: bc0709a5a8289159941c81c5bbad841047444803aa20b9b98ff9869f4d3b46e8
+preserved:
+- train_manifest
+- eval_manifest
+- duration bounds
+- target limit
+- language quotas
+- full-stage optimizer-update budget
+- full-stage warmup/stable/decay schedule
+changed:
+  batching: 2 microbatch x 10 accumulation replaces 20 x 1; same exact per-rank language
+    quota and global batch 1920 at 96 GPUs
+  initialization: new GQASR pretrained composite and random bridge; warm-up stage
+    precedes full adaptation
+  workers: 4 per GPU instead of 12, leaving CPU headroom on 96-core nodes
+  distributed: native DDP, not DeepSpeed ZeRO-2
+  logging: local JSONL, not wandb
+not_ported:
+  code_switch_probability: 0.4
+  code_switch_index: /lustrefs/shared/shahin.konadath/workspace/train/stt/v2/qasr_v2/code_switch_indexes/cs_v1/assembled/index.json
+  augmentation:
+    spec_augment:
+      enabled: true
+      num_time_masks: 2
+      max_time_mask_ratio: 0.05
+      num_freq_masks: 2
+      max_freq_mask_ratio: 0.15
+      p: 0.37
+    speed_perturb:
+      enabled: true
+      rate_range:
+      - 0.85
+      - 1.15
+      p: 0.37
+    noise_injection:
+      enabled: true
+      noise_dir: /lustrefs/shared/shahin.konadath/workspace/train/stt/musan
+      snr_range:
+      - 5.0
+      - 20.0
+      p: 0.37
+    codec_augment:
+      enabled: true
+      p: 0.37
+data_access: manifest paths copied; cluster-side scan still required

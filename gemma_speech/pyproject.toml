@@ -1,0 +1,41 @@
+[build-system]
+requires = ["hatchling>=1.27"]
+build-backend = "hatchling.build"
+
+[project]
+name = "gemma-speech"
+version = "0.1.0"
+description = "Arabic-first multilingual EmbeddingGemma 2 speech experiments"
+readme = "README.md"
+requires-python = ">=3.11"
+dependencies = [
+  "torch==2.11.0", "transformers==5.19.0",
+  "huggingface-hub>=1.31,<3", "safetensors>=0.8", "sentencepiece>=0.2",
+  "numpy>=2", "scipy>=1.14", "soundfile>=0.13", "librosa>=0.11", "pyyaml>=6",
+]
+
+[project.optional-dependencies]
+vocoder = ["vocos==0.1.0", "torchaudio==2.11.0"]
+dev = ["pytest>=8.3", "ruff>=0.16"]
+
+[project.scripts]
+gemma-speech = "gemma_speech.cli:main"
+gqasr = "gqasr.cli:main"
+gqtts = "gqtts.cli:main"
+
+[tool.hatch.build.targets.wheel]
+packages = ["src/gemma_speech", "gqasr/src/gqasr", "gqtts/src/gqtts"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests", "gqasr/tests"]
+pythonpath = ["src", "gqasr/src", "gqtts/src"]
+addopts = "--import-mode=importlib"
+
+[tool.ruff]
+target-version = "py311"
+line-length = 100
+extend-exclude = ["src/gemma_speech/_vendor"]
+
+[tool.ruff.lint]
+select = ["E", "F", "I", "UP", "B"]
+ignore = ["E501"]

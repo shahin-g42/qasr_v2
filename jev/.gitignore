@@ -1,0 +1,23 @@
+# Local Python environments and generated build/test output.
+.venv*/
+__pycache__/
+*.py[cod]
+*.egg-info/
+.pytest_cache/
+.ruff_cache/
+.coverage
+.coverage.*
+htmlcov/
+build/
+dist/
+
+# Private inputs, generated artifacts, credentials, and local machine state.
+.env
+.env.*
+!.env.example
+.DS_Store
+/artifacts/
+/checkpoints/
+/datasets/
+/runs/
+/cache/

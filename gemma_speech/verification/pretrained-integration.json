@@ -1,0 +1,36 @@
+{
+  "kind": "pretrained integration with synthetic audio; no quality/speed benchmark",
+  "python": "3.13.7",
+  "torch": "2.11.0",
+  "transformers": "5.19.0",
+  "device": "cpu",
+  "asr": {
+    "parameters": 901862048,
+    "bridge_parameters": 987520,
+    "tied_decoder_embeddings": true,
+    "loss": 3.795210599899292,
+    "bridge_gradient_norm": 88.56746673583984,
+    "generated_tokens": 4
+  },
+  "tts": {
+    "training_prefill_matches_generation": true,
+    "gemma_frame_shape": [
+      25,
+      1536
+    ],
+    "speaker_shape": [
+      1024
+    ],
+    "adapter_parameters": 2301697,
+    "distillation_loss": 2.363666534423828,
+    "codec_shape": [
+      13,
+      16
+    ],
+    "codec_reconstruction_samples": 24960,
+    "codec_sample_rate": 24000,
+    "generated_samples": 5760,
+    "sample_rate": 24000,
+    "finite": true
+  }
+}

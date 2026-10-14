@@ -1,0 +1,14 @@
+{
+  "source": "https://pypi.org/project/qwen-tts/0.1.1/",
+  "version": "0.1.1",
+  "sha256_before_modification": {
+    "core/models/__init__.py": "917d38d8fd7ed84de73703fd2394d535ca416e15694d1e50324e4a06d4022c82",
+    "core/models/configuration_qwen3_tts.py": "f52867f14fde06a416dd14864d503ce6d13d0a08d5f5da30191e1c80c13f5d18",
+    "core/models/modeling_qwen3_tts.py": "25c42656bcf810f06ef6bc1839bd7083f3c8cfedac3a147c4060b4262b1c96a0",
+    "core/models/processing_qwen3_tts.py": "61472203188e46eda68d740c25f0f228ece24a61ecf942e57d6e49e78b4d6bcd",
+    "core/tokenizer_12hz/configuration_qwen3_tts_tokenizer_v2.py": "9e30c24394b00cb0366d7da3482b7436468acc1cd3da1a6fe614a1d34653a5e3",
+    "core/tokenizer_12hz/modeling_qwen3_tts_tokenizer_v2.py": "844e8dd8c0182ef9c6463c874631c22ef3c5a4fd1899dd657016164cc5379628",
+    "inference/qwen3_tts_model.py": "e1da450732857c1f5fe3e36ebab85db2f6dc6a48caaff6973f463384e30275e4",
+    "inference/qwen3_tts_tokenizer.py": "ac2d855022a1bd21d33ab7b267ec952eef71f81d3f8d969a306139ff1a929515"
+  }
+}

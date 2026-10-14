@@ -1,0 +1,52 @@
+# Production training configuration: 64-GPU HSDP mesh, 8 nodes x 8 H100.
+#
+# The pilot recipe from the specification: one epoch, global batch 256, peak LR
+# 2e-6, 5% warmup, cosine decay to 10% of peak, AdamW (0.9, 0.999) eps 1e-8,
+# weight decay 0.01 on matrix weights only, clipping at 1.0, non-reentrant
+# gradient checkpointing, microbatch cap 8 at a padded-token budget of 8,192
+# per rank. Every key below is part of the run identity except the location
+# fields (run_dir, checkpoint_dir, resume); unknown keys are rejected.
+#
+# EDIT the three paths before launching; preflight.sh verifies them.
+# For the 8/16/32-GPU qualification scales, copy this file and set
+# replicate = 1 / 2 / 4 (shard stays 8: one node) plus a distinct run_dir.
+# Changing shard or replicate changes the identity: checkpoints only resume
+# into the same mesh they were written with.
+
+snapshot = "/mnt/jev/snapshots/autojev-27b"
+release = "/mnt/jev/releases/arabic-jev-v1"
+run_dir = "/mnt/jev/runs/8x8-pilot"
+
+initialization = "autojev"
+seed = 0
+epochs = 1
+
+global_batch = 256
+micro_cap = 8
+token_budget = 8192
+max_length = 8192
+
+learning_rate = 2e-6
+lr_min_ratio = 0.1
+warmup_ratio = 0.05
+weight_decay = 0.01
+beta1 = 0.9
+beta2 = 0.999
+epsilon = 1e-8
+clip_norm = 1.0
+
+dtype = "bfloat16"
+gradient_checkpointing = true
+device = "cuda"
+shard = 8
+replicate = 8
+foreach_optimizer = true
+
+eval_every = 50
+checkpoint_every = 50
+keep_checkpoints = 2
+timeout_minutes = 30.0
+
+# Optional location fields; leave unset for a fresh run in run_dir.
+# checkpoint_dir = ""  # default: run_dir/checkpoints
+# resume = ""          # or a checkpoint directory, or "latest"

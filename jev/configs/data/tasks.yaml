@@ -1,0 +1,156 @@
+schema_version: 1
+split_weights:
+  train: 100000
+  development: 10000
+  calibration: 5000
+  test: 12000
+task_cards:
+  - schema_version: 1
+    id: numeric_policy
+    predicate: Determine whether an explicitly stated quantity satisfies the supplied rule.
+    semantics: mutually_exclusive
+    evidence_requirements: Exact quantities, compatible units, boundary operator, and source evidence.
+    rubric: []
+    abstention: Insufficient means a required premise is missing, not false.
+    deployment_priors: {}
+    locale: ar
+    risk: low
+    reviewer_qualifications: [native_arabic, quantitative_rules]
+    reserved_domains: []
+    reserved_ontologies: []
+  - schema_version: 1
+    id: grounded_inference
+    predicate: Determine whether the proposition follows from only the supplied document.
+    semantics: mutually_exclusive
+    evidence_requirements: Source-grounded spans must be visible in student state.
+    rubric: []
+    abstention: Insufficient is distinct from contradiction.
+    deployment_priors: {}
+    locale: ar
+    risk: low
+    reviewer_qualifications: [native_arabic, grounded_inference]
+    reserved_domains: []
+    reserved_ontologies: []
+  - schema_version: 1
+    id: ordinal_rubric
+    predicate: Rate evidence sufficiency using independently intelligible ordered levels.
+    semantics: ordinal
+    evidence_requirements: Evidence and explicit task-specific rubric, not unmapped star ratings.
+    rubric:
+      - No relevant supporting evidence is supplied.
+      - Relevant evidence is supplied but leaves an essential premise unresolved.
+      - All essential premises have explicit supporting evidence.
+    abstention: Cases outside the rubric are quarantined for human clarification.
+    deployment_priors: {}
+    locale: ar
+    risk: low
+    reviewer_qualifications: [native_arabic, rubric_scoring]
+    reserved_domains: []
+    reserved_ontologies: []
+  - schema_version: 1
+    id: temporal_policy
+    predicate: Determine whether an appointment or reply satisfies a stated time window.
+    semantics: mutually_exclusive
+    evidence_requirements: Stated dates, clock times, durations, closing days and the exact rule.
+    rubric: []
+    abstention: Insufficient means the required time or duration is not stated.
+    deployment_priors: {}
+    locale: ar
+    risk: low
+    reviewer_qualifications: [native_arabic, temporal_rules]
+    reserved_domains: []
+    reserved_ontologies: []
+  - schema_version: 1
+    id: policy_logic
+    predicate: Determine whether stated facts satisfy an all/any policy of one condition per fact.
+    semantics: mutually_exclusive
+    evidence_requirements: Every condition and stated value visible; unstated facts explicit.
+    rubric: []
+    abstention: Insufficient means the outcome differs across completions of unstated facts.
+    deployment_priors: {}
+    locale: ar
+    risk: low
+    reviewer_qualifications: [native_arabic, boolean_policy]
+    reserved_domains: []
+    reserved_ontologies: []
+  - schema_version: 1
+    id: budget_check
+    predicate: Determine whether an integer amount fits an exact budget or installment plan.
+    semantics: mutually_exclusive
+    evidence_requirements: Exact integer amounts, the coverage rule and the stated unit.
+    rubric: []
+    abstention: Insufficient means a required amount or horizon is not stated.
+    deployment_priors: {}
+    locale: ar
+    risk: low
+    reviewer_qualifications: [native_arabic, integer_arithmetic]
+    reserved_domains: []
+    reserved_ontologies: []
+  - schema_version: 1
+    id: intent_routing
+    predicate: Select the ontology intent matching the most request words under explicit tie rules.
+    semantics: mutually_exclusive
+    evidence_requirements: Ordered intents with keywords, request words and the fallback convention.
+    rubric: []
+    abstention: Zero-match requests use the explicit fallback option; no hidden abstention.
+    deployment_priors: {}
+    locale: ar
+    risk: low
+    reviewer_qualifications: [native_arabic, intent_ontologies]
+    reserved_domains: []
+    reserved_ontologies: []
+  - schema_version: 1
+    id: safety_gate
+    predicate: Apply ordered first-match safety rules and escalate on unstated required facts.
+    semantics: mutually_exclusive
+    evidence_requirements: Ordered rules with stated facts and the escalation convention.
+    rubric: []
+    abstention: Unverifiable conditions escalate to human review; they are never guessed.
+    deployment_priors: {}
+    locale: ar
+    risk: high
+    reviewer_qualifications: [native_arabic, safety_review]
+    reserved_domains: []
+    reserved_ontologies: []
+  - schema_version: 1
+    id: triage_rubric
+    predicate: Score weighted rubric items and select the highest level reached.
+    semantics: ordinal
+    evidence_requirements: Item points, met flags, ordered levels and ascending thresholds.
+    rubric:
+      - Only the base level is reached; no essential item is met.
+      - Some items are met but the total stays below the top threshold.
+      - Enough items are met for the highest level.
+    abstention: Not applicable; every integer total maps to exactly one level.
+    deployment_priors: {}
+    locale: ar
+    risk: low
+    reviewer_qualifications: [native_arabic, rubric_scoring]
+    reserved_domains: []
+    reserved_ontologies: []
+  - schema_version: 1
+    id: readback_match
+    predicate: Decide whether a recorded read-back equals the expected value after unit normalization.
+    semantics: binary_proposition
+    evidence_requirements: Expected and recorded quantities with units, or an explicit missing read-back.
+    rubric: []
+    abstention: A missing read-back is false, never insufficient.
+    deployment_priors: {}
+    locale: ar
+    risk: high
+    reviewer_qualifications: [native_arabic, unit_normalization]
+    reserved_domains: []
+    reserved_ontologies: []
+  - schema_version: 1
+    id: slot_assertion
+    predicate: Decide whether a claim about one form field matches the form literally.
+    semantics: binary_proposition
+    evidence_requirements: The form fields with values, the claim, and literal comparison.
+    rubric: []
+    abstention: An unstated field holds no value; absence claims are decided, not abstained.
+    deployment_priors: {}
+    locale: ar
+    risk: low
+    reviewer_qualifications: [native_arabic, slot_verification]
+    reserved_domains: []
+    reserved_ontologies: []

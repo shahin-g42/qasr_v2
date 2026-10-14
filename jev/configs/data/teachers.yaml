@@ -1,0 +1,53 @@
+schema_version: 1
+# Single-server deployment: every LLM role (authoring and verification)
+# targets the one local vLLM `datagen` server (docker, host port 8010,
+# Qwen3.8-27B-FP8). The data pipeline must run on the SAME node; non-localhost
+# teacher endpoints require TLS by contract.
+#
+# Verification runs in single-family mode (the one served family re-labels
+# blind):  verify --teacher verifier_a --verification-mode single_family
+# The reduced independence is recorded in every row's evidence
+# (mode: single_family); the mandatory stratified human audit at release time
+# supplies the missing check, and test-split / high-risk rows stay human Gold.
+# `--verification-mode dual_family` (the default) needs a second, different
+# family endpoint and cannot run on this deployment.
+#
+# Before the first real run, pin the Qwen snapshot revision (it becomes part
+# of every row's teacher identity):
+#   ls <hf-cache>/hub/models--Qwen--Qwen3.8-27B-FP8/snapshots/  ->  revision:
+#
+# If a SECOND, different-family endpoint ever appears, add a verifier_b entry
+# and run verify with the default dual_family mode.
+teachers:
+  author:
+    name: author
+    family: qwen3.8
+    model: datagen
+    revision: 017b9c7af6b5689d5dd426a76e0bc077eb5ca20a
+    endpoint: http://localhost:8010/v1
+    api_key_env: null
+    timeout_seconds: 300
+    transport_retries: 2
+    max_content_attempts: 3
+    max_requests: 1000000
+    concurrency: 64
+    max_tokens: 2048
+    temperature: 0.2
+    allowed_data_classes: [public, commissioned]
+    qualification_ref: internal:datagen-author-qualification-v1
+  verifier_a:
+    name: verifier_a
+    family: qwen3.8
+    model: datagen
+    revision: 017b9c7af6b5689d5dd426a76e0bc077eb5ca20a
+    endpoint: http://localhost:8010/v1
+    api_key_env: null
+    timeout_seconds: 180
+    transport_retries: 2
+    max_content_attempts: 3
+    max_requests: 1000000
+    concurrency: 64
+    max_tokens: 1024
+    temperature: 0.0
+    allowed_data_classes: [public, commissioned]
+    qualification_ref: internal:datagen-verifier-qualification-v1

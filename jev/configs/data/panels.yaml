@@ -1,0 +1,25 @@
+schema_version: 1
+approved: false
+planned_unique_decisions:
+  train: 100000
+  development: 10000
+  calibration: 5000
+  test: 12000
+calibration_subsets:
+  temperature_fit: 2500
+  policy_selection: 1250
+  risk_verification: 1250
+development:
+  arabic: 8000
+  english: 2000
+sealed_test:
+  native_arabic: 10000
+  english: 2000
+  minimum_independent_reviewers: 3
+  adjudication_required: true
+  allow_teacher_feedback: false
+  allow_training_acquisition: false
+gold_training:
+  minimum_independent_reviewers: 2
+  disagreements_require_adjudication: true
+family_disjoint: true

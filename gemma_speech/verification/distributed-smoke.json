@@ -1,0 +1,11 @@
+{
+  "kind": "two-process CPU/Gloo synthetic training smoke, not accuracy evaluation",
+  "world_size": 2,
+  "effective_batch": 2,
+  "steps": 2,
+  "validation_ran": true,
+  "checkpoint_saved": true,
+  "precision": "fp32",
+  "torch": "2.11.0",
+  "gpu_scaling_tested": false
+}

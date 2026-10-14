@@ -551,6 +551,7 @@ def run(config: TrainConfig) -> None:
     os.environ["WANDB_PROJECT"] = config.wandb_project
     os.environ["WANDB_LOG_MODEL"] = "false"
     os.environ["WANDB_WATCH"] = "false"
+    LOGGER.info("Startup rank=%s: seeding and validating checkpoint", os.environ.get("RANK", "standalone"))
     set_seed(config.seed)
 
     # First check, before anything heavy: a missing or incomplete local
@@ -560,10 +561,13 @@ def run(config: TrainConfig) -> None:
     has_eval = bool(config.eval_manifest_paths) or config.eval_split_ratio > 0 or (
         config.smoke_test and config.smoke_test_eval_samples > 0
     )
+    LOGGER.info("Startup rank=%s: initializing TrainingArguments/Accelerate distributed state", os.environ.get("RANK", "standalone"))
     training_args = _training_arguments(config, has_eval)
+    LOGGER.info("Startup: distributed state ready; rank=%s world_size=%s", training_args.process_index, training_args.world_size)
     if (not config.smoke_test and config.expected_world_size is not None
             and training_args.world_size != config.expected_world_size):
         raise ValueError(f"Expected {config.expected_world_size} ranks, got {training_args.world_size}")
+    LOGGER.info("Startup rank=%s: loading processor and model checkpoint", training_args.process_index)
     processor = QASRProcessor.from_pretrained(config.model_name_or_path, trust_remote_code=True)
     model = QASRForConditionalGeneration.from_pretrained(
         config.model_name_or_path,

@@ -1,0 +1,6810 @@
+{
+ "schema_version": 1,
+ "bank_version": "prod-v1",
+ "provenance": {
+  "source": "seed",
+  "model": null,
+  "base_url": null,
+  "seed": "prod-v1-2026-11",
+  "tool": "tools/bank_author.py",
+  "noise_profiles": [
+   "none",
+   "hamza",
+   "ta_marbuta",
+   "western_digits",
+   "punct"
+  ],
+  "approved_by": "rehearsal-seed-01",
+  "applied_at": "2026-10-07T12:05:05+00:00"
+ },
+ "domains": [
+  {
+   "id": "insurance",
+   "label": {
+    "ar": "التأمين",
+    "en": "insurance services"
+   },
+   "intents": [
+    {
+     "id": "ins_claim",
+     "label": {
+      "ar": "تقديم مطالبة",
+      "en": "filing a claim"
+     },
+     "keywords": [
+      {
+       "ar": "مطالبة",
+       "en": "claim"
+      },
+      {
+       "ar": "تقديم",
+       "en": "file"
+      },
+      {
+       "ar": "تعويض",
+       "en": "compensation"
+      }
+     ]
+    },
+    {
+     "id": "ins_policy",
+     "label": {
+      "ar": "تجديد الوثيقة",
+      "en": "policy renewal"
+     },
+     "keywords": [
+      {
+       "ar": "وثيقة",
+       "en": "policy"
+      },
+      {
+       "ar": "تجديد",
+       "en": "renewal"
+      },
+      {
+       "ar": "سريان",
+       "en": "validity"
+      }
+     ]
+    },
+    {
+     "id": "ins_quote",
+     "label": {
+      "ar": "عرض سعر تأميني",
+      "en": "an insurance quote"
+     },
+     "keywords": [
+      {
+       "ar": "عرض",
+       "en": "quote"
+      },
+      {
+       "ar": "سعر",
+       "en": "price"
+      },
+      {
+       "ar": "تسعير",
+       "en": "quotation"
+      }
+     ]
+    },
+    {
+     "id": "ins_cover",
+     "label": {
+      "ar": "استفسار عن التغطية",
+      "en": "coverage inquiry"
+     },
+     "keywords": [
+      {
+       "ar": "تغطية",
+       "en": "coverage"
+      },
+      {
+       "ar": "استفسار",
+       "en": "inquiry"
+      },
+      {
+       "ar": "استثناء",
+       "en": "exclusion"
+      }
+     ]
+    }
+   ],
+   "fillers": [
+    {
+     "ar": "شركة",
+     "en": "company"
+    },
+    {
+     "ar": "مندوب",
+     "en": "agent"
+    },
+    {
+     "ar": "مساعدة",
+     "en": "help"
+    }
+   ]
+  },
+  {
+   "id": "utilities",
+   "label": {
+    "ar": "الخدمات العامة",
+    "en": "utility services"
+   },
+   "intents": [
+    {
+     "id": "ut_bill",
+     "label": {
+      "ar": "فاتورة الكهرباء",
+      "en": "the electricity bill"
+     },
+     "keywords": [
+      {
+       "ar": "فاتورة",
+       "en": "bill"
+      },
+      {
+       "ar": "كهرباء",
+       "en": "electricity"
+      },
+      {
+       "ar": "استهلاك",
+       "en": "consumption"
+      }
+     ]
+    },
+    {
+     "id": "ut_outage",
+     "label": {
+      "ar": "بلاغ انقطاع",
+      "en": "an outage report"
+     },
+     "keywords": [
+      {
+       "ar": "انقطاع",
+       "en": "outage"
+      },
+      {
+       "ar": "بلاغ",
+       "en": "report"
+      },
+      {
+       "ar": "عطل",
+       "en": "fault"
+      }
+     ]
+    },
+    {
+     "id": "ut_move",
+     "label": {
+      "ar": "نقل الخدمة",
+      "en": "service relocation"
+     },
+     "keywords": [
+      {
+       "ar": "نقل",
+       "en": "relocation"
+      },
+      {
+       "ar": "عنوان",
+       "en": "address"
+      },
+      {
+       "ar": "اشتراك",
+       "en": "subscription"
+      }
+     ]
+    },
+    {
+     "id": "ut_meter",
+     "label": {
+      "ar": "قراءة العداد",
+      "en": "meter reading"
+     },
+     "keywords": [
+      {
+       "ar": "عداد",
+       "en": "meter"
+      },
+      {
+       "ar": "قراءة",
+       "en": "reading"
+      },
+      {
+       "ar": "قياس",
+       "en": "measurement"
+      }
+     ]
+    }
+   ],
+   "fillers": [
+    {
+     "ar": "خدمة",
+     "en": "service"
+    },
+    {
+     "ar": "سؤال",
+     "en": "question"
+    },
+    {
+     "ar": "عاجل",
+     "en": "urgent"
+    }
+   ]
+  },
+  {
+   "id": "education",
+   "label": {
+    "ar": "التعليم",
+    "en": "education services"
+   },
+   "intents": [
+    {
+     "id": "ed_enroll",
+     "label": {
+      "ar": "تسجيل مقرر",
+      "en": "course enrollment"
+     },
+     "keywords": [
+      {
+       "ar": "تسجيل",
+       "en": "enrollment"
+      },
+      {
+       "ar": "مقرر",
+       "en": "course"
+      },
+      {
+       "ar": "فصل",
+       "en": "term"
+      }
+     ]
+    },
+    {
+     "id": "ed_records",
+     "label": {
+      "ar": "كشف الدرجات",
+      "en": "a transcript request"
+     },
+     "keywords": [
+      {
+       "ar": "كشف",
+       "en": "transcript"
+      },
+      {
+       "ar": "درجات",
+       "en": "grades"
+      },
+      {
+       "ar": "شهادة",
+       "en": "certificate"
+      }
+     ]
+    },
+    {
+     "id": "ed_fees",
+     "label": {
+      "ar": "الرسوم الدراسية",
+      "en": "tuition fees"
+     },
+     "keywords": [
+      {
+       "ar": "رسوم",
+       "en": "fees"
+      },
+      {
+       "ar": "دراسية",
+       "en": "tuition"
+      },
+      {
+       "ar": "سداد",
+       "en": "payment"
+      }
+     ]
+    },
+    {
+     "id": "ed_schedule",
+     "label": {
+      "ar": "تغيير الجدول",
+      "en": "a schedule change"
+     },
+     "keywords": [
+      {
+       "ar": "جدول",
+       "en": "schedule"
+      },
+      {
+       "ar": "تغيير",
+       "en": "change"
+      },
+      {
+       "ar": "محاضرة",
+       "en": "lecture"
+      }
+     ]
+    }
+   ],
+   "fillers": [
+    {
+     "ar": "جامعة",
+     "en": "university"
+    },
+    {
+     "ar": "طالب",
+     "en": "student"
+    },
+    {
+     "ar": "قاعة",
+     "en": "classroom"
+    }
+   ]
+  },
+  {
+   "id": "logistics",
+   "label": {
+    "ar": "الخدمات اللوجستية",
+    "en": "logistics services"
+   },
+   "intents": [
+    {
+     "id": "lg_track",
+     "label": {
+      "ar": "متابعة الإرسالية",
+      "en": "shipment tracking"
+     },
+     "keywords": [
+      {
+       "ar": "إرسالية",
+       "en": "consignment"
+      },
+      {
+       "ar": "متابعة",
+       "en": "tracking"
+      },
+      {
+       "ar": "وصول",
+       "en": "arrival"
+      }
+     ]
+    },
+    {
+     "id": "lg_rates",
+     "label": {
+      "ar": "تسعير الشحن",
+      "en": "freight pricing"
+     },
+     "keywords": [
+      {
+       "ar": "تسعير",
+       "en": "pricing"
+      },
+      {
+       "ar": "وزن",
+       "en": "weight"
+      },
+      {
+       "ar": "شحن",
+       "en": "freight"
+      }
+     ]
+    },
+    {
+     "id": "lg_pickup",
+     "label": {
+      "ar": "جدولة الاستلام",
+      "en": "pickup scheduling"
+     },
+     "keywords": [
+      {
+       "ar": "استلام",
+       "en": "pickup"
+      },
+      {
+       "ar": "جدولة",
+       "en": "scheduling"
+      },
+      {
+       "ar": "سائق",
+       "en": "driver"
+      }
+     ]
+    },
+    {
+     "id": "lg_customs",
+     "label": {
+      "ar": "تخليص جمركي",
+      "en": "customs clearance"
+     },
+     "keywords": [
+      {
+       "ar": "تخليص",
+       "en": "clearance"
+      },
+      {
+       "ar": "جمركي",
+       "en": "customs"
+      },
+      {
+       "ar": "بضاعة",
+       "en": "cargo"
+      }
+     ]
+    }
+   ],
+   "fillers": [
+    {
+     "ar": "شحنة",
+     "en": "shipment"
+    },
+    {
+     "ar": "مستودع",
+     "en": "warehouse"
+    },
+    {
+     "ar": "تسليم",
+     "en": "delivery"
+    }
+   ]
+  },
+  {
+   "id": "automotive",
+   "label": {
+    "ar": "خدمات السيارات",
+    "en": "automotive services"
+   },
+   "intents": [
+    {
+     "id": "am_service",
+     "label": {
+      "ar": "صيانة دورية",
+      "en": "scheduled maintenance"
+     },
+     "keywords": [
+      {
+       "ar": "صيانة",
+       "en": "maintenance"
+      },
+      {
+       "ar": "موعد",
+       "en": "appointment"
+      },
+      {
+       "ar": "ميكانيكي",
+       "en": "mechanic"
+      }
+     ]
+    },
+    {
+     "id": "am_repair",
+     "label": {
+      "ar": "إصلاح أعطال",
+      "en": "fault repair"
+     },
+     "keywords": [
+      {
+       "ar": "إصلاح",
+       "en": "repair"
+      },
+      {
+       "ar": "عطل",
+       "en": "breakdown"
+      },
+      {
+       "ar": "ورشة",
+       "en": "workshop"
+      }
+     ]
+    },
+    {
+     "id": "am_parts",
+     "label": {
+      "ar": "قطع غيار",
+      "en": "spare parts"
+     },
+     "keywords": [
+      {
+       "ar": "قطع",
+       "en": "parts"
+      },
+      {
+       "ar": "غيار",
+       "en": "spares"
+      },
+      {
+       "ar": "أصلي",
+       "en": "genuine"
+      }
+     ]
+    },
+    {
+     "id": "am_inspect",
+     "label": {
+      "ar": "فحص دوري",
+      "en": "periodic inspection"
+     },
+     "keywords": [
+      {
+       "ar": "فحص",
+       "en": "inspection"
+      },
+      {
+       "ar": "دوري",
+       "en": "periodic"
+      },
+      {
+       "ar": "تقييم",
+       "en": "assessment"
+      }
+     ]
+    }
+   ],
+   "fillers": [
+    {
+     "ar": "سيارة",
+     "en": "car"
+    },
+    {
+     "ar": "حجز",
+     "en": "booking"
+    },
+    {
+     "ar": "فرع",
+     "en": "branch"
+    }
+   ]
+  },
+  {
+   "id": "dining",
+   "label": {
+    "ar": "خدمات المطاعم",
+    "en": "restaurant services"
+   },
+   "intents": [
+    {
+     "id": "dn_reserve",
+     "label": {
+      "ar": "حجز طاولة",
+      "en": "a table reservation"
+     },
+     "keywords": [
+      {
+       "ar": "حجز",
+       "en": "reservation"
+      },
+      {
+       "ar": "طاولة",
+       "en": "table"
+      },
+      {
+       "ar": "عشاء",
+       "en": "dinner"
+      }
+     ]
+    },
+    {
+     "id": "dn_delivery",
+     "label": {
+      "ar": "توصيل وجبات",
+      "en": "meal delivery"
+     },
+     "keywords": [
+      {
+       "ar": "توصيل",
+       "en": "delivery"
+      },
+      {
+       "ar": "وجبة",
+       "en": "meal"
+      },
+      {
+       "ar": "طلب",
+       "en": "order"
+      }
+     ]
+    },
+    {
+     "id": "dn_menu",
+     "label": {
+      "ar": "قائمة الطعام",
+      "en": "menu questions"
+     },
+     "keywords": [
+      {
+       "ar": "قائمة",
+       "en": "menu"
+      },
+      {
+       "ar": "أصناف",
+       "en": "dishes"
+      },
+      {
+       "ar": "أسعار",
+       "en": "prices"
+      }
+     ]
+    },
+    {
+     "id": "dn_allergy",
+     "label": {
+      "ar": "استفسار عن المكونات",
+      "en": "allergen inquiry"
+     },
+     "keywords": [
+      {
+       "ar": "مكونات",
+       "en": "ingredients"
+      },
+      {
+       "ar": "حساسية",
+       "en": "allergy"
+      },
+      {
+       "ar": "خيارات",
+       "en": "options"
+      }
+     ]
+    }
+   ],
+   "fillers": [
+    {
+     "ar": "مطعم",
+     "en": "restaurant"
+    },
+    {
+     "ar": "شكراً",
+     "en": "thanks"
+    },
+    {
+     "ar": "هاتف",
+     "en": "phone"
+    }
+   ]
+  },
+  {
+   "id": "aviation",
+   "label": {
+    "ar": "خدمات الطيران",
+    "en": "aviation services"
+   },
+   "intents": [
+    {
+     "id": "av_book",
+     "label": {
+      "ar": "حجز رحلة",
+      "en": "flight booking"
+     },
+     "keywords": [
+      {
+       "ar": "حجز",
+       "en": "booking"
+      },
+      {
+       "ar": "رحلة",
+       "en": "flight"
+      },
+      {
+       "ar": "درجة",
+       "en": "cabin"
+      }
+     ]
+    },
+    {
+     "id": "av_checkin",
+     "label": {
+      "ar": "تسجيل الصعود",
+      "en": "check-in"
+     },
+     "keywords": [
+      {
+       "ar": "تسجيل",
+       "en": "check-in"
+      },
+      {
+       "ar": "صعود",
+       "en": "boarding"
+      },
+      {
+       "ar": "بوابة",
+       "en": "gate"
+      }
+     ]
+    },
+    {
+     "id": "av_baggage",
+     "label": {
+      "ar": "أمتعة السفر",
+      "en": "baggage"
+     },
+     "keywords": [
+      {
+       "ar": "أمتعة",
+       "en": "baggage"
+      },
+      {
+       "ar": "وزن",
+       "en": "weight"
+      },
+      {
+       "ar": "سماح",
+       "en": "allowance"
+      }
+     ]
+    },
+    {
+     "id": "av_refund",
+     "label": {
+      "ar": "استرداد التذكرة",
+      "en": "ticket refund"
+     },
+     "keywords": [
+      {
+       "ar": "استرداد",
+       "en": "refund"
+      },
+      {
+       "ar": "تذكرة",
+       "en": "ticket"
+      },
+      {
+       "ar": "إلغاء",
+       "en": "cancellation"
+      }
+     ]
+    }
+   ],
+   "fillers": [
+    {
+     "ar": "شركة",
+     "en": "airline"
+    },
+    {
+     "ar": "مطار",
+     "en": "airport"
+    },
+    {
+     "ar": "مساعدة",
+     "en": "assistance"
+    }
+   ]
+  },
+  {
+   "id": "subscriptions",
+   "label": {
+    "ar": "الاشتراكات",
+    "en": "subscription services"
+   },
+   "intents": [
+    {
+     "id": "sb_upgrade",
+     "label": {
+      "ar": "ترقية الباقة",
+      "en": "plan upgrade"
+     },
+     "keywords": [
+      {
+       "ar": "باقة",
+       "en": "plan"
+      },
+      {
+       "ar": "ترقية",
+       "en": "upgrade"
+      },
+      {
+       "ar": "بيانات",
+       "en": "data"
+      }
+     ]
+    },
+    {
+     "id": "sb_pause",
+     "label": {
+      "ar": "تعليق الاشتراك",
+      "en": "pausing a subscription"
+     },
+     "keywords": [
+      {
+       "ar": "تعليق",
+       "en": "pause"
+      },
+      {
+       "ar": "إيقاف",
+       "en": "hold"
+      },
+      {
+       "ar": "مؤقت",
+       "en": "temporary"
+      }
+     ]
+    },
+    {
+     "id": "sb_invoice",
+     "label": {
+      "ar": "فاتورة الاشتراك",
+      "en": "subscription invoice"
+     },
+     "keywords": [
+      {
+       "ar": "فاتورة",
+       "en": "invoice"
+      },
+      {
+       "ar": "تجديد",
+       "en": "renewal"
+      },
+      {
+       "ar": "مبلغ",
+       "en": "amount"
+      }
+     ]
+    },
+    {
+     "id": "sb_cancel",
+     "label": {
+      "ar": "إلغاء الاشتراك",
+      "en": "cancelling"
+     },
+     "keywords": [
+      {
+       "ar": "إلغاء",
+       "en": "cancel"
+      },
+      {
+       "ar": "إنهاء",
+       "en": "terminate"
+      },
+      {
+       "ar": "انسحاب",
+       "en": "withdraw"
+      }
+     ]
+    }
+   ],
+   "fillers": [
+    {
+     "ar": "حساب",
+     "en": "account"
+    },
+    {
+     "ar": "مزايا",
+     "en": "perks"
+    },
+    {
+     "ar": "سؤال",
+     "en": "question"
+    }
+   ]
+  },
+  {
+   "id": "events",
+   "label": {
+    "ar": "الفعاليات",
+    "en": "event services"
+   },
+   "intents": [
+    {
+     "id": "ev_tickets",
+     "label": {
+      "ar": "شراء التذاكر",
+      "en": "buying tickets"
+     },
+     "keywords": [
+      {
+       "ar": "تذاكر",
+       "en": "tickets"
+      },
+      {
+       "ar": "شراء",
+       "en": "purchase"
+      },
+      {
+       "ar": "مقاعد",
+       "en": "seats"
+      }
+     ]
+    },
+    {
+     "id": "ev_schedule",
+     "label": {
+      "ar": "جدول الفعاليات",
+      "en": "event schedule"
+     },
+     "keywords": [
+      {
+       "ar": "جدول",
+       "en": "schedule"
+      },
+      {
+       "ar": "موعد",
+       "en": "timing"
+      },
+      {
+       "ar": "برنامج",
+       "en": "program"
+      }
+     ]
+    },
+    {
+     "id": "ev_refund",
+     "label": {
+      "ar": "استرجاع قيمة التذكرة",
+      "en": "ticket reimbursement"
+     },
+     "keywords": [
+      {
+       "ar": "استرجاع",
+       "en": "reimbursement"
+      },
+      {
+       "ar": "قيمة",
+       "en": "value"
+      },
+      {
+       "ar": "تذكرة",
+       "en": "ticket"
+      }
+     ]
+    },
+    {
+     "id": "ev_venue",
+     "label": {
+      "ar": "معلومات المكان",
+      "en": "venue information"
+     },
+     "keywords": [
+      {
+       "ar": "مكان",
+       "en": "venue"
+      },
+      {
+       "ar": "قاعة",
+       "en": "hall"
+      },
+      {
+       "ar": "دخول",
+       "en": "entry"
+      }
+     ]
+    }
+   ],
+   "fillers": [
+    {
+     "ar": "فعالية",
+     "en": "event"
+    },
+    {
+     "ar": "حضور",
+     "en": "attendance"
+    },
+    {
+     "ar": "تاريخ",
+     "en": "date"
+    }
+   ]
+  },
+  {
+   "id": "real_estate",
+   "label": {
+    "ar": "العقار",
+    "en": "real-estate services"
+   },
+   "intents": [
+    {
+     "id": "re_view",
+     "label": {
+      "ar": "معاينة عقار",
+      "en": "property viewing"
+     },
+     "keywords": [
+      {
+       "ar": "معاينة",
+       "en": "viewing"
+      },
+      {
+       "ar": "عقار",
+       "en": "property"
+      },
+      {
+       "ar": "زيارة",
+       "en": "visit"
+      }
+     ]
+    },
+    {
+     "id": "re_rent",
+     "label": {
+      "ar": "عقد إيجار",
+      "en": "lease contract"
+     },
+     "keywords": [
+      {
+       "ar": "إيجار",
+       "en": "lease"
+      },
+      {
+       "ar": "عقد",
+       "en": "contract"
+      },
+      {
+       "ar": "سعر",
+       "en": "rent"
+      }
+     ]
+    },
+    {
+     "id": "re_fix",
+     "label": {
+      "ar": "صيانة العقار",
+      "en": "property maintenance"
+     },
+     "keywords": [
+      {
+       "ar": "صيانة",
+       "en": "maintenance"
+      },
+      {
+       "ar": "بلاغ",
+       "en": "report"
+      },
+      {
+       "ar": "مالك",
+       "en": "owner"
+      }
+     ]
+    },
+    {
+     "id": "re_docs",
+     "label": {
+      "ar": "أوراق التوثيق",
+      "en": "title documents"
+     },
+     "keywords": [
+      {
+       "ar": "أوراق",
+       "en": "documents"
+      },
+      {
+       "ar": "توثيق",
+       "en": "deeds"
+      },
+      {
+       "ar": "صك",
+       "en": "title"
+      }
+     ]
+    }
+   ],
+   "fillers": [
+    {
+     "ar": "شقة",
+     "en": "apartment"
+    },
+    {
+     "ar": "وسيط",
+     "en": "broker"
+    },
+    {
+     "ar": "حي",
+     "en": "district"
+    }
+   ]
+  },
+  {
+   "id": "payments",
+   "label": {
+    "ar": "المدفوعات",
+    "en": "payment services"
+   },
+   "intents": [
+    {
+     "id": "pm_transfer",
+     "label": {
+      "ar": "تحويل أموال",
+      "en": "money transfer"
+     },
+     "keywords": [
+      {
+       "ar": "تحويل",
+       "en": "transfer"
+      },
+      {
+       "ar": "مستفيد",
+       "en": "beneficiary"
+      },
+      {
+       "ar": "رسوم",
+       "en": "fee"
+      }
+     ]
+    },
+    {
+     "id": "pm_refund",
+     "label": {
+      "ar": "استرداد مبلغ",
+      "en": "refunding a payment"
+     },
+     "keywords": [
+      {
+       "ar": "استرداد",
+       "en": "refund"
+      },
+      {
+       "ar": "مبلغ",
+       "en": "amount"
+      },
+      {
+       "ar": "مرتجع",
+       "en": "chargeback"
+      }
+     ]
+    },
+    {
+     "id": "pm_limit",
+     "label": {
+      "ar": "حد التحويل اليومي",
+      "en": "transfer limits"
+     },
+     "keywords": [
+      {
+       "ar": "حد",
+       "en": "limit"
+      },
+      {
+       "ar": "يومي",
+       "en": "daily"
+      },
+      {
+       "ar": "سقف",
+       "en": "cap"
+      }
+     ]
+    },
+    {
+     "id": "pm_dispute",
+     "label": {
+      "ar": "اعتراض على خصم",
+      "en": "disputing a charge"
+     },
+     "keywords": [
+      {
+       "ar": "خصم",
+       "en": "charge"
+      },
+      {
+       "ar": "اعتراض",
+       "en": "dispute"
+      },
+      {
+       "ar": "عملية",
+       "en": "transaction"
+      }
+     ]
+    }
+   ],
+   "fillers": [
+    {
+     "ar": "محفظة",
+     "en": "wallet"
+    },
+    {
+     "ar": "رقم",
+     "en": "number"
+    },
+    {
+     "ar": "عاجل",
+     "en": "urgent"
+    }
+   ]
+  },
+  {
+   "id": "delivery",
+   "label": {
+    "ar": "التوصيل",
+    "en": "delivery services"
+   },
+   "intents": [
+    {
+     "id": "dl_track",
+     "label": {
+      "ar": "تتبع الطلب",
+      "en": "order tracking"
+     },
+     "keywords": [
+      {
+       "ar": "تتبع",
+       "en": "tracking"
+      },
+      {
+       "ar": "طلب",
+       "en": "order"
+      },
+      {
+       "ar": "حالة",
+       "en": "status"
+      }
+     ]
+    },
+    {
+     "id": "dl_address",
+     "label": {
+      "ar": "تغيير عنوان التسليم",
+      "en": "address change"
+     },
+     "keywords": [
+      {
+       "ar": "عنوان",
+       "en": "address"
+      },
+      {
+       "ar": "تغيير",
+       "en": "change"
+      },
+      {
+       "ar": "تسليم",
+       "en": "delivery"
+      }
+     ]
+    },
+    {
+     "id": "dl_retry",
+     "label": {
+      "ar": "إعادة محاولة التوصيل",
+      "en": "failed redelivery"
+     },
+     "keywords": [
+      {
+       "ar": "فاشلة",
+       "en": "failed"
+      },
+      {
+       "ar": "إعادة",
+       "en": "redelivery"
+      },
+      {
+       "ar": "محاولة",
+       "en": "attempt"
+      }
+     ]
+    },
+    {
+     "id": "dl_zone",
+     "label": {
+      "ar": "رسوم المناطق",
+      "en": "zone fees"
+     },
+     "keywords": [
+      {
+       "ar": "منطقة",
+       "en": "zone"
+      },
+      {
+       "ar": "رسوم",
+       "en": "fees"
+      },
+      {
+       "ar": "سعر",
+       "en": "price"
+      }
+     ]
+    }
+   ],
+   "fillers": [
+    {
+     "ar": "مندوب",
+     "en": "courier"
+    },
+    {
+     "ar": "شكراً",
+     "en": "thanks"
+    },
+    {
+     "ar": "خدمة",
+     "en": "service"
+    }
+   ]
+  },
+  {
+   "id": "fitness",
+   "label": {
+    "ar": "اللياقة",
+    "en": "fitness services"
+   },
+   "intents": [
+    {
+     "id": "ft_join",
+     "label": {
+      "ar": "عضوية جديدة",
+      "en": "new membership"
+     },
+     "keywords": [
+      {
+       "ar": "عضوية",
+       "en": "membership"
+      },
+      {
+       "ar": "تسجيل",
+       "en": "signup"
+      },
+      {
+       "ar": "انضمام",
+       "en": "joining"
+      }
+     ]
+    },
+    {
+     "id": "ft_classes",
+     "label": {
+      "ar": "حصص تدريبية",
+      "en": "training classes"
+     },
+     "keywords": [
+      {
+       "ar": "حصة",
+       "en": "class"
+      },
+      {
+       "ar": "مواعيد",
+       "en": "timetable"
+      },
+      {
+       "ar": "استوديو",
+       "en": "studio"
+      }
+     ]
+    },
+    {
+     "id": "ft_freeze",
+     "label": {
+      "ar": "تجميد العضوية",
+      "en": "freezing a membership"
+     },
+     "keywords": [
+      {
+       "ar": "تجميد",
+       "en": "freeze"
+      },
+      {
+       "ar": "إيقاف",
+       "en": "suspend"
+      },
+      {
+       "ar": "سفر",
+       "en": "travel"
+      }
+     ]
+    },
+    {
+     "id": "ft_coach",
+     "label": {
+      "ar": "مدرّب شخصي",
+      "en": "personal training"
+     },
+     "keywords": [
+      {
+       "ar": "تدريب",
+       "en": "training"
+      },
+      {
+       "ar": "خاص",
+       "en": "personal"
+      },
+      {
+       "ar": "برنامج",
+       "en": "program"
+      }
+     ]
+    }
+   ],
+   "fillers": [
+    {
+     "ar": "نادي",
+     "en": "gym"
+    },
+    {
+     "ar": "وقت",
+     "en": "hours"
+    },
+    {
+     "ar": "عروض",
+     "en": "offers"
+    }
+   ]
+  },
+  {
+   "id": "municipal",
+   "label": {
+    "ar": "خدمات البلدية",
+    "en": "municipal services"
+   },
+   "intents": [
+    {
+     "id": "mu_permit",
+     "label": {
+      "ar": "تصريح أعمال",
+      "en": "a works permit"
+     },
+     "keywords": [
+      {
+       "ar": "تصريح",
+       "en": "permit"
+      },
+      {
+       "ar": "أعمال",
+       "en": "works"
+      },
+      {
+       "ar": "ترخيص",
+       "en": "licensing"
+      }
+     ]
+    },
+    {
+     "id": "mu_clean",
+     "label": {
+      "ar": "شكاوى النظافة",
+      "en": "sanitation complaints"
+     },
+     "keywords": [
+      {
+       "ar": "نظافة",
+       "en": "sanitation"
+      },
+      {
+       "ar": "شكوى",
+       "en": "complaint"
+      },
+      {
+       "ar": "تجميع",
+       "en": "collection"
+      }
+     ]
+    },
+    {
+     "id": "mu_parking",
+     "label": {
+      "ar": "المواقف العامة",
+      "en": "public parking"
+     },
+     "keywords": [
+      {
+       "ar": "مواقف",
+       "en": "parking"
+      },
+      {
+       "ar": "مركبة",
+       "en": "vehicle"
+      },
+      {
+       "ar": "غرامة",
+       "en": "fine"
+      }
+     ]
+    },
+    {
+     "id": "mu_report",
+     "label": {
+      "ar": "الإبلاغ عن مخالفة",
+      "en": "reporting a violation"
+     },
+     "keywords": [
+      {
+       "ar": "إبلاغ",
+       "en": "reporting"
+      },
+      {
+       "ar": "مخالفة",
+       "en": "violation"
+      },
+      {
+       "ar": "رصد",
+       "en": "noticing"
+      }
+     ]
+    }
+   ],
+   "fillers": [
+    {
+     "ar": "بلدية",
+     "en": "municipality"
+    },
+    {
+     "ar": "حي",
+     "en": "neighborhood"
+    },
+    {
+     "ar": "خدمة",
+     "en": "service"
+    }
+   ]
+  }
+ ],
+ "personas": [
+  {
+   "id": "persona-01",
+   "region": "egypt",
+   "formality": "casual",
+   "urgency": "low",
+   "note_ar": "عميل من القاهرة، نبرة ودية، لا استعجال في الطلب",
+   "note_en": "customer from Cairo, a friendly tone, no rush on the request"
+  },
+  {
+   "id": "persona-02",
+   "region": "levant",
+   "formality": "casual",
+   "urgency": "low",
+   "note_ar": "مستخدم من بيروت، نبرة ودية، لا استعجال في الطلب",
+   "note_en": "user from Beirut, a friendly tone, no rush on the request"
+  },
+  {
+   "id": "persona-03",
+   "region": "gulf",
+   "formality": "casual",
+   "urgency": "low",
+   "note_ar": "متصل من الدمام، نبرة ودية، لا استعجال في الطلب",
+   "note_en": "caller from Dammam, a friendly tone, no rush on the request"
+  },
+  {
+   "id": "persona-04",
+   "region": "maghreb",
+   "formality": "casual",
+   "urgency": "low",
+   "note_ar": "عميل من الرباط، نبرة ودية، لا استعجال في الطلب",
+   "note_en": "customer from Rabat, a friendly tone, no rush on the request"
+  },
+  {
+   "id": "persona-05",
+   "region": "neutral",
+   "formality": "casual",
+   "urgency": "low",
+   "note_ar": "مستخدم من الرياض، نبرة ودية، لا استعجال في الطلب",
+   "note_en": "user from Riyadh, a friendly tone, no rush on the request"
+  },
+  {
+   "id": "persona-06",
+   "region": "egypt",
+   "formality": "neutral",
+   "urgency": "low",
+   "note_ar": "متصل من القاهرة، نبرة عادية، لا استعجال في الطلب",
+   "note_en": "caller from Cairo, a matter-of-fact tone, no rush on the request"
+  },
+  {
+   "id": "persona-07",
+   "region": "levant",
+   "formality": "neutral",
+   "urgency": "low",
+   "note_ar": "عميل من بيروت، نبرة عادية، لا استعجال في الطلب",
+   "note_en": "customer from Beirut, a matter-of-fact tone, no rush on the request"
+  },
+  {
+   "id": "persona-08",
+   "region": "gulf",
+   "formality": "neutral",
+   "urgency": "low",
+   "note_ar": "مستخدم من الدمام، نبرة عادية، لا استعجال في الطلب",
+   "note_en": "user from Dammam, a matter-of-fact tone, no rush on the request"
+  },
+  {
+   "id": "persona-09",
+   "region": "maghreb",
+   "formality": "neutral",
+   "urgency": "low",
+   "note_ar": "متصل من الرباط، نبرة عادية، لا استعجال في الطلب",
+   "note_en": "caller from Rabat, a matter-of-fact tone, no rush on the request"
+  },
+  {
+   "id": "persona-10",
+   "region": "neutral",
+   "formality": "neutral",
+   "urgency": "low",
+   "note_ar": "عميل من الرياض، نبرة عادية، لا استعجال في الطلب",
+   "note_en": "customer from Riyadh, a matter-of-fact tone, no rush on the request"
+  },
+  {
+   "id": "persona-11",
+   "region": "egypt",
+   "formality": "formal",
+   "urgency": "low",
+   "note_ar": "مستخدم من القاهرة، نبرة رسمية، لا استعجال في الطلب",
+   "note_en": "user from Cairo, a formal tone, no rush on the request"
+  },
+  {
+   "id": "persona-12",
+   "region": "levant",
+   "formality": "formal",
+   "urgency": "low",
+   "note_ar": "متصل من بيروت، نبرة رسمية، لا استعجال في الطلب",
+   "note_en": "caller from Beirut, a formal tone, no rush on the request"
+  },
+  {
+   "id": "persona-13",
+   "region": "gulf",
+   "formality": "formal",
+   "urgency": "low",
+   "note_ar": "عميل من الدمام، نبرة رسمية، لا استعجال في الطلب",
+   "note_en": "customer from Dammam, a formal tone, no rush on the request"
+  },
+  {
+   "id": "persona-14",
+   "region": "maghreb",
+   "formality": "formal",
+   "urgency": "low",
+   "note_ar": "مستخدم من الرباط، نبرة رسمية، لا استعجال في الطلب",
+   "note_en": "user from Rabat, a formal tone, no rush on the request"
+  },
+  {
+   "id": "persona-15",
+   "region": "neutral",
+   "formality": "formal",
+   "urgency": "low",
+   "note_ar": "متصل من الرياض، نبرة رسمية، لا استعجال في الطلب",
+   "note_en": "caller from Riyadh, a formal tone, no rush on the request"
+  },
+  {
+   "id": "persona-16",
+   "region": "egypt",
+   "formality": "casual",
+   "urgency": "normal",
+   "note_ar": "عميل من القاهرة، نبرة ودية، الطلب عادي",
+   "note_en": "customer from Cairo, a friendly tone, a routine request"
+  },
+  {
+   "id": "persona-17",
+   "region": "levant",
+   "formality": "casual",
+   "urgency": "normal",
+   "note_ar": "مستخدم من بيروت، نبرة ودية، الطلب عادي",
+   "note_en": "user from Beirut, a friendly tone, a routine request"
+  },
+  {
+   "id": "persona-18",
+   "region": "gulf",
+   "formality": "casual",
+   "urgency": "normal",
+   "note_ar": "متصل من الدمام، نبرة ودية، الطلب عادي",
+   "note_en": "caller from Dammam, a friendly tone, a routine request"
+  },
+  {
+   "id": "persona-19",
+   "region": "maghreb",
+   "formality": "casual",
+   "urgency": "normal",
+   "note_ar": "عميل من الرباط، نبرة ودية، الطلب عادي",
+   "note_en": "customer from Rabat, a friendly tone, a routine request"
+  },
+  {
+   "id": "persona-20",
+   "region": "neutral",
+   "formality": "casual",
+   "urgency": "normal",
+   "note_ar": "مستخدم من الرياض، نبرة ودية، الطلب عادي",
+   "note_en": "user from Riyadh, a friendly tone, a routine request"
+  },
+  {
+   "id": "persona-21",
+   "region": "egypt",
+   "formality": "neutral",
+   "urgency": "normal",
+   "note_ar": "متصل من القاهرة، نبرة عادية، الطلب عادي",
+   "note_en": "caller from Cairo, a matter-of-fact tone, a routine request"
+  },
+  {
+   "id": "persona-22",
+   "region": "levant",
+   "formality": "neutral",
+   "urgency": "normal",
+   "note_ar": "عميل من بيروت، نبرة عادية، الطلب عادي",
+   "note_en": "customer from Beirut, a matter-of-fact tone, a routine request"
+  },
+  {
+   "id": "persona-23",
+   "region": "gulf",
+   "formality": "neutral",
+   "urgency": "normal",
+   "note_ar": "مستخدم من الدمام، نبرة عادية، الطلب عادي",
+   "note_en": "user from Dammam, a matter-of-fact tone, a routine request"
+  },
+  {
+   "id": "persona-24",
+   "region": "maghreb",
+   "formality": "neutral",
+   "urgency": "normal",
+   "note_ar": "متصل من الرباط، نبرة عادية، الطلب عادي",
+   "note_en": "caller from Rabat, a matter-of-fact tone, a routine request"
+  },
+  {
+   "id": "persona-25",
+   "region": "neutral",
+   "formality": "neutral",
+   "urgency": "normal",
+   "note_ar": "عميل من الرياض، نبرة عادية، الطلب عادي",
+   "note_en": "customer from Riyadh, a matter-of-fact tone, a routine request"
+  }
+ ],
+ "entities": {
+  "comparison": [
+   {
+    "ar": "قسط الخدمة",
+    "en": "service installment"
+   },
+   {
+    "ar": "طلب الصيانة",
+    "en": "maintenance request"
+   },
+   {
+    "ar": "تقرير الاشتراك",
+    "en": "subscription report"
+   },
+   {
+    "ar": "معدل المشتريات",
+    "en": "procurement rate"
+   },
+   {
+    "ar": "فاتورة الخدمة",
+    "en": "service invoice"
+   },
+   {
+    "ar": "نسبة الترخيص",
+    "en": "licensing share"
+   },
+   {
+    "ar": "نسبة التمويل",
+    "en": "financing share"
+   },
+   {
+    "ar": "قسط الشحن",
+    "en": "shipping installment"
+   },
+   {
+    "ar": "تقرير الترخيص",
+    "en": "licensing report"
+   },
+   {
+    "ar": "خطة الاستثمار",
+    "en": "investment plan"
+   },
+   {
+    "ar": "قسط الاشتراك",
+    "en": "subscription installment"
+   },
+   {
+    "ar": "رصيد الاستثمار",
+    "en": "investment balance"
+   },
+   {
+    "ar": "طلب الخدمة",
+    "en": "service request"
+   },
+   {
+    "ar": "كمية التمويل",
+    "en": "financing quantity"
+   },
+   {
+    "ar": "قسط التأمين",
+    "en": "insurance installment"
+   },
+   {
+    "ar": "فاتورة الاستثمار",
+    "en": "investment invoice"
+   },
+   {
+    "ar": "نسبة الصيانة",
+    "en": "maintenance share"
+   },
+   {
+    "ar": "معدل الاشتراك",
+    "en": "subscription rate"
+   },
+   {
+    "ar": "طلب الاستثمار",
+    "en": "investment request"
+   },
+   {
+    "ar": "معدل التوريد",
+    "en": "supply rate"
+   },
+   {
+    "ar": "فاتورة الإيجار",
+    "en": "rental invoice"
+   },
+   {
+    "ar": "رصيد التمويل",
+    "en": "financing balance"
+   },
+   {
+    "ar": "قسط الإيجار",
+    "en": "rental installment"
+   },
+   {
+    "ar": "رصيد الترخيص",
+    "en": "licensing balance"
+   },
+   {
+    "ar": "شهادة التمويل",
+    "en": "financing certificate"
+   },
+   {
+    "ar": "خطة الخدمة",
+    "en": "service plan"
+   },
+   {
+    "ar": "حد التأمين",
+    "en": "insurance limit"
+   },
+   {
+    "ar": "شهادة التأمين",
+    "en": "insurance certificate"
+   },
+   {
+    "ar": "خطة الترخيص",
+    "en": "licensing plan"
+   },
+   {
+    "ar": "كمية التوريد",
+    "en": "supply quantity"
+   },
+   {
+    "ar": "شهادة الاستثمار",
+    "en": "investment certificate"
+   },
+   {
+    "ar": "فاتورة الشحن",
+    "en": "shipping invoice"
+   },
+   {
+    "ar": "عقد الشحن",
+    "en": "shipping contract"
+   },
+   {
+    "ar": "خطة الصيانة",
+    "en": "maintenance plan"
+   },
+   {
+    "ar": "نسبة الخدمة",
+    "en": "service share"
+   },
+   {
+    "ar": "تقرير الإيجار",
+    "en": "rental report"
+   },
+   {
+    "ar": "حد المشتريات",
+    "en": "procurement limit"
+   },
+   {
+    "ar": "نسبة التوريد",
+    "en": "supply share"
+   },
+   {
+    "ar": "كمية الخدمة",
+    "en": "service quantity"
+   },
+   {
+    "ar": "خطة التأمين",
+    "en": "insurance plan"
+   },
+   {
+    "ar": "كمية التدريب",
+    "en": "training quantity"
+   },
+   {
+    "ar": "تقرير الخدمة",
+    "en": "service report"
+   },
+   {
+    "ar": "شهادة الصيانة",
+    "en": "maintenance certificate"
+   },
+   {
+    "ar": "شهادة التوريد",
+    "en": "supply certificate"
+   },
+   {
+    "ar": "نسبة المشتريات",
+    "en": "procurement share"
+   },
+   {
+    "ar": "شهادة التدريب",
+    "en": "training certificate"
+   },
+   {
+    "ar": "قسط الترخيص",
+    "en": "licensing installment"
+   },
+   {
+    "ar": "فاتورة الصيانة",
+    "en": "maintenance invoice"
+   },
+   {
+    "ar": "رصيد الخدمة",
+    "en": "service balance"
+   },
+   {
+    "ar": "عقد التدريب",
+    "en": "training contract"
+   },
+   {
+    "ar": "نسبة الاشتراك",
+    "en": "subscription share"
+   },
+   {
+    "ar": "عقد الترخيص",
+    "en": "licensing contract"
+   },
+   {
+    "ar": "فاتورة التوريد",
+    "en": "supply invoice"
+   },
+   {
+    "ar": "معدل الخدمة",
+    "en": "service rate"
+   },
+   {
+    "ar": "خطة الإيجار",
+    "en": "rental plan"
+   },
+   {
+    "ar": "خطة الشحن",
+    "en": "shipping plan"
+   },
+   {
+    "ar": "معدل التأمين",
+    "en": "insurance rate"
+   },
+   {
+    "ar": "فاتورة المشتريات",
+    "en": "procurement invoice"
+   },
+   {
+    "ar": "تقرير الاستثمار",
+    "en": "investment report"
+   },
+   {
+    "ar": "قسط الاستثمار",
+    "en": "investment installment"
+   }
+  ],
+  "policy_logic": [
+   {
+    "ar": "طلب نقل مشتريات",
+    "en": "purchases transfer request"
+   },
+   {
+    "ar": "طلب تسجيل سجل",
+    "en": "records registration request"
+   },
+   {
+    "ar": "طلب نقل قرض",
+    "en": "a loan transfer request"
+   },
+   {
+    "ar": "طلب تسجيل قرض",
+    "en": "a loan registration request"
+   },
+   {
+    "ar": "طلب ترقية رسوم",
+    "en": "fees upgrade request"
+   },
+   {
+    "ar": "طلب تغطية ملكية",
+    "en": "ownership coverage request"
+   },
+   {
+    "ar": "طلب تصحيح رسوم",
+    "en": "fees correction request"
+   },
+   {
+    "ar": "طلب تصحيح ممتلكات",
+    "en": "property correction request"
+   },
+   {
+    "ar": "طلب إعفاء مشتريات",
+    "en": "purchases exemption request"
+   },
+   {
+    "ar": "طلب تغطية طالب جديد",
+    "en": "a new student coverage request"
+   },
+   {
+    "ar": "طلب تسجيل خدمة مميزة",
+    "en": "premium service registration request"
+   },
+   {
+    "ar": "طلب نقل طالب جديد",
+    "en": "a new student transfer request"
+   },
+   {
+    "ar": "طلب استرداد خدمة مميزة",
+    "en": "premium service refund request"
+   },
+   {
+    "ar": "طلب تسجيل ملكية",
+    "en": "ownership registration request"
+   },
+   {
+    "ar": "طلب نقل رسوم",
+    "en": "fees transfer request"
+   },
+   {
+    "ar": "طلب تسجيل مشتريات",
+    "en": "purchases registration request"
+   },
+   {
+    "ar": "طلب نقل خدمة مميزة",
+    "en": "premium service transfer request"
+   },
+   {
+    "ar": "طلب ترقية قرض",
+    "en": "a loan upgrade request"
+   },
+   {
+    "ar": "طلب استرداد ملكية",
+    "en": "ownership refund request"
+   },
+   {
+    "ar": "طلب نقل سجل",
+    "en": "records transfer request"
+   },
+   {
+    "ar": "طلب نقل ممتلكات",
+    "en": "property transfer request"
+   },
+   {
+    "ar": "طلب إعفاء خدمة مميزة",
+    "en": "premium service exemption request"
+   },
+   {
+    "ar": "طلب استرداد طالب جديد",
+    "en": "a new student refund request"
+   },
+   {
+    "ar": "طلب ضمان ملكية",
+    "en": "ownership guarantee request"
+   },
+   {
+    "ar": "طلب إعفاء ملكية",
+    "en": "ownership exemption request"
+   },
+   {
+    "ar": "طلب استرداد رسوم",
+    "en": "fees refund request"
+   },
+   {
+    "ar": "طلب ترقية ممتلكات",
+    "en": "property upgrade request"
+   },
+   {
+    "ar": "طلب إعفاء رسوم",
+    "en": "fees exemption request"
+   },
+   {
+    "ar": "طلب نقل ملكية",
+    "en": "ownership transfer request"
+   },
+   {
+    "ar": "طلب تصحيح سجل",
+    "en": "records correction request"
+   },
+   {
+    "ar": "طلب إعفاء طالب جديد",
+    "en": "a new student exemption request"
+   },
+   {
+    "ar": "طلب إعفاء سجل",
+    "en": "records exemption request"
+   },
+   {
+    "ar": "طلب تصحيح مشتريات",
+    "en": "purchases correction request"
+   },
+   {
+    "ar": "طلب تصحيح قرض",
+    "en": "a loan correction request"
+   },
+   {
+    "ar": "طلب تسجيل رسوم",
+    "en": "fees registration request"
+   },
+   {
+    "ar": "طلب تسجيل طالب جديد",
+    "en": "a new student registration request"
+   },
+   {
+    "ar": "طلب ترقية سجل",
+    "en": "records upgrade request"
+   },
+   {
+    "ar": "طلب تسجيل ممتلكات",
+    "en": "property registration request"
+   },
+   {
+    "ar": "طلب تغطية قرض",
+    "en": "a loan coverage request"
+   },
+   {
+    "ar": "طلب إعفاء ممتلكات",
+    "en": "property exemption request"
+   }
+  ],
+  "budget_check": [
+   {
+    "ar": "عقد صيانة مبدئي",
+    "en": "preliminary maintenance contract"
+   },
+   {
+    "ar": "أمر شراء مقترح",
+    "en": "proposed purchase order"
+   },
+   {
+    "ar": "مشروع مبدئي",
+    "en": "preliminary project"
+   },
+   {
+    "ar": "طلب صرف مبدئي",
+    "en": "preliminary spend request"
+   },
+   {
+    "ar": "خطة تقسيط جديد",
+    "en": "new installment plan"
+   },
+   {
+    "ar": "طلب تعويض جديد",
+    "en": "new compensation request"
+   },
+   {
+    "ar": "أمر شراء طارئ",
+    "en": "emergency purchase order"
+   },
+   {
+    "ar": "فاتورة طارئ",
+    "en": "emergency invoice"
+   },
+   {
+    "ar": "طلب تعويض سنوي",
+    "en": "annual compensation request"
+   },
+   {
+    "ar": "فاتورة جديد",
+    "en": "new invoice"
+   },
+   {
+    "ar": "خطة تقسيط مؤجل",
+    "en": "deferred installment plan"
+   },
+   {
+    "ar": "مشروع مؤجل",
+    "en": "deferred project"
+   },
+   {
+    "ar": "خطة تقسيط مبدئي",
+    "en": "preliminary installment plan"
+   },
+   {
+    "ar": "مشروع إضافي",
+    "en": "additional project"
+   },
+   {
+    "ar": "فاتورة مبدئي",
+    "en": "preliminary invoice"
+   },
+   {
+    "ar": "طلب دفعة جديد",
+    "en": "new payment request"
+   },
+   {
+    "ar": "فاتورة إضافي",
+    "en": "additional invoice"
+   },
+   {
+    "ar": "أمر شراء سنوي",
+    "en": "annual purchase order"
+   },
+   {
+    "ar": "خطة تقسيط إضافي",
+    "en": "additional installment plan"
+   },
+   {
+    "ar": "خطة تقسيط طارئ",
+    "en": "emergency installment plan"
+   },
+   {
+    "ar": "طلب صرف سنوي",
+    "en": "annual spend request"
+   },
+   {
+    "ar": "طلب دفعة مقترح",
+    "en": "proposed payment request"
+   },
+   {
+    "ar": "طلب تعويض مقترح",
+    "en": "proposed compensation request"
+   },
+   {
+    "ar": "طلب تعويض إضافي",
+    "en": "additional compensation request"
+   },
+   {
+    "ar": "طلب دفعة إضافي",
+    "en": "additional payment request"
+   },
+   {
+    "ar": "عقد صيانة جديد",
+    "en": "new maintenance contract"
+   },
+   {
+    "ar": "فاتورة مقترح",
+    "en": "proposed invoice"
+   },
+   {
+    "ar": "أمر شراء مؤجل",
+    "en": "deferred purchase order"
+   },
+   {
+    "ar": "فاتورة مؤجل",
+    "en": "deferred invoice"
+   },
+   {
+    "ar": "فاتورة سنوي",
+    "en": "annual invoice"
+   },
+   {
+    "ar": "خطة تقسيط سنوي",
+    "en": "annual installment plan"
+   },
+   {
+    "ar": "طلب صرف طارئ",
+    "en": "emergency spend request"
+   },
+   {
+    "ar": "عقد صيانة إضافي",
+    "en": "additional maintenance contract"
+   },
+   {
+    "ar": "مشروع طارئ",
+    "en": "emergency project"
+   },
+   {
+    "ar": "عقد صيانة مقترح",
+    "en": "proposed maintenance contract"
+   },
+   {
+    "ar": "عقد صيانة سنوي",
+    "en": "annual maintenance contract"
+   },
+   {
+    "ar": "طلب صرف مقترح",
+    "en": "proposed spend request"
+   },
+   {
+    "ar": "مشروع جديد",
+    "en": "new project"
+   },
+   {
+    "ar": "طلب تعويض طارئ",
+    "en": "emergency compensation request"
+   },
+   {
+    "ar": "مشروع سنوي",
+    "en": "annual project"
+   }
+  ],
+  "safety_gate": [
+   {
+    "ar": "إلغاء بيانات حساسة",
+    "en": "cancelling sensitive data"
+   },
+   {
+    "ar": "طلب بيانات عميل",
+    "en": "a request for customer data"
+   },
+   {
+    "ar": "سؤال عن تقرير طبي",
+    "en": "a question about a medical report"
+   },
+   {
+    "ar": "تحويل وصفة طبية",
+    "en": "transferring a medical prescription"
+   },
+   {
+    "ar": "استفسار حول بيانات حساسة",
+    "en": "an inquiry about sensitive data"
+   },
+   {
+    "ar": "مشاركة جرعة دواء",
+    "en": "sharing a medication dose"
+   },
+   {
+    "ar": "مشاركة وصفة طبية",
+    "en": "sharing a medical prescription"
+   },
+   {
+    "ar": "سؤال عن بيانات عميل",
+    "en": "a question about customer data"
+   },
+   {
+    "ar": "تحويل مبلغ كبير",
+    "en": "transferring a large amount"
+   },
+   {
+    "ar": "استفسار حول عمولة تحويل",
+    "en": "an inquiry about a transfer fee"
+   },
+   {
+    "ar": "تحويل تقرير طبي",
+    "en": "transferring a medical report"
+   },
+   {
+    "ar": "سؤال عن حساب مسروق",
+    "en": "a question about a hijacked account"
+   },
+   {
+    "ar": "تحويل جرعة دواء",
+    "en": "transferring a medication dose"
+   },
+   {
+    "ar": "طلب إشعار أمني",
+    "en": "a request for a security alert"
+   },
+   {
+    "ar": "حذف تقرير طبي",
+    "en": "deleting a medical report"
+   },
+   {
+    "ar": "طلب عقد موقع",
+    "en": "a request for a signed contract"
+   },
+   {
+    "ar": "إلغاء عمولة تحويل",
+    "en": "cancelling a transfer fee"
+   },
+   {
+    "ar": "إلغاء تقرير طبي",
+    "en": "cancelling a medical report"
+   },
+   {
+    "ar": "حذف بيانات عميل",
+    "en": "deleting customer data"
+   },
+   {
+    "ar": "حذف بيانات حساسة",
+    "en": "deleting sensitive data"
+   },
+   {
+    "ar": "مشاركة بيانات عميل",
+    "en": "sharing customer data"
+   },
+   {
+    "ar": "سؤال عن عقد موقع",
+    "en": "a question about a signed contract"
+   },
+   {
+    "ar": "حذف عمولة تحويل",
+    "en": "deleting a transfer fee"
+   },
+   {
+    "ar": "تعديل إشعار أمني",
+    "en": "editing a security alert"
+   },
+   {
+    "ar": "طلب عمولة تحويل",
+    "en": "a request for a transfer fee"
+   },
+   {
+    "ar": "إلغاء جرعة دواء",
+    "en": "cancelling a medication dose"
+   },
+   {
+    "ar": "استفسار حول بيانات عميل",
+    "en": "an inquiry about customer data"
+   },
+   {
+    "ar": "استفسار حول حساب مسروق",
+    "en": "an inquiry about a hijacked account"
+   },
+   {
+    "ar": "مشاركة حساب مسروق",
+    "en": "sharing a hijacked account"
+   },
+   {
+    "ar": "حذف وصفة طبية",
+    "en": "deleting a medical prescription"
+   },
+   {
+    "ar": "طلب جرعة دواء",
+    "en": "a request for a medication dose"
+   },
+   {
+    "ar": "تحويل بيانات حساسة",
+    "en": "transferring sensitive data"
+   },
+   {
+    "ar": "سؤال عن عمولة تحويل",
+    "en": "a question about a transfer fee"
+   },
+   {
+    "ar": "حذف إشعار أمني",
+    "en": "deleting a security alert"
+   },
+   {
+    "ar": "سؤال عن مبلغ كبير",
+    "en": "a question about a large amount"
+   },
+   {
+    "ar": "استفسار حول تقرير طبي",
+    "en": "an inquiry about a medical report"
+   },
+   {
+    "ar": "تعديل عمولة تحويل",
+    "en": "editing a transfer fee"
+   },
+   {
+    "ar": "تعديل حساب مسروق",
+    "en": "editing a hijacked account"
+   },
+   {
+    "ar": "حذف مبلغ كبير",
+    "en": "deleting a large amount"
+   },
+   {
+    "ar": "إلغاء مبلغ كبير",
+    "en": "cancelling a large amount"
+   },
+   {
+    "ar": "طلب تقرير طبي",
+    "en": "a request for a medical report"
+   },
+   {
+    "ar": "استفسار حول إشعار أمني",
+    "en": "an inquiry about a security alert"
+   },
+   {
+    "ar": "تحويل عقد موقع",
+    "en": "transferring a signed contract"
+   },
+   {
+    "ar": "مشاركة إشعار أمني",
+    "en": "sharing a security alert"
+   },
+   {
+    "ar": "استفسار حول عقد موقع",
+    "en": "an inquiry about a signed contract"
+   },
+   {
+    "ar": "طلب مبلغ كبير",
+    "en": "a request for a large amount"
+   },
+   {
+    "ar": "مشاركة عقد موقع",
+    "en": "sharing a signed contract"
+   },
+   {
+    "ar": "مشاركة بيانات حساسة",
+    "en": "sharing sensitive data"
+   },
+   {
+    "ar": "مشاركة مبلغ كبير",
+    "en": "sharing a large amount"
+   },
+   {
+    "ar": "طلب حساب مسروق",
+    "en": "a request for a hijacked account"
+   },
+   {
+    "ar": "استفسار حول وصفة طبية",
+    "en": "an inquiry about a medical prescription"
+   },
+   {
+    "ar": "طلب وصفة طبية",
+    "en": "a request for a medical prescription"
+   },
+   {
+    "ar": "سؤال عن بيانات حساسة",
+    "en": "a question about sensitive data"
+   },
+   {
+    "ar": "طلب بيانات حساسة",
+    "en": "a request for sensitive data"
+   },
+   {
+    "ar": "استفسار حول جرعة دواء",
+    "en": "an inquiry about a medication dose"
+   },
+   {
+    "ar": "إلغاء حساب مسروق",
+    "en": "cancelling a hijacked account"
+   },
+   {
+    "ar": "حذف عقد موقع",
+    "en": "deleting a signed contract"
+   },
+   {
+    "ar": "حذف حساب مسروق",
+    "en": "deleting a hijacked account"
+   },
+   {
+    "ar": "إلغاء إشعار أمني",
+    "en": "cancelling a security alert"
+   },
+   {
+    "ar": "سؤال عن إشعار أمني",
+    "en": "a question about a security alert"
+   }
+  ],
+  "triage_rubric": [
+   {
+    "ar": "شكوى خدمة مُصدَّر",
+    "en": "escalated service complaint"
+   },
+   {
+    "ar": "تقرير حادث خارجي",
+    "en": "external incident report"
+   },
+   {
+    "ar": "تقرير حادث متكرر",
+    "en": "recurring incident report"
+   },
+   {
+    "ar": "طلب مراجعة فني",
+    "en": "technical review request"
+   },
+   {
+    "ar": "بلاغ أمني فني",
+    "en": "technical security report"
+   },
+   {
+    "ar": "بلاغ أمني داخلي",
+    "en": "internal security report"
+   },
+   {
+    "ar": "تذكرة دعم داخلي",
+    "en": "internal support ticket"
+   },
+   {
+    "ar": "تذكرة دعم معلّق",
+    "en": "pending support ticket"
+   },
+   {
+    "ar": "طلب استرجاع عاجل",
+    "en": "urgent recovery request"
+   },
+   {
+    "ar": "طلب استرجاع معلّق",
+    "en": "pending recovery request"
+   },
+   {
+    "ar": "طلب مراجعة داخلي",
+    "en": "internal review request"
+   },
+   {
+    "ar": "طلب مراجعة عاجل",
+    "en": "urgent review request"
+   },
+   {
+    "ar": "طلب صيانة معلّق",
+    "en": "pending maintenance request"
+   },
+   {
+    "ar": "بلاغ عطل مُصدَّر",
+    "en": "escalated fault report"
+   },
+   {
+    "ar": "بلاغ عطل متكرر",
+    "en": "recurring fault report"
+   },
+   {
+    "ar": "تقرير حادث داخلي",
+    "en": "internal incident report"
+   },
+   {
+    "ar": "تذكرة دعم خارجي",
+    "en": "external support ticket"
+   },
+   {
+    "ar": "تذكرة دعم مُصدَّر",
+    "en": "escalated support ticket"
+   },
+   {
+    "ar": "طلب صيانة خارجي",
+    "en": "external maintenance request"
+   },
+   {
+    "ar": "طلب استرجاع مُصدَّر",
+    "en": "escalated recovery request"
+   },
+   {
+    "ar": "بلاغ عطل معلّق",
+    "en": "pending fault report"
+   },
+   {
+    "ar": "شكوى خدمة معلّق",
+    "en": "pending service complaint"
+   },
+   {
+    "ar": "طلب صيانة عاجل",
+    "en": "urgent maintenance request"
+   },
+   {
+    "ar": "بلاغ أمني معلّق",
+    "en": "pending security report"
+   },
+   {
+    "ar": "طلب مراجعة خارجي",
+    "en": "external review request"
+   },
+   {
+    "ar": "طلب صيانة متكرر",
+    "en": "recurring maintenance request"
+   },
+   {
+    "ar": "تذكرة دعم فني",
+    "en": "technical support ticket"
+   },
+   {
+    "ar": "شكوى خدمة عاجل",
+    "en": "urgent service complaint"
+   },
+   {
+    "ar": "شكوى خدمة متكرر",
+    "en": "recurring service complaint"
+   },
+   {
+    "ar": "بلاغ أمني خارجي",
+    "en": "external security report"
+   },
+   {
+    "ar": "بلاغ عطل خارجي",
+    "en": "external fault report"
+   },
+   {
+    "ar": "طلب مراجعة مُصدَّر",
+    "en": "escalated review request"
+   },
+   {
+    "ar": "شكوى خدمة فني",
+    "en": "technical service complaint"
+   },
+   {
+    "ar": "بلاغ أمني عاجل",
+    "en": "urgent security report"
+   },
+   {
+    "ar": "بلاغ أمني مُصدَّر",
+    "en": "escalated security report"
+   },
+   {
+    "ar": "طلب صيانة فني",
+    "en": "technical maintenance request"
+   },
+   {
+    "ar": "طلب استرجاع فني",
+    "en": "technical recovery request"
+   },
+   {
+    "ar": "شكوى خدمة خارجي",
+    "en": "external service complaint"
+   },
+   {
+    "ar": "تذكرة دعم متكرر",
+    "en": "recurring support ticket"
+   },
+   {
+    "ar": "طلب صيانة داخلي",
+    "en": "internal maintenance request"
+   }
+  ]
+ },
+ "fact_catalogs": {
+  "policy_logic": [
+   {
+    "fact": "days_since_purchase",
+    "ar": "أيام منذ الشراء",
+    "en": "days since purchase",
+    "type": "number",
+    "op": "<=",
+    "value": 14
+   },
+   {
+    "fact": "package_intact",
+    "ar": "العبوة سليمة",
+    "en": "package intact",
+    "type": "bool",
+    "op": "==",
+    "value": true
+   },
+   {
+    "fact": "receipt_kept",
+    "ar": "الاحتفاظ بالإيصال",
+    "en": "receipt kept",
+    "type": "bool",
+    "op": "==",
+    "value": true
+   },
+   {
+    "fact": "applicant_age",
+    "ar": "عمر المتقدم",
+    "en": "applicant age",
+    "type": "number",
+    "op": ">=",
+    "value": 18
+   },
+   {
+    "fact": "guardian_approval",
+    "ar": "موافقة ولي الأمر موثقة",
+    "en": "documented guardian approval",
+    "type": "bool",
+    "op": "==",
+    "value": true
+   },
+   {
+    "fact": "property_years",
+    "ar": "عمر الممتلكات بالسنوات",
+    "en": "property age in years",
+    "type": "number",
+    "op": "<=",
+    "value": 30
+   },
+   {
+    "fact": "claim_free",
+    "ar": "سجل خالٍ من المطالبات",
+    "en": "claim-free record",
+    "type": "bool",
+    "op": "==",
+    "value": true
+   },
+   {
+    "fact": "cover_active",
+    "ar": "الغطاء ساري",
+    "en": "active cover",
+    "type": "bool",
+    "op": "==",
+    "value": true
+   },
+   {
+    "fact": "guarantor_present",
+    "ar": "كفيل متاح",
+    "en": "guarantor available",
+    "type": "bool",
+    "op": "==",
+    "value": true
+   },
+   {
+    "fact": "subscription_months",
+    "ar": "أشهر الاشتراك",
+    "en": "months subscribed",
+    "type": "number",
+    "op": ">=",
+    "value": 6
+   },
+   {
+    "fact": "account_balance",
+    "ar": "رصيد الحساب",
+    "en": "account balance",
+    "type": "number",
+    "op": ">=",
+    "value": 100
+   },
+   {
+    "fact": "prior_repairs",
+    "ar": "عدد الإصلاحات السابقة",
+    "en": "prior repairs",
+    "type": "number",
+    "op": "<=",
+    "value": 2
+   },
+   {
+    "fact": "email_verified",
+    "ar": "بريد إلكتروني موثق",
+    "en": "verified email",
+    "type": "bool",
+    "op": "==",
+    "value": true
+   },
+   {
+    "fact": "terms_accepted",
+    "ar": "قبول الشروط",
+    "en": "terms accepted",
+    "type": "bool",
+    "op": "==",
+    "value": true
+   },
+   {
+    "fact": "credit_score",
+    "ar": "درجة الائتمان",
+    "en": "credit score",
+    "type": "number",
+    "op": ">=",
+    "value": 600
+   },
+   {
+    "fact": "loan_term_months",
+    "ar": "مدة التمويل بالأشهر",
+    "en": "financing term in months",
+    "type": "number",
+    "op": "<=",
+    "value": 60
+   },
+   {
+    "fact": "deposit_paid",
+    "ar": "سداد الدفعة المقدمة",
+    "en": "deposit paid",
+    "type": "bool",
+    "op": "==",
+    "value": true
+   },
+   {
+    "fact": "license_current",
+    "ar": "رخصة سارية",
+    "en": "current license",
+    "type": "bool",
+    "op": "==",
+    "value": true
+   },
+   {
+    "fact": "experience_years",
+    "ar": "سنوات الخبرة",
+    "en": "years of experience",
+    "type": "number",
+    "op": ">=",
+    "value": 3
+   },
+   {
+    "fact": "enrollment_active",
+    "ar": "تسجيل ساري",
+    "en": "active enrollment",
+    "type": "bool",
+    "op": "==",
+    "value": true
+   },
+   {
+    "fact": "min_score_met",
+    "ar": "تحقيق الحد الأدنى",
+    "en": "minimum score met",
+    "type": "bool",
+    "op": "==",
+    "value": true
+   },
+   {
+    "fact": "distance_km",
+    "ar": "المسافة بالكيلومترات",
+    "en": "distance in km",
+    "type": "number",
+    "op": "<=",
+    "value": 50
+   },
+   {
+    "fact": "insurance_current",
+    "ar": "تأمين ساري",
+    "en": "current insurance",
+    "type": "bool",
+    "op": "==",
+    "value": true
+   },
+   {
+    "fact": "verification_code",
+    "ar": "رمز التحقق مستلم",
+    "en": "verification code received",
+    "type": "bool",
+    "op": "==",
+    "value": true
+   }
+  ],
+  "safety_gate": [
+   {
+    "fact": "consent_given",
+    "ar": "موافقة مُسجّلة",
+    "en": "recorded consent",
+    "type": "bool"
+   },
+   {
+    "fact": "clinician_review",
+    "ar": "مراجعة سريرية",
+    "en": "clinical review",
+    "type": "bool"
+   },
+   {
+    "fact": "transfer_value",
+    "ar": "قيمة التحويل",
+    "en": "transfer value",
+    "type": "number"
+   },
+   {
+    "fact": "identity_proof",
+    "ar": "إثبات الهوية",
+    "en": "proof of identity",
+    "type": "bool"
+   },
+   {
+    "fact": "otp_passed",
+    "ar": "اجتياز الرمز المؤقت",
+    "en": "one-time code passed",
+    "type": "bool"
+   },
+   {
+    "fact": "threat_score",
+    "ar": "درجة التهديد",
+    "en": "threat score",
+    "type": "number"
+   },
+   {
+    "fact": "caller_age",
+    "ar": "عمر المتصل",
+    "en": "caller age",
+    "type": "number"
+   },
+   {
+    "fact": "external_party",
+    "ar": "طرف خارجي",
+    "en": "an external party",
+    "type": "bool"
+   },
+   {
+    "fact": "prescription_valid",
+    "ar": "وصفة معتمدة",
+    "en": "approved prescription",
+    "type": "bool"
+   },
+   {
+    "fact": "dosage_recorded",
+    "ar": "جرعة مسجلة",
+    "en": "recorded dosage",
+    "type": "bool"
+   },
+   {
+    "fact": "wallet_balance",
+    "ar": "رصيد المحفظة",
+    "en": "wallet balance",
+    "type": "number"
+   },
+   {
+    "fact": "location_confirmed",
+    "ar": "تأكيد الموقع",
+    "en": "confirmed location",
+    "type": "bool"
+   },
+   {
+    "fact": "trusted_device",
+    "ar": "جهاز موثوق",
+    "en": "trusted device",
+    "type": "bool"
+   },
+   {
+    "fact": "idle_days",
+    "ar": "أيام دون نشاط",
+    "en": "idle days",
+    "type": "number"
+   },
+   {
+    "fact": "transfers_today",
+    "ar": "تحويلات اليوم",
+    "en": "transfers today",
+    "type": "number"
+   },
+   {
+    "fact": "document_signed",
+    "ar": "مستند موقع",
+    "en": "signed document",
+    "type": "bool"
+   },
+   {
+    "fact": "caller_minor",
+    "ar": "المتصل قاصر",
+    "en": "caller is a minor",
+    "type": "bool"
+   },
+   {
+    "fact": "account_flagged",
+    "ar": "حساب مؤشر",
+    "en": "flagged account",
+    "type": "bool"
+   },
+   {
+    "fact": "code_verified",
+    "ar": "رمز موثق",
+    "en": "verified code",
+    "type": "bool"
+   },
+   {
+    "fact": "credit_cap",
+    "ar": "سقف الائتمان",
+    "en": "credit cap",
+    "type": "number"
+   },
+   {
+    "fact": "hours_pending",
+    "ar": "ساعات بانتظار الرد",
+    "en": "hours awaiting reply",
+    "type": "number"
+   },
+   {
+    "fact": "camera_grant",
+    "ar": "إذن الكاميرا",
+    "en": "camera permission",
+    "type": "bool"
+   },
+   {
+    "fact": "export_requested",
+    "ar": "طلب تصدير البيانات",
+    "en": "data export requested",
+    "type": "bool"
+   },
+   {
+    "fact": "admin_rights",
+    "ar": "صلاحيات إدارية",
+    "en": "administrative rights",
+    "type": "bool"
+   }
+  ]
+ },
+ "triage_items": [
+  {
+   "id": "production",
+   "ar": "أثر على بيئة الإنتاج",
+   "en": "production environment affected"
+  },
+  {
+   "id": "integration",
+   "ar": "تعطل التكامل",
+   "en": "a broken integration"
+  },
+  {
+   "id": "payment_flow",
+   "ar": "توقف تدفق المدفوعات",
+   "en": "payment flow stopped"
+  },
+  {
+   "id": "login_outage",
+   "ar": "تعطل تسجيل الدخول",
+   "en": "login outage"
+  },
+  {
+   "id": "reporting",
+   "ar": "تأخر التقارير",
+   "en": "delayed reporting"
+  },
+  {
+   "id": "migration",
+   "ar": "تعثر ترحيل البيانات",
+   "en": "a stalled data migration"
+  },
+  {
+   "id": "backup_stale",
+   "ar": "نسخ احتياطي قديم",
+   "en": "a stale backup"
+  },
+  {
+   "id": "security_patch",
+   "ar": "رقعة أمنية غائبة",
+   "en": "a missing security patch"
+  },
+  {
+   "id": "capacity",
+   "ar": "قرب بلوغ السعة",
+   "en": "capacity nearly exhausted"
+  },
+  {
+   "id": "slowdown",
+   "ar": "تباطؤ الأداء",
+   "en": "performance degradation"
+  },
+  {
+   "id": "corruption",
+   "ar": "تلف بيانات جزئي",
+   "en": "partial data corruption"
+  },
+  {
+   "id": "vendor_down",
+   "ar": "مزود خارجي متوقف",
+   "en": "an unresponsive vendor"
+  },
+  {
+   "id": "legal_hold",
+   "ar": "تعليق قانوني",
+   "en": "a legal hold"
+  },
+  {
+   "id": "audit_finding",
+   "ar": "ملاحظة تدقيق",
+   "en": "an audit finding"
+  },
+  {
+   "id": "untrained_team",
+   "ar": "فريق غير مدرّب",
+   "en": "an untrained team"
+  },
+  {
+   "id": "coverage_gap",
+   "ar": "غياب الفريق المناوب",
+   "en": "on-call coverage gap"
+  },
+  {
+   "id": "duplicates",
+   "ar": "سجلات مكررة",
+   "en": "duplicate records"
+  },
+  {
+   "id": "sync_failure",
+   "ar": "فشل المزامنة",
+   "en": "a sync failure"
+  },
+  {
+   "id": "notifications",
+   "ar": "إشعارات متوقفة",
+   "en": "notifications stopped"
+  },
+  {
+   "id": "localization",
+   "ar": "خلل الترجمة",
+   "en": "a localization defect"
+  },
+  {
+   "id": "permissions",
+   "ar": "صلاحيات خاطئة",
+   "en": "wrong permissions"
+  },
+  {
+   "id": "contract_risk",
+   "ar": "عقد على المحك",
+   "en": "a contract at risk"
+  },
+  {
+   "id": "churn_risk",
+   "ar": "خطر فقدان عميل",
+   "en": "churn risk"
+  },
+  {
+   "id": "inventory_gap",
+   "ar": "جرد غير مطابق",
+   "en": "inventory mismatch"
+  },
+  {
+   "id": "shipment_delay",
+   "ar": "تأخر الشحنات",
+   "en": "shipment delays"
+  },
+  {
+   "id": "double_booking",
+   "ar": "حجوزات مزدوجة",
+   "en": "double bookings"
+  },
+  {
+   "id": "refund_backlog",
+   "ar": "طلبات استرداد متراكمة",
+   "en": "a refund backlog"
+  },
+  {
+   "id": "api_outage",
+   "ar": "انقطاع واجهة برمجية",
+   "en": "an API outage"
+  },
+  {
+   "id": "app_down",
+   "ar": "تعطل تطبيق الجوال",
+   "en": "the mobile app down"
+  },
+  {
+   "id": "printing",
+   "ar": "توقف الطباعة",
+   "en": "printing stopped"
+  },
+  {
+   "id": "internal_network",
+   "ar": "انقطاع الشبكة الداخلية",
+   "en": "an internal network outage"
+  },
+  {
+   "id": "scheduler",
+   "ar": "تعطل المجدول",
+   "en": "the scheduler stuck"
+  },
+  {
+   "id": "queue_stuck",
+   "ar": "طابور معلق",
+   "en": "a stuck queue"
+  },
+  {
+   "id": "cache_cold",
+   "ar": "ذاكرة مؤقتة فارغة",
+   "en": "a cold cache"
+  },
+  {
+   "id": "timezone_off",
+   "ar": "فرق توقيت خاطئ",
+   "en": "a wrong timezone"
+  },
+  {
+   "id": "locale_mixed",
+   "ar": "لغات مختلطة في الواجهة",
+   "en": "mixed interface languages"
+  },
+  {
+   "id": "upload_failed",
+   "ar": "فشل الرفع",
+   "en": "failed uploads"
+  },
+  {
+   "id": "search_broken",
+   "ar": "تعطل البحث",
+   "en": "broken search"
+  },
+  {
+   "id": "map_errors",
+   "ar": "أخطاء الخرائط",
+   "en": "map errors"
+  },
+  {
+   "id": "billing_drift",
+   "ar": "فروق في الفوترة",
+   "en": "billing drift"
+  }
+ ],
+ "temporal": {
+  "profiles": [
+   {
+    "opens": "06:00",
+    "closes": "12:00"
+   },
+   {
+    "opens": "06:00",
+    "closes": "14:00"
+   },
+   {
+    "opens": "06:00",
+    "closes": "15:00"
+   },
+   {
+    "opens": "06:00",
+    "closes": "17:00"
+   },
+   {
+    "opens": "06:00",
+    "closes": "18:00"
+   },
+   {
+    "opens": "06:00",
+    "closes": "20:00"
+   },
+   {
+    "opens": "06:00",
+    "closes": "22:00"
+   },
+   {
+    "opens": "06:00",
+    "closes": "23:00"
+   },
+   {
+    "opens": "06:00",
+    "closes": "01:00"
+   },
+   {
+    "opens": "06:00",
+    "closes": "02:00"
+   },
+   {
+    "opens": "07:00",
+    "closes": "12:00"
+   },
+   {
+    "opens": "07:00",
+    "closes": "14:00"
+   },
+   {
+    "opens": "07:00",
+    "closes": "15:00"
+   },
+   {
+    "opens": "07:00",
+    "closes": "17:00"
+   },
+   {
+    "opens": "07:00",
+    "closes": "18:00"
+   },
+   {
+    "opens": "07:00",
+    "closes": "20:00"
+   },
+   {
+    "opens": "07:00",
+    "closes": "22:00"
+   },
+   {
+    "opens": "07:00",
+    "closes": "23:00"
+   },
+   {
+    "opens": "07:00",
+    "closes": "01:00"
+   },
+   {
+    "opens": "07:00",
+    "closes": "02:00"
+   },
+   {
+    "opens": "08:00",
+    "closes": "12:00"
+   },
+   {
+    "opens": "08:00",
+    "closes": "14:00"
+   },
+   {
+    "opens": "08:00",
+    "closes": "15:00"
+   },
+   {
+    "opens": "08:00",
+    "closes": "17:00"
+   },
+   {
+    "opens": "08:00",
+    "closes": "18:00"
+   },
+   {
+    "opens": "08:00",
+    "closes": "20:00"
+   },
+   {
+    "opens": "08:00",
+    "closes": "22:00"
+   },
+   {
+    "opens": "08:00",
+    "closes": "23:00"
+   },
+   {
+    "opens": "08:00",
+    "closes": "01:00"
+   },
+   {
+    "opens": "08:00",
+    "closes": "02:00"
+   },
+   {
+    "opens": "09:00",
+    "closes": "12:00"
+   },
+   {
+    "opens": "09:00",
+    "closes": "14:00"
+   },
+   {
+    "opens": "09:00",
+    "closes": "15:00"
+   },
+   {
+    "opens": "09:00",
+    "closes": "17:00"
+   },
+   {
+    "opens": "09:00",
+    "closes": "18:00"
+   },
+   {
+    "opens": "09:00",
+    "closes": "20:00"
+   },
+   {
+    "opens": "09:00",
+    "closes": "22:00"
+   },
+   {
+    "opens": "09:00",
+    "closes": "23:00"
+   },
+   {
+    "opens": "09:00",
+    "closes": "01:00"
+   },
+   {
+    "opens": "09:00",
+    "closes": "02:00"
+   }
+  ],
+  "weekends": [
+   {
+    "weekend": [
+     "friday",
+     "saturday"
+    ]
+   },
+   {
+    "weekend": [
+     "thursday",
+     "friday"
+    ]
+   },
+   {
+    "weekend": [
+     "saturday",
+     "sunday"
+    ]
+   },
+   {
+    "weekend": [
+     "friday"
+    ]
+   },
+   {
+    "weekend": [
+     "sunday"
+    ]
+   }
+  ]
+ },
+ "values": {
+  "names": [
+   {
+    "ar": "ناصر الفهد",
+    "en": "Nasser Alfahad"
+   },
+   {
+    "ar": "دلال الشهري",
+    "en": "Dalal Alshehri"
+   },
+   {
+    "ar": "سارة الفهد",
+    "en": "Sarah Alfahad"
+   },
+   {
+    "ar": "خالد البلوي",
+    "en": "Khalid Albalawi"
+   },
+   {
+    "ar": "دلال البقمي",
+    "en": "Dalal Albuqami"
+   },
+   {
+    "ar": "تركي الدوسري",
+    "en": "Turki Aldosari"
+   },
+   {
+    "ar": "لطيفة الدوسري",
+    "en": "Latifa Aldosari"
+   },
+   {
+    "ar": "منى القحطاني",
+    "en": "Mona Alqahtani"
+   },
+   {
+    "ar": "فاطمة الشهري",
+    "en": "Fatima Alshehri"
+   },
+   {
+    "ar": "ماجد الخالدي",
+    "en": "Majed Alkhalidi"
+   },
+   {
+    "ar": "محمد الشمري",
+    "en": "Mohammed Alshammari"
+   },
+   {
+    "ar": "دلال السبيعي",
+    "en": "Dalal Alsubaie"
+   },
+   {
+    "ar": "لطيفة الجهني",
+    "en": "Latifa Aljuhani"
+   },
+   {
+    "ar": "أحمد الشهري",
+    "en": "Ahmed Alshehri"
+   },
+   {
+    "ar": "محمد العتيبي",
+    "en": "Mohammed Alotaibi"
+   },
+   {
+    "ar": "هند الخالدي",
+    "en": "Hind Alkhalidi"
+   },
+   {
+    "ar": "عمر الدوسري",
+    "en": "Omar Aldosari"
+   },
+   {
+    "ar": "يوسف الجهني",
+    "en": "Yousef Aljuhani"
+   },
+   {
+    "ar": "نورة الجهني",
+    "en": "Noura Aljuhani"
+   },
+   {
+    "ar": "نورة الدوسري",
+    "en": "Noura Aldosari"
+   },
+   {
+    "ar": "محمد الفهد",
+    "en": "Mohammed Alfahad"
+   },
+   {
+    "ar": "فيصل الشهري",
+    "en": "Faisal Alshehri"
+   },
+   {
+    "ar": "لطيفة العتيبي",
+    "en": "Latifa Alotaibi"
+   },
+   {
+    "ar": "منى الصالح",
+    "en": "Mona Alsalih"
+   },
+   {
+    "ar": "أحمد العمري",
+    "en": "Ahmed Alomri"
+   },
+   {
+    "ar": "لطيفة الصالح",
+    "en": "Latifa Alsalih"
+   },
+   {
+    "ar": "محمد القحطاني",
+    "en": "Mohammed Alqahtani"
+   },
+   {
+    "ar": "محمد الجهني",
+    "en": "Mohammed Aljuhani"
+   },
+   {
+    "ar": "عبدالعزيز السبيعي",
+    "en": "Abdulaziz Alsubaie"
+   },
+   {
+    "ar": "ريم البقمي",
+    "en": "Reem Albuqami"
+   },
+   {
+    "ar": "فيصل البقمي",
+    "en": "Faisal Albuqami"
+   },
+   {
+    "ar": "عبدالله المالكي",
+    "en": "Abdullah Almaliki"
+   },
+   {
+    "ar": "دلال الفهد",
+    "en": "Dalal Alfahad"
+   },
+   {
+    "ar": "يوسف القحطاني",
+    "en": "Yousef Alqahtani"
+   },
+   {
+    "ar": "يوسف الفهد",
+    "en": "Yousef Alfahad"
+   },
+   {
+    "ar": "ريم العنزي",
+    "en": "Reem Aleanzi"
+   },
+   {
+    "ar": "عبدالله الشهري",
+    "en": "Abdullah Alshehri"
+   },
+   {
+    "ar": "فيصل الزهراني",
+    "en": "Faisal Alzahrani"
+   },
+   {
+    "ar": "منى الدوسري",
+    "en": "Mona Aldosari"
+   },
+   {
+    "ar": "هند الرشيد",
+    "en": "Hind Alrashid"
+   },
+   {
+    "ar": "ريم المطيري",
+    "en": "Reem Almutairi"
+   },
+   {
+    "ar": "ناصر القحطاني",
+    "en": "Nasser Alqahtani"
+   },
+   {
+    "ar": "ناصر البلوي",
+    "en": "Nasser Albalawi"
+   },
+   {
+    "ar": "يوسف الغامدي",
+    "en": "Yousef Alghamdi"
+   },
+   {
+    "ar": "عمر القحطاني",
+    "en": "Omar Alqahtani"
+   },
+   {
+    "ar": "هند الصالح",
+    "en": "Hind Alsalih"
+   },
+   {
+    "ar": "يوسف الدوسري",
+    "en": "Yousef Aldosari"
+   },
+   {
+    "ar": "تركي الصالح",
+    "en": "Turki Alsalih"
+   },
+   {
+    "ar": "عبدالله الغامدي",
+    "en": "Abdullah Alghamdi"
+   },
+   {
+    "ar": "خالد القحطاني",
+    "en": "Khalid Alqahtani"
+   },
+   {
+    "ar": "عبدالعزيز الشهري",
+    "en": "Abdulaziz Alshehri"
+   },
+   {
+    "ar": "سارة الجهني",
+    "en": "Sarah Aljuhani"
+   },
+   {
+    "ar": "سلطان الصالح",
+    "en": "Sultan Alsalih"
+   },
+   {
+    "ar": "فاطمة الجهني",
+    "en": "Fatima Aljuhani"
+   },
+   {
+    "ar": "لطيفة العنزي",
+    "en": "Latifa Aleanzi"
+   },
+   {
+    "ar": "ماجد الدوسري",
+    "en": "Majed Aldosari"
+   },
+   {
+    "ar": "فيصل القحطاني",
+    "en": "Faisal Alqahtani"
+   },
+   {
+    "ar": "هند الزهراني",
+    "en": "Hind Alzahrani"
+   },
+   {
+    "ar": "ناصر الحربي",
+    "en": "Nasser Alharbi"
+   },
+   {
+    "ar": "فاطمة المالكي",
+    "en": "Fatima Almaliki"
+   },
+   {
+    "ar": "سلطان الخالدي",
+    "en": "Sultan Alkhalidi"
+   },
+   {
+    "ar": "دلال البلوي",
+    "en": "Dalal Albalawi"
+   },
+   {
+    "ar": "تركي الرشيد",
+    "en": "Turki Alrashid"
+   },
+   {
+    "ar": "سلطان السبيعي",
+    "en": "Sultan Alsubaie"
+   },
+   {
+    "ar": "ريم الغامدي",
+    "en": "Reem Alghamdi"
+   },
+   {
+    "ar": "عمر المطيري",
+    "en": "Omar Almutairi"
+   },
+   {
+    "ar": "خالد العنزي",
+    "en": "Khalid Aleanzi"
+   },
+   {
+    "ar": "سارة العنزي",
+    "en": "Sarah Aleanzi"
+   },
+   {
+    "ar": "هند الشمري",
+    "en": "Hind Alshammari"
+   },
+   {
+    "ar": "عبدالعزيز العتيبي",
+    "en": "Abdulaziz Alotaibi"
+   },
+   {
+    "ar": "أحمد الدوسري",
+    "en": "Ahmed Aldosari"
+   },
+   {
+    "ar": "منى الفهد",
+    "en": "Mona Alfahad"
+   },
+   {
+    "ar": "سارة الحربي",
+    "en": "Sarah Alharbi"
+   },
+   {
+    "ar": "فاطمة العتيبي",
+    "en": "Fatima Alotaibi"
+   },
+   {
+    "ar": "سارة المطيري",
+    "en": "Sarah Almutairi"
+   },
+   {
+    "ar": "هند القحطاني",
+    "en": "Hind Alqahtani"
+   },
+   {
+    "ar": "ريم العتيبي",
+    "en": "Reem Alotaibi"
+   },
+   {
+    "ar": "محمد البقمي",
+    "en": "Mohammed Albuqami"
+   },
+   {
+    "ar": "سارة البلوي",
+    "en": "Sarah Albalawi"
+   },
+   {
+    "ar": "ناصر الشمري",
+    "en": "Nasser Alshammari"
+   },
+   {
+    "ar": "أحمد المالكي",
+    "en": "Ahmed Almaliki"
+   },
+   {
+    "ar": "عمر الشهري",
+    "en": "Omar Alshehri"
+   },
+   {
+    "ar": "ريم البلوي",
+    "en": "Reem Albalawi"
+   },
+   {
+    "ar": "يوسف البقمي",
+    "en": "Yousef Albuqami"
+   },
+   {
+    "ar": "فيصل الخالدي",
+    "en": "Faisal Alkhalidi"
+   },
+   {
+    "ar": "هند الغامدي",
+    "en": "Hind Alghamdi"
+   },
+   {
+    "ar": "ناصر الصالح",
+    "en": "Nasser Alsalih"
+   },
+   {
+    "ar": "فاطمة العنزي",
+    "en": "Fatima Aleanzi"
+   },
+   {
+    "ar": "ريم الفهد",
+    "en": "Reem Alfahad"
+   },
+   {
+    "ar": "أحمد الصالح",
+    "en": "Ahmed Alsalih"
+   },
+   {
+    "ar": "لطيفة البلوي",
+    "en": "Latifa Albalawi"
+   },
+   {
+    "ar": "نورة القحطاني",
+    "en": "Noura Alqahtani"
+   },
+   {
+    "ar": "دلال الرشيد",
+    "en": "Dalal Alrashid"
+   },
+   {
+    "ar": "تركي القحطاني",
+    "en": "Turki Alqahtani"
+   },
+   {
+    "ar": "فاطمة الصالح",
+    "en": "Fatima Alsalih"
+   },
+   {
+    "ar": "فاطمة البقمي",
+    "en": "Fatima Albuqami"
+   },
+   {
+    "ar": "يوسف السبيعي",
+    "en": "Yousef Alsubaie"
+   },
+   {
+    "ar": "منى الشهري",
+    "en": "Mona Alshehri"
+   },
+   {
+    "ar": "لطيفة الخالدي",
+    "en": "Latifa Alkhalidi"
+   },
+   {
+    "ar": "سلطان العتيبي",
+    "en": "Sultan Alotaibi"
+   },
+   {
+    "ar": "منى العتيبي",
+    "en": "Mona Alotaibi"
+   },
+   {
+    "ar": "فيصل الحربي",
+    "en": "Faisal Alharbi"
+   },
+   {
+    "ar": "تركي الشمري",
+    "en": "Turki Alshammari"
+   },
+   {
+    "ar": "ماجد الحربي",
+    "en": "Majed Alharbi"
+   },
+   {
+    "ar": "عبدالله الصالح",
+    "en": "Abdullah Alsalih"
+   },
+   {
+    "ar": "ماجد الشهري",
+    "en": "Majed Alshehri"
+   },
+   {
+    "ar": "ناصر الخالدي",
+    "en": "Nasser Alkhalidi"
+   },
+   {
+    "ar": "هند الدوسري",
+    "en": "Hind Aldosari"
+   },
+   {
+    "ar": "عمر البلوي",
+    "en": "Omar Albalawi"
+   },
+   {
+    "ar": "ماجد العمري",
+    "en": "Majed Alomri"
+   },
+   {
+    "ar": "فاطمة الفهد",
+    "en": "Fatima Alfahad"
+   },
+   {
+    "ar": "تركي الجهني",
+    "en": "Turki Aljuhani"
+   },
+   {
+    "ar": "عبدالعزيز المالكي",
+    "en": "Abdulaziz Almaliki"
+   },
+   {
+    "ar": "سلطان الشمري",
+    "en": "Sultan Alshammari"
+   },
+   {
+    "ar": "ناصر الدوسري",
+    "en": "Nasser Aldosari"
+   },
+   {
+    "ar": "دلال الزهراني",
+    "en": "Dalal Alzahrani"
+   },
+   {
+    "ar": "هند البلوي",
+    "en": "Hind Albalawi"
+   },
+   {
+    "ar": "منى الرشيد",
+    "en": "Mona Alrashid"
+   },
+   {
+    "ar": "عبدالله الفهد",
+    "en": "Abdullah Alfahad"
+   },
+   {
+    "ar": "خالد السبيعي",
+    "en": "Khalid Alsubaie"
+   },
+   {
+    "ar": "نورة الصالح",
+    "en": "Noura Alsalih"
+   },
+   {
+    "ar": "منى المطيري",
+    "en": "Mona Almutairi"
+   },
+   {
+    "ar": "ناصر السبيعي",
+    "en": "Nasser Alsubaie"
+   },
+   {
+    "ar": "فيصل العنزي",
+    "en": "Faisal Aleanzi"
+   },
+   {
+    "ar": "فيصل الصالح",
+    "en": "Faisal Alsalih"
+   },
+   {
+    "ar": "فيصل المطيري",
+    "en": "Faisal Almutairi"
+   },
+   {
+    "ar": "خالد الرشيد",
+    "en": "Khalid Alrashid"
+   },
+   {
+    "ar": "فاطمة العمري",
+    "en": "Fatima Alomri"
+   },
+   {
+    "ar": "فاطمة البلوي",
+    "en": "Fatima Albalawi"
+   },
+   {
+    "ar": "خالد البقمي",
+    "en": "Khalid Albuqami"
+   },
+   {
+    "ar": "سلطان الفهد",
+    "en": "Sultan Alfahad"
+   },
+   {
+    "ar": "عمر العنزي",
+    "en": "Omar Aleanzi"
+   },
+   {
+    "ar": "سلطان القحطاني",
+    "en": "Sultan Alqahtani"
+   },
+   {
+    "ar": "يوسف الرشيد",
+    "en": "Yousef Alrashid"
+   },
+   {
+    "ar": "تركي الزهراني",
+    "en": "Turki Alzahrani"
+   },
+   {
+    "ar": "هند السبيعي",
+    "en": "Hind Alsubaie"
+   },
+   {
+    "ar": "لطيفة القحطاني",
+    "en": "Latifa Alqahtani"
+   },
+   {
+    "ar": "يوسف العنزي",
+    "en": "Yousef Aleanzi"
+   },
+   {
+    "ar": "عمر المالكي",
+    "en": "Omar Almaliki"
+   },
+   {
+    "ar": "فيصل الغامدي",
+    "en": "Faisal Alghamdi"
+   },
+   {
+    "ar": "ناصر الغامدي",
+    "en": "Nasser Alghamdi"
+   },
+   {
+    "ar": "خالد الزهراني",
+    "en": "Khalid Alzahrani"
+   },
+   {
+    "ar": "نورة المطيري",
+    "en": "Noura Almutairi"
+   },
+   {
+    "ar": "لطيفة الشهري",
+    "en": "Latifa Alshehri"
+   },
+   {
+    "ar": "دلال العمري",
+    "en": "Dalal Alomri"
+   },
+   {
+    "ar": "فيصل الجهني",
+    "en": "Faisal Aljuhani"
+   },
+   {
+    "ar": "منى المالكي",
+    "en": "Mona Almaliki"
+   },
+   {
+    "ar": "نورة الفهد",
+    "en": "Noura Alfahad"
+   },
+   {
+    "ar": "عبدالعزيز الغامدي",
+    "en": "Abdulaziz Alghamdi"
+   },
+   {
+    "ar": "أحمد الزهراني",
+    "en": "Ahmed Alzahrani"
+   },
+   {
+    "ar": "عبدالعزيز العنزي",
+    "en": "Abdulaziz Aleanzi"
+   },
+   {
+    "ar": "فاطمة الغامدي",
+    "en": "Fatima Alghamdi"
+   },
+   {
+    "ar": "سارة الزهراني",
+    "en": "Sarah Alzahrani"
+   },
+   {
+    "ar": "فيصل الرشيد",
+    "en": "Faisal Alrashid"
+   },
+   {
+    "ar": "ماجد القحطاني",
+    "en": "Majed Alqahtani"
+   },
+   {
+    "ar": "ماجد الجهني",
+    "en": "Majed Aljuhani"
+   },
+   {
+    "ar": "محمد البلوي",
+    "en": "Mohammed Albalawi"
+   },
+   {
+    "ar": "محمد الغامدي",
+    "en": "Mohammed Alghamdi"
+   },
+   {
+    "ar": "سارة الخالدي",
+    "en": "Sarah Alkhalidi"
+   },
+   {
+    "ar": "خالد الغامدي",
+    "en": "Khalid Alghamdi"
+   },
+   {
+    "ar": "عمر الحربي",
+    "en": "Omar Alharbi"
+   },
+   {
+    "ar": "سارة الصالح",
+    "en": "Sarah Alsalih"
+   },
+   {
+    "ar": "عمر الصالح",
+    "en": "Omar Alsalih"
+   },
+   {
+    "ar": "تركي الحربي",
+    "en": "Turki Alharbi"
+   },
+   {
+    "ar": "تركي الفهد",
+    "en": "Turki Alfahad"
+   },
+   {
+    "ar": "عبدالعزيز الدوسري",
+    "en": "Abdulaziz Aldosari"
+   },
+   {
+    "ar": "فاطمة الحربي",
+    "en": "Fatima Alharbi"
+   },
+   {
+    "ar": "يوسف العتيبي",
+    "en": "Yousef Alotaibi"
+   },
+   {
+    "ar": "دلال الغامدي",
+    "en": "Dalal Alghamdi"
+   },
+   {
+    "ar": "عمر الرشيد",
+    "en": "Omar Alrashid"
+   },
+   {
+    "ar": "فيصل الدوسري",
+    "en": "Faisal Aldosari"
+   },
+   {
+    "ar": "سلطان العنزي",
+    "en": "Sultan Aleanzi"
+   },
+   {
+    "ar": "هند العنزي",
+    "en": "Hind Aleanzi"
+   },
+   {
+    "ar": "خالد الحربي",
+    "en": "Khalid Alharbi"
+   },
+   {
+    "ar": "نورة البقمي",
+    "en": "Noura Albuqami"
+   },
+   {
+    "ar": "لطيفة الزهراني",
+    "en": "Latifa Alzahrani"
+   },
+   {
+    "ar": "منى الخالدي",
+    "en": "Mona Alkhalidi"
+   },
+   {
+    "ar": "دلال القحطاني",
+    "en": "Dalal Alqahtani"
+   },
+   {
+    "ar": "أحمد الخالدي",
+    "en": "Ahmed Alkhalidi"
+   },
+   {
+    "ar": "فيصل البلوي",
+    "en": "Faisal Albalawi"
+   },
+   {
+    "ar": "أحمد الرشيد",
+    "en": "Ahmed Alrashid"
+   },
+   {
+    "ar": "سارة المالكي",
+    "en": "Sarah Almaliki"
+   },
+   {
+    "ar": "ناصر المالكي",
+    "en": "Nasser Almaliki"
+   },
+   {
+    "ar": "ريم المالكي",
+    "en": "Reem Almaliki"
+   },
+   {
+    "ar": "منى الحربي",
+    "en": "Mona Alharbi"
+   },
+   {
+    "ar": "هند البقمي",
+    "en": "Hind Albuqami"
+   },
+   {
+    "ar": "لطيفة الغامدي",
+    "en": "Latifa Alghamdi"
+   },
+   {
+    "ar": "يوسف الحربي",
+    "en": "Yousef Alharbi"
+   },
+   {
+    "ar": "منى السبيعي",
+    "en": "Mona Alsubaie"
+   },
+   {
+    "ar": "عبدالله القحطاني",
+    "en": "Abdullah Alqahtani"
+   },
+   {
+    "ar": "منى الغامدي",
+    "en": "Mona Alghamdi"
+   },
+   {
+    "ar": "لطيفة السبيعي",
+    "en": "Latifa Alsubaie"
+   },
+   {
+    "ar": "ماجد الصالح",
+    "en": "Majed Alsalih"
+   },
+   {
+    "ar": "يوسف الخالدي",
+    "en": "Yousef Alkhalidi"
+   },
+   {
+    "ar": "فاطمة الدوسري",
+    "en": "Fatima Aldosari"
+   },
+   {
+    "ar": "سارة البقمي",
+    "en": "Sarah Albuqami"
+   },
+   {
+    "ar": "عبدالله البقمي",
+    "en": "Abdullah Albuqami"
+   },
+   {
+    "ar": "دلال المالكي",
+    "en": "Dalal Almaliki"
+   },
+   {
+    "ar": "ناصر الرشيد",
+    "en": "Nasser Alrashid"
+   },
+   {
+    "ar": "ماجد الزهراني",
+    "en": "Majed Alzahrani"
+   }
+  ],
+  "cities": [
+   {
+    "ar": "الرياض",
+    "en": "Riyadh"
+   },
+   {
+    "ar": "مكة المكرمة",
+    "en": "Mecca"
+   },
+   {
+    "ar": "المدينة المنورة",
+    "en": "Medina"
+   },
+   {
+    "ar": "الخبر",
+    "en": "Khobar"
+   },
+   {
+    "ar": "الظهران",
+    "en": "Dhahran"
+   },
+   {
+    "ar": "الأحساء",
+    "en": "Al-Ahsa"
+   },
+   {
+    "ar": "الطائف",
+    "en": "Taif"
+   },
+   {
+    "ar": "تبوك",
+    "en": "Tabuk"
+   },
+   {
+    "ar": "بريدة",
+    "en": "Buraidah"
+   },
+   {
+    "ar": "خميس مشيط",
+    "en": "Khamis Mushait"
+   },
+   {
+    "ar": "نجران",
+    "en": "Najran"
+   },
+   {
+    "ar": "جازان",
+    "en": "Jazan"
+   },
+   {
+    "ar": "حائل",
+    "en": "Hail"
+   },
+   {
+    "ar": "ينبع",
+    "en": "Yanbu"
+   },
+   {
+    "ar": "الجبيل",
+    "en": "Jubail"
+   },
+   {
+    "ar": "القطيف",
+    "en": "Qatif"
+   },
+   {
+    "ar": "حفر الباطن",
+    "en": "Hafar Al-Batin"
+   },
+   {
+    "ar": "سكاكا",
+    "en": "Sakaka"
+   },
+   {
+    "ar": "عرعر",
+    "en": "Arar"
+   },
+   {
+    "ar": "الباحة",
+    "en": "Al-Baha"
+   },
+   {
+    "ar": "الجوف",
+    "en": "Al-Jouf"
+   },
+   {
+    "ar": "الكويت",
+    "en": "Kuwait City"
+   },
+   {
+    "ar": "المنامة",
+    "en": "Manama"
+   },
+   {
+    "ar": "الدوحة",
+    "en": "Doha"
+   },
+   {
+    "ar": "مسقط",
+    "en": "Muscat"
+   },
+   {
+    "ar": "صلالة",
+    "en": "Salalah"
+   },
+   {
+    "ar": "أبوظبي",
+    "en": "Abu Dhabi"
+   },
+   {
+    "ar": "دبي",
+    "en": "Dubai"
+   },
+   {
+    "ar": "الشارقة",
+    "en": "Sharjah"
+   },
+   {
+    "ar": "عجمان",
+    "en": "Ajman"
+   },
+   {
+    "ar": "رأس الخيمة",
+    "en": "Ras Al Khaimah"
+   },
+   {
+    "ar": "الفجيرة",
+    "en": "Fujairah"
+   },
+   {
+    "ar": "أم القيوين",
+    "en": "Umm Al Quwain"
+   },
+   {
+    "ar": "القاهرة",
+    "en": "Cairo"
+   },
+   {
+    "ar": "الإسكندرية",
+    "en": "Alexandria"
+   },
+   {
+    "ar": "الجيزة",
+    "en": "Giza"
+   },
+   {
+    "ar": "أسيوط",
+    "en": "Asyut"
+   },
+   {
+    "ar": "الأقصر",
+    "en": "Luxor"
+   },
+   {
+    "ar": "أسوان",
+    "en": "Aswan"
+   },
+   {
+    "ar": "بيروت",
+    "en": "Beirut"
+   },
+   {
+    "ar": "طرابلس",
+    "en": "Tripoli"
+   },
+   {
+    "ar": "إربد",
+    "en": "Irbid"
+   },
+   {
+    "ar": "بغداد",
+    "en": "Baghdad"
+   },
+   {
+    "ar": "البصرة",
+    "en": "Basra"
+   },
+   {
+    "ar": "الموصل",
+    "en": "Mosul"
+   },
+   {
+    "ar": "دمشق",
+    "en": "Damascus"
+   },
+   {
+    "ar": "حلب",
+    "en": "Aleppo"
+   },
+   {
+    "ar": "حمص",
+    "en": "Homs"
+   },
+   {
+    "ar": "اللاذقية",
+    "en": "Latakia"
+   },
+   {
+    "ar": "الرباط",
+    "en": "Rabat"
+   },
+   {
+    "ar": "الدار البيضاء",
+    "en": "Casablanca"
+   },
+   {
+    "ar": "مراكش",
+    "en": "Marrakesh"
+   },
+   {
+    "ar": "فاس",
+    "en": "Fez"
+   },
+   {
+    "ar": "طنجة",
+    "en": "Tangier"
+   },
+   {
+    "ar": "أكادير",
+    "en": "Agadir"
+   },
+   {
+    "ar": "تونس",
+    "en": "Tunis"
+   },
+   {
+    "ar": "الجزائر",
+    "en": "Algiers"
+   },
+   {
+    "ar": "وهران",
+    "en": "Oran"
+   },
+   {
+    "ar": "قسنطينة",
+    "en": "Constantine"
+   },
+   {
+    "ar": "الخرطوم",
+    "en": "Khartoum"
+   }
+  ],
+  "addresses": [
+   {
+    "ar": "شارع الملك فهد، الرياض",
+    "en": "King Fahd Street, Riyadh"
+   },
+   {
+    "ar": "شارع الملك فهد، جدة",
+    "en": "King Fahd Street, Jeddah"
+   },
+   {
+    "ar": "شارع الملك فهد، مكة المكرمة",
+    "en": "King Fahd Street, Mecca"
+   },
+   {
+    "ar": "شارع الملك فهد، المدينة المنورة",
+    "en": "King Fahd Street, Medina"
+   },
+   {
+    "ar": "شارع الأمير سلطان، الرياض",
+    "en": "Prince Sultan Street, Riyadh"
+   },
+   {
+    "ar": "شارع الأمير سلطان، جدة",
+    "en": "Prince Sultan Street, Jeddah"
+   },
+   {
+    "ar": "شارع الأمير سلطان، مكة المكرمة",
+    "en": "Prince Sultan Street, Mecca"
+   },
+   {
+    "ar": "شارع الأمير سلطان، المدينة المنورة",
+    "en": "Prince Sultan Street, Medina"
+   },
+   {
+    "ar": "شارع العليا، الرياض",
+    "en": "Olaya Street, Riyadh"
+   },
+   {
+    "ar": "شارع العليا، جدة",
+    "en": "Olaya Street, Jeddah"
+   },
+   {
+    "ar": "شارع العليا، مكة المكرمة",
+    "en": "Olaya Street, Mecca"
+   },
+   {
+    "ar": "شارع العليا، المدينة المنورة",
+    "en": "Olaya Street, Medina"
+   },
+   {
+    "ar": "شارع التحرير، الرياض",
+    "en": "Tahrir Street, Riyadh"
+   },
+   {
+    "ar": "شارع التحرير، جدة",
+    "en": "Tahrir Street, Jeddah"
+   },
+   {
+    "ar": "شارع التحرير، مكة المكرمة",
+    "en": "Tahrir Street, Mecca"
+   },
+   {
+    "ar": "شارع التحرير، المدينة المنورة",
+    "en": "Tahrir Street, Medina"
+   },
+   {
+    "ar": "شارع الجمهورية، الرياض",
+    "en": "Jamhouriya Street, Riyadh"
+   },
+   {
+    "ar": "شارع الجمهورية، جدة",
+    "en": "Jamhouriya Street, Jeddah"
+   },
+   {
+    "ar": "شارع الجمهورية، مكة المكرمة",
+    "en": "Jamhouriya Street, Mecca"
+   },
+   {
+    "ar": "شارع الجمهورية، المدينة المنورة",
+    "en": "Jamhouriya Street, Medina"
+   },
+   {
+    "ar": "شارع الاستقلال، الرياض",
+    "en": "Istiqlal Street, Riyadh"
+   },
+   {
+    "ar": "شارع الاستقلال، جدة",
+    "en": "Istiqlal Street, Jeddah"
+   },
+   {
+    "ar": "شارع الاستقلال، مكة المكرمة",
+    "en": "Istiqlal Street, Mecca"
+   },
+   {
+    "ar": "شارع الاستقلال، المدينة المنورة",
+    "en": "Istiqlal Street, Medina"
+   },
+   {
+    "ar": "شارع النخيل، الرياض",
+    "en": "Nakheel Street, Riyadh"
+   },
+   {
+    "ar": "شارع النخيل، جدة",
+    "en": "Nakheel Street, Jeddah"
+   },
+   {
+    "ar": "شارع النخيل، مكة المكرمة",
+    "en": "Nakheel Street, Mecca"
+   },
+   {
+    "ar": "شارع النخيل، المدينة المنورة",
+    "en": "Nakheel Street, Medina"
+   },
+   {
+    "ar": "شارع الحمراء، الرياض",
+    "en": "Hamra Street, Riyadh"
+   },
+   {
+    "ar": "شارع الحمراء، جدة",
+    "en": "Hamra Street, Jeddah"
+   },
+   {
+    "ar": "شارع الحمراء، مكة المكرمة",
+    "en": "Hamra Street, Mecca"
+   },
+   {
+    "ar": "شارع الحمراء، المدينة المنورة",
+    "en": "Hamra Street, Medina"
+   },
+   {
+    "ar": "شارع الأمير محمد، الرياض",
+    "en": "Prince Mohammed Street, Riyadh"
+   },
+   {
+    "ar": "شارع الأمير محمد، جدة",
+    "en": "Prince Mohammed Street, Jeddah"
+   },
+   {
+    "ar": "شارع الأمير محمد، مكة المكرمة",
+    "en": "Prince Mohammed Street, Mecca"
+   },
+   {
+    "ar": "شارع الأمير محمد، المدينة المنورة",
+    "en": "Prince Mohammed Street, Medina"
+   },
+   {
+    "ar": "شارع الصفا، الرياض",
+    "en": "As-Safa Street, Riyadh"
+   },
+   {
+    "ar": "شارع الصفا، جدة",
+    "en": "As-Safa Street, Jeddah"
+   },
+   {
+    "ar": "شارع الصفا، مكة المكرمة",
+    "en": "As-Safa Street, Mecca"
+   },
+   {
+    "ar": "شارع الصفا، المدينة المنورة",
+    "en": "As-Safa Street, Medina"
+   }
+  ],
+  "phones": [
+   {
+    "phone": "0503631554"
+   },
+   {
+    "phone": "0516136098"
+   },
+   {
+    "phone": "0536049890"
+   },
+   {
+    "phone": "0515080083"
+   },
+   {
+    "phone": "0527593133"
+   },
+   {
+    "phone": "0539737539"
+   },
+   {
+    "phone": "0522751432"
+   },
+   {
+    "phone": "0588868486"
+   },
+   {
+    "phone": "0512872493"
+   },
+   {
+    "phone": "0538267457"
+   },
+   {
+    "phone": "0536633473"
+   },
+   {
+    "phone": "0529853294"
+   },
+   {
+    "phone": "0511345813"
+   },
+   {
+    "phone": "0519110677"
+   },
+   {
+    "phone": "0528035144"
+   },
+   {
+    "phone": "0507031674"
+   },
+   {
+    "phone": "0530272194"
+   },
+   {
+    "phone": "0510292585"
+   },
+   {
+    "phone": "0559372631"
+   },
+   {
+    "phone": "0583929795"
+   },
+   {
+    "phone": "0503619678"
+   },
+   {
+    "phone": "0501680290"
+   },
+   {
+    "phone": "0564834957"
+   },
+   {
+    "phone": "0510040018"
+   },
+   {
+    "phone": "0531538834"
+   },
+   {
+    "phone": "0598141210"
+   },
+   {
+    "phone": "0512207096"
+   },
+   {
+    "phone": "0592330480"
+   },
+   {
+    "phone": "0563549878"
+   },
+   {
+    "phone": "0537249815"
+   },
+   {
+    "phone": "0571340664"
+   },
+   {
+    "phone": "0546195882"
+   },
+   {
+    "phone": "0501530705"
+   },
+   {
+    "phone": "0542033341"
+   },
+   {
+    "phone": "0570334602"
+   },
+   {
+    "phone": "0532651115"
+   },
+   {
+    "phone": "0547075497"
+   },
+   {
+    "phone": "0565433409"
+   },
+   {
+    "phone": "0542350158"
+   },
+   {
+    "phone": "0549153428"
+   },
+   {
+    "phone": "0594529068"
+   },
+   {
+    "phone": "0514381850"
+   },
+   {
+    "phone": "0506887156"
+   },
+   {
+    "phone": "0542607606"
+   },
+   {
+    "phone": "0563156431"
+   },
+   {
+    "phone": "0580480497"
+   },
+   {
+    "phone": "0529803960"
+   },
+   {
+    "phone": "0514386412"
+   },
+   {
+    "phone": "0553183081"
+   },
+   {
+    "phone": "0503277609"
+   },
+   {
+    "phone": "0552548861"
+   },
+   {
+    "phone": "0592792850"
+   },
+   {
+    "phone": "0545846286"
+   },
+   {
+    "phone": "0590312030"
+   },
+   {
+    "phone": "0571378503"
+   },
+   {
+    "phone": "0552152311"
+   },
+   {
+    "phone": "0538207316"
+   },
+   {
+    "phone": "0501566424"
+   },
+   {
+    "phone": "0522093032"
+   },
+   {
+    "phone": "0553758206"
+   },
+   {
+    "phone": "0518716215"
+   },
+   {
+    "phone": "0539141508"
+   },
+   {
+    "phone": "0564873662"
+   },
+   {
+    "phone": "0572626856"
+   },
+   {
+    "phone": "0525593449"
+   },
+   {
+    "phone": "0589201078"
+   },
+   {
+    "phone": "0508086160"
+   },
+   {
+    "phone": "0520378969"
+   },
+   {
+    "phone": "0541149165"
+   },
+   {
+    "phone": "0553508567"
+   },
+   {
+    "phone": "0519616676"
+   },
+   {
+    "phone": "0584138264"
+   },
+   {
+    "phone": "0547278200"
+   },
+   {
+    "phone": "0583415203"
+   },
+   {
+    "phone": "0520250051"
+   },
+   {
+    "phone": "0528087871"
+   },
+   {
+    "phone": "0578350200"
+   },
+   {
+    "phone": "0509745318"
+   },
+   {
+    "phone": "0531072240"
+   },
+   {
+    "phone": "0570676079"
+   },
+   {
+    "phone": "0539808620"
+   },
+   {
+    "phone": "0526992198"
+   },
+   {
+    "phone": "0557723602"
+   },
+   {
+    "phone": "0519697138"
+   },
+   {
+    "phone": "0501167144"
+   },
+   {
+    "phone": "0565225146"
+   },
+   {
+    "phone": "0507948648"
+   },
+   {
+    "phone": "0559149846"
+   },
+   {
+    "phone": "0526237671"
+   },
+   {
+    "phone": "0541983330"
+   },
+   {
+    "phone": "0546579516"
+   },
+   {
+    "phone": "0573356237"
+   },
+   {
+    "phone": "0502060043"
+   },
+   {
+    "phone": "0545247841"
+   },
+   {
+    "phone": "0572631774"
+   },
+   {
+    "phone": "0517930209"
+   },
+   {
+    "phone": "0597928158"
+   },
+   {
+    "phone": "0525269426"
+   },
+   {
+    "phone": "0571932922"
+   },
+   {
+    "phone": "0553677442"
+   },
+   {
+    "phone": "0515460953"
+   },
+   {
+    "phone": "0535995209"
+   },
+   {
+    "phone": "0512562522"
+   },
+   {
+    "phone": "0542817080"
+   },
+   {
+    "phone": "0584006198"
+   },
+   {
+    "phone": "0500419003"
+   },
+   {
+    "phone": "0528550122"
+   },
+   {
+    "phone": "0598991165"
+   },
+   {
+    "phone": "0559017002"
+   },
+   {
+    "phone": "0543085483"
+   },
+   {
+    "phone": "0596691192"
+   },
+   {
+    "phone": "0545032543"
+   },
+   {
+    "phone": "0502109999"
+   },
+   {
+    "phone": "0581585992"
+   },
+   {
+    "phone": "0574748965"
+   },
+   {
+    "phone": "0597770475"
+   },
+   {
+    "phone": "0586926763"
+   },
+   {
+    "phone": "0588085004"
+   },
+   {
+    "phone": "0570231535"
+   },
+   {
+    "phone": "0550073911"
+   },
+   {
+    "phone": "0591071229"
+   },
+   {
+    "phone": "0520083120"
+   },
+   {
+    "phone": "0557900647"
+   },
+   {
+    "phone": "0596502810"
+   },
+   {
+    "phone": "0565942499"
+   },
+   {
+    "phone": "0577261671"
+   },
+   {
+    "phone": "0514768828"
+   },
+   {
+    "phone": "0504206588"
+   },
+   {
+    "phone": "0514393326"
+   },
+   {
+    "phone": "0504487525"
+   },
+   {
+    "phone": "0508209714"
+   },
+   {
+    "phone": "0512727538"
+   },
+   {
+    "phone": "0558433098"
+   },
+   {
+    "phone": "0574400038"
+   },
+   {
+    "phone": "0578420304"
+   },
+   {
+    "phone": "0593828443"
+   },
+   {
+    "phone": "0585696371"
+   },
+   {
+    "phone": "0554443055"
+   },
+   {
+    "phone": "0555581138"
+   },
+   {
+    "phone": "0572317503"
+   },
+   {
+    "phone": "0530094195"
+   },
+   {
+    "phone": "0555377539"
+   },
+   {
+    "phone": "0558934384"
+   },
+   {
+    "phone": "0588198245"
+   },
+   {
+    "phone": "0526020258"
+   },
+   {
+    "phone": "0537388669"
+   },
+   {
+    "phone": "0542022294"
+   },
+   {
+    "phone": "0562510381"
+   },
+   {
+    "phone": "0514394893"
+   },
+   {
+    "phone": "0566123898"
+   },
+   {
+    "phone": "0507822396"
+   },
+   {
+    "phone": "0561384725"
+   },
+   {
+    "phone": "0517180229"
+   },
+   {
+    "phone": "0514794356"
+   },
+   {
+    "phone": "0534712848"
+   },
+   {
+    "phone": "0581636584"
+   },
+   {
+    "phone": "0544163183"
+   },
+   {
+    "phone": "0572763448"
+   },
+   {
+    "phone": "0562795700"
+   },
+   {
+    "phone": "0518879731"
+   },
+   {
+    "phone": "0533288883"
+   },
+   {
+    "phone": "0502516266"
+   },
+   {
+    "phone": "0526841037"
+   },
+   {
+    "phone": "0527061404"
+   },
+   {
+    "phone": "0596276751"
+   },
+   {
+    "phone": "0563800002"
+   },
+   {
+    "phone": "0572409623"
+   },
+   {
+    "phone": "0562109238"
+   },
+   {
+    "phone": "0557111992"
+   },
+   {
+    "phone": "0516040616"
+   },
+   {
+    "phone": "0567119864"
+   },
+   {
+    "phone": "0558051390"
+   },
+   {
+    "phone": "0555732695"
+   },
+   {
+    "phone": "0598249499"
+   },
+   {
+    "phone": "0532520503"
+   },
+   {
+    "phone": "0526762866"
+   },
+   {
+    "phone": "0588892399"
+   },
+   {
+    "phone": "0539153737"
+   },
+   {
+    "phone": "0530843732"
+   },
+   {
+    "phone": "0559015083"
+   },
+   {
+    "phone": "0558912749"
+   },
+   {
+    "phone": "0516276699"
+   },
+   {
+    "phone": "0549491005"
+   },
+   {
+    "phone": "0519486743"
+   },
+   {
+    "phone": "0571008676"
+   },
+   {
+    "phone": "0595027305"
+   },
+   {
+    "phone": "0574752436"
+   },
+   {
+    "phone": "0511277958"
+   },
+   {
+    "phone": "0592510110"
+   },
+   {
+    "phone": "0558323854"
+   },
+   {
+    "phone": "0501194260"
+   },
+   {
+    "phone": "0563766063"
+   },
+   {
+    "phone": "0549146860"
+   },
+   {
+    "phone": "0532911532"
+   },
+   {
+    "phone": "0525112728"
+   },
+   {
+    "phone": "0576073014"
+   },
+   {
+    "phone": "0570930611"
+   },
+   {
+    "phone": "0540180165"
+   },
+   {
+    "phone": "0575579459"
+   },
+   {
+    "phone": "0592089969"
+   }
+  ],
+  "dates": [
+   {
+    "date": "2026-01-01"
+   },
+   {
+    "date": "2026-01-15"
+   },
+   {
+    "date": "2026-01-17"
+   },
+   {
+    "date": "2026-01-18"
+   },
+   {
+    "date": "2026-01-20"
+   },
+   {
+    "date": "2026-01-21"
+   },
+   {
+    "date": "2026-01-22"
+   },
+   {
+    "date": "2026-01-24"
+   },
+   {
+    "date": "2026-01-30"
+   },
+   {
+    "date": "2026-01-31"
+   },
+   {
+    "date": "2026-02-01"
+   },
+   {
+    "date": "2026-02-02"
+   },
+   {
+    "date": "2026-02-04"
+   },
+   {
+    "date": "2026-02-10"
+   },
+   {
+    "date": "2026-02-15"
+   },
+   {
+    "date": "2026-02-16"
+   },
+   {
+    "date": "2026-02-18"
+   },
+   {
+    "date": "2026-02-21"
+   },
+   {
+    "date": "2026-02-22"
+   },
+   {
+    "date": "2026-02-24"
+   },
+   {
+    "date": "2026-02-28"
+   },
+   {
+    "date": "2026-03-07"
+   },
+   {
+    "date": "2026-03-08"
+   },
+   {
+    "date": "2026-03-14"
+   },
+   {
+    "date": "2026-03-18"
+   },
+   {
+    "date": "2026-03-19"
+   },
+   {
+    "date": "2026-03-27"
+   },
+   {
+    "date": "2026-03-31"
+   },
+   {
+    "date": "2026-04-02"
+   },
+   {
+    "date": "2026-04-13"
+   },
+   {
+    "date": "2026-04-14"
+   },
+   {
+    "date": "2026-04-18"
+   },
+   {
+    "date": "2026-04-22"
+   },
+   {
+    "date": "2026-05-03"
+   },
+   {
+    "date": "2026-05-07"
+   },
+   {
+    "date": "2026-05-10"
+   },
+   {
+    "date": "2026-05-14"
+   },
+   {
+    "date": "2026-05-15"
+   },
+   {
+    "date": "2026-05-26"
+   },
+   {
+    "date": "2026-05-28"
+   },
+   {
+    "date": "2026-06-04"
+   },
+   {
+    "date": "2026-06-06"
+   },
+   {
+    "date": "2026-06-15"
+   },
+   {
+    "date": "2026-06-16"
+   },
+   {
+    "date": "2026-06-17"
+   },
+   {
+    "date": "2026-06-21"
+   },
+   {
+    "date": "2026-07-17"
+   },
+   {
+    "date": "2026-07-20"
+   },
+   {
+    "date": "2026-07-23"
+   },
+   {
+    "date": "2026-07-27"
+   },
+   {
+    "date": "2026-08-09"
+   },
+   {
+    "date": "2026-08-12"
+   },
+   {
+    "date": "2026-08-13"
+   },
+   {
+    "date": "2026-08-19"
+   },
+   {
+    "date": "2026-08-20"
+   },
+   {
+    "date": "2026-08-21"
+   },
+   {
+    "date": "2026-09-05"
+   },
+   {
+    "date": "2026-09-11"
+   },
+   {
+    "date": "2026-09-15"
+   },
+   {
+    "date": "2026-09-16"
+   },
+   {
+    "date": "2026-09-17"
+   },
+   {
+    "date": "2026-09-21"
+   },
+   {
+    "date": "2026-09-29"
+   },
+   {
+    "date": "2026-10-02"
+   },
+   {
+    "date": "2026-10-14"
+   },
+   {
+    "date": "2026-10-16"
+   },
+   {
+    "date": "2026-10-17"
+   },
+   {
+    "date": "2026-10-24"
+   },
+   {
+    "date": "2026-10-25"
+   },
+   {
+    "date": "2026-10-29"
+   },
+   {
+    "date": "2026-11-07"
+   },
+   {
+    "date": "2026-11-09"
+   },
+   {
+    "date": "2026-11-15"
+   },
+   {
+    "date": "2026-11-18"
+   },
+   {
+    "date": "2026-11-21"
+   },
+   {
+    "date": "2026-11-22"
+   },
+   {
+    "date": "2026-11-23"
+   },
+   {
+    "date": "2026-11-26"
+   },
+   {
+    "date": "2026-11-30"
+   },
+   {
+    "date": "2026-12-01"
+   },
+   {
+    "date": "2026-12-05"
+   },
+   {
+    "date": "2026-12-12"
+   },
+   {
+    "date": "2026-12-20"
+   },
+   {
+    "date": "2026-12-22"
+   },
+   {
+    "date": "2026-12-23"
+   },
+   {
+    "date": "2026-12-26"
+   },
+   {
+    "date": "2026-12-28"
+   },
+   {
+    "date": "2026-12-29"
+   },
+   {
+    "date": "2026-12-30"
+   },
+   {
+    "date": "2027-01-05"
+   },
+   {
+    "date": "2027-01-07"
+   },
+   {
+    "date": "2027-01-14"
+   },
+   {
+    "date": "2027-01-15"
+   },
+   {
+    "date": "2027-01-19"
+   },
+   {
+    "date": "2027-01-24"
+   },
+   {
+    "date": "2027-02-04"
+   },
+   {
+    "date": "2027-02-07"
+   },
+   {
+    "date": "2027-02-09"
+   },
+   {
+    "date": "2027-02-12"
+   },
+   {
+    "date": "2027-02-15"
+   },
+   {
+    "date": "2027-02-19"
+   },
+   {
+    "date": "2027-02-20"
+   },
+   {
+    "date": "2027-02-21"
+   },
+   {
+    "date": "2027-03-02"
+   },
+   {
+    "date": "2027-03-04"
+   },
+   {
+    "date": "2027-03-10"
+   },
+   {
+    "date": "2027-03-11"
+   },
+   {
+    "date": "2027-03-17"
+   },
+   {
+    "date": "2027-03-18"
+   },
+   {
+    "date": "2027-03-19"
+   },
+   {
+    "date": "2027-03-23"
+   },
+   {
+    "date": "2027-03-24"
+   },
+   {
+    "date": "2027-03-25"
+   },
+   {
+    "date": "2027-03-28"
+   },
+   {
+    "date": "2027-03-29"
+   },
+   {
+    "date": "2027-03-30"
+   },
+   {
+    "date": "2027-04-02"
+   },
+   {
+    "date": "2027-04-03"
+   },
+   {
+    "date": "2027-04-07"
+   },
+   {
+    "date": "2027-04-08"
+   },
+   {
+    "date": "2027-04-13"
+   },
+   {
+    "date": "2027-04-17"
+   },
+   {
+    "date": "2027-04-20"
+   },
+   {
+    "date": "2027-04-22"
+   },
+   {
+    "date": "2027-04-29"
+   },
+   {
+    "date": "2027-05-02"
+   },
+   {
+    "date": "2027-05-04"
+   },
+   {
+    "date": "2027-05-11"
+   },
+   {
+    "date": "2027-05-14"
+   },
+   {
+    "date": "2027-05-16"
+   },
+   {
+    "date": "2027-05-17"
+   },
+   {
+    "date": "2027-05-23"
+   },
+   {
+    "date": "2027-05-26"
+   },
+   {
+    "date": "2027-05-30"
+   },
+   {
+    "date": "2027-05-31"
+   },
+   {
+    "date": "2027-06-02"
+   },
+   {
+    "date": "2027-06-03"
+   },
+   {
+    "date": "2027-06-07"
+   },
+   {
+    "date": "2027-06-17"
+   },
+   {
+    "date": "2027-06-18"
+   },
+   {
+    "date": "2027-06-20"
+   },
+   {
+    "date": "2027-06-21"
+   },
+   {
+    "date": "2027-06-22"
+   },
+   {
+    "date": "2027-06-25"
+   },
+   {
+    "date": "2027-06-29"
+   },
+   {
+    "date": "2027-06-30"
+   },
+   {
+    "date": "2027-07-02"
+   },
+   {
+    "date": "2027-07-03"
+   },
+   {
+    "date": "2027-07-06"
+   },
+   {
+    "date": "2027-07-08"
+   },
+   {
+    "date": "2027-07-14"
+   },
+   {
+    "date": "2027-07-18"
+   },
+   {
+    "date": "2027-07-29"
+   },
+   {
+    "date": "2027-07-30"
+   },
+   {
+    "date": "2027-07-31"
+   },
+   {
+    "date": "2027-08-01"
+   },
+   {
+    "date": "2027-08-07"
+   },
+   {
+    "date": "2027-08-10"
+   },
+   {
+    "date": "2027-08-11"
+   },
+   {
+    "date": "2027-08-12"
+   },
+   {
+    "date": "2027-08-14"
+   },
+   {
+    "date": "2027-08-27"
+   },
+   {
+    "date": "2027-08-29"
+   },
+   {
+    "date": "2027-09-01"
+   },
+   {
+    "date": "2027-09-02"
+   },
+   {
+    "date": "2027-09-08"
+   },
+   {
+    "date": "2027-09-10"
+   },
+   {
+    "date": "2027-09-21"
+   },
+   {
+    "date": "2027-09-24"
+   },
+   {
+    "date": "2027-09-28"
+   },
+   {
+    "date": "2027-09-29"
+   },
+   {
+    "date": "2027-09-30"
+   },
+   {
+    "date": "2027-10-02"
+   },
+   {
+    "date": "2027-10-10"
+   },
+   {
+    "date": "2027-10-13"
+   },
+   {
+    "date": "2027-10-14"
+   },
+   {
+    "date": "2027-10-15"
+   },
+   {
+    "date": "2027-10-16"
+   },
+   {
+    "date": "2027-10-20"
+   },
+   {
+    "date": "2027-10-21"
+   },
+   {
+    "date": "2027-10-22"
+   },
+   {
+    "date": "2027-10-26"
+   },
+   {
+    "date": "2027-10-27"
+   },
+   {
+    "date": "2027-10-28"
+   },
+   {
+    "date": "2027-11-01"
+   },
+   {
+    "date": "2027-11-04"
+   },
+   {
+    "date": "2027-11-06"
+   },
+   {
+    "date": "2027-11-19"
+   },
+   {
+    "date": "2027-11-23"
+   },
+   {
+    "date": "2027-11-24"
+   },
+   {
+    "date": "2027-11-30"
+   },
+   {
+    "date": "2027-12-06"
+   },
+   {
+    "date": "2027-12-07"
+   },
+   {
+    "date": "2027-12-08"
+   },
+   {
+    "date": "2027-12-13"
+   },
+   {
+    "date": "2027-12-14"
+   },
+   {
+    "date": "2027-12-17"
+   },
+   {
+    "date": "2027-12-21"
+   },
+   {
+    "date": "2027-12-28"
+   },
+   {
+    "date": "2027-12-31"
+   }
+  ],
+  "amounts": [
+   {
+    "amount": "42011.29"
+   },
+   {
+    "amount": "32804.84"
+   },
+   {
+    "amount": "40674.23"
+   },
+   {
+    "amount": "67995.82"
+   },
+   {
+    "amount": "70613.20"
+   },
+   {
+    "amount": "85315.91"
+   },
+   {
+    "amount": "73583.35"
+   },
+   {
+    "amount": "67761.19"
+   },
+   {
+    "amount": "96813.53"
+   },
+   {
+    "amount": "70988.70"
+   },
+   {
+    "amount": "1792.55"
+   },
+   {
+    "amount": "42571.49"
+   },
+   {
+    "amount": "3084.91"
+   },
+   {
+    "amount": "18308.20"
+   },
+   {
+    "amount": "65560.13"
+   },
+   {
+    "amount": "73144.15"
+   },
+   {
+    "amount": "96734.56"
+   },
+   {
+    "amount": "62547.47"
+   },
+   {
+    "amount": "23706.03"
+   },
+   {
+    "amount": "38827.65"
+   },
+   {
+    "amount": "73792.21"
+   },
+   {
+    "amount": "23250.29"
+   },
+   {
+    "amount": "10702.77"
+   },
+   {
+    "amount": "21831.18"
+   },
+   {
+    "amount": "76443.74"
+   },
+   {
+    "amount": "85426.91"
+   },
+   {
+    "amount": "2532.39"
+   },
+   {
+    "amount": "98179.60"
+   },
+   {
+    "amount": "71221.65"
+   },
+   {
+    "amount": "17121.61"
+   },
+   {
+    "amount": "98635.57"
+   },
+   {
+    "amount": "10246.55"
+   },
+   {
+    "amount": "14831.39"
+   },
+   {
+    "amount": "43695.69"
+   },
+   {
+    "amount": "41544.01"
+   },
+   {
+    "amount": "13104.48"
+   },
+   {
+    "amount": "21662.87"
+   },
+   {
+    "amount": "14667.85"
+   },
+   {
+    "amount": "53593.17"
+   },
+   {
+    "amount": "76663.92"
+   },
+   {
+    "amount": "89421.96"
+   },
+   {
+    "amount": "75441.18"
+   },
+   {
+    "amount": "30076.01"
+   },
+   {
+    "amount": "8980.54"
+   },
+   {
+    "amount": "80266.97"
+   },
+   {
+    "amount": "21227.32"
+   },
+   {
+    "amount": "39981.76"
+   },
+   {
+    "amount": "23176.26"
+   },
+   {
+    "amount": "98645.84"
+   },
+   {
+    "amount": "81588.64"
+   },
+   {
+    "amount": "90852.94"
+   },
+   {
+    "amount": "39636.08"
+   },
+   {
+    "amount": "50738.08"
+   },
+   {
+    "amount": "52974.08"
+   },
+   {
+    "amount": "74114.51"
+   },
+   {
+    "amount": "20390.99"
+   },
+   {
+    "amount": "91509.01"
+   },
+   {
+    "amount": "28597.26"
+   },
+   {
+    "amount": "88092.44"
+   },
+   {
+    "amount": "27431.51"
+   },
+   {
+    "amount": "13798.67"
+   },
+   {
+    "amount": "42008.33"
+   },
+   {
+    "amount": "57478.17"
+   },
+   {
+    "amount": "48751.52"
+   },
+   {
+    "amount": "56489.02"
+   },
+   {
+    "amount": "91992.12"
+   },
+   {
+    "amount": "33914.72"
+   },
+   {
+    "amount": "59650.95"
+   },
+   {
+    "amount": "21769.00"
+   },
+   {
+    "amount": "49570.76"
+   },
+   {
+    "amount": "3952.48"
+   },
+   {
+    "amount": "8890.88"
+   },
+   {
+    "amount": "41052.98"
+   },
+   {
+    "amount": "82573.48"
+   },
+   {
+    "amount": "88311.77"
+   },
+   {
+    "amount": "83872.14"
+   },
+   {
+    "amount": "2121.21"
+   },
+   {
+    "amount": "93429.49"
+   },
+   {
+    "amount": "50274.82"
+   },
+   {
+    "amount": "45555.04"
+   },
+   {
+    "amount": "18434.01"
+   },
+   {
+    "amount": "51398.17"
+   },
+   {
+    "amount": "74049.36"
+   },
+   {
+    "amount": "33949.58"
+   },
+   {
+    "amount": "51465.44"
+   },
+   {
+    "amount": "21423.28"
+   },
+   {
+    "amount": "9926.87"
+   },
+   {
+    "amount": "98426.90"
+   },
+   {
+    "amount": "73917.43"
+   },
+   {
+    "amount": "74039.83"
+   },
+   {
+    "amount": "44091.78"
+   },
+   {
+    "amount": "58605.90"
+   },
+   {
+    "amount": "10265.46"
+   },
+   {
+    "amount": "97059.15"
+   },
+   {
+    "amount": "63102.22"
+   },
+   {
+    "amount": "72430.34"
+   },
+   {
+    "amount": "2358.52"
+   },
+   {
+    "amount": "85773.50"
+   },
+   {
+    "amount": "43123.09"
+   },
+   {
+    "amount": "36061.34"
+   },
+   {
+    "amount": "13659.78"
+   },
+   {
+    "amount": "89472.51"
+   },
+   {
+    "amount": "56119.04"
+   },
+   {
+    "amount": "18352.93"
+   },
+   {
+    "amount": "57890.05"
+   },
+   {
+    "amount": "7876.68"
+   },
+   {
+    "amount": "49745.10"
+   },
+   {
+    "amount": "45235.25"
+   },
+   {
+    "amount": "79084.87"
+   },
+   {
+    "amount": "36611.04"
+   },
+   {
+    "amount": "86806.15"
+   },
+   {
+    "amount": "58298.88"
+   },
+   {
+    "amount": "50701.56"
+   },
+   {
+    "amount": "64041.34"
+   },
+   {
+    "amount": "6734.92"
+   },
+   {
+    "amount": "39743.10"
+   },
+   {
+    "amount": "39401.14"
+   },
+   {
+    "amount": "12073.37"
+   },
+   {
+    "amount": "35641.99"
+   },
+   {
+    "amount": "87333.95"
+   },
+   {
+    "amount": "95399.06"
+   },
+   {
+    "amount": "19572.64"
+   },
+   {
+    "amount": "24608.70"
+   },
+   {
+    "amount": "67428.69"
+   },
+   {
+    "amount": "37550.00"
+   },
+   {
+    "amount": "2037.13"
+   },
+   {
+    "amount": "35986.33"
+   },
+   {
+    "amount": "5569.75"
+   },
+   {
+    "amount": "10094.33"
+   },
+   {
+    "amount": "98168.23"
+   },
+   {
+    "amount": "13679.68"
+   },
+   {
+    "amount": "51053.69"
+   },
+   {
+    "amount": "4636.84"
+   },
+   {
+    "amount": "54256.79"
+   },
+   {
+    "amount": "22222.03"
+   },
+   {
+    "amount": "89435.93"
+   },
+   {
+    "amount": "46482.37"
+   },
+   {
+    "amount": "72848.93"
+   },
+   {
+    "amount": "20891.24"
+   },
+   {
+    "amount": "4195.53"
+   },
+   {
+    "amount": "15746.60"
+   },
+   {
+    "amount": "44850.27"
+   },
+   {
+    "amount": "6001.53"
+   },
+   {
+    "amount": "26102.00"
+   },
+   {
+    "amount": "95958.04"
+   },
+   {
+    "amount": "58651.29"
+   },
+   {
+    "amount": "63538.17"
+   },
+   {
+    "amount": "60339.12"
+   },
+   {
+    "amount": "7996.54"
+   },
+   {
+    "amount": "6021.68"
+   },
+   {
+    "amount": "87846.74"
+   },
+   {
+    "amount": "81715.66"
+   },
+   {
+    "amount": "25868.46"
+   },
+   {
+    "amount": "50426.58"
+   },
+   {
+    "amount": "23593.98"
+   },
+   {
+    "amount": "45410.78"
+   },
+   {
+    "amount": "30395.76"
+   },
+   {
+    "amount": "60534.44"
+   },
+   {
+    "amount": "37268.16"
+   },
+   {
+    "amount": "64348.05"
+   },
+   {
+    "amount": "10457.31"
+   },
+   {
+    "amount": "14221.76"
+   },
+   {
+    "amount": "87861.01"
+   },
+   {
+    "amount": "38004.58"
+   },
+   {
+    "amount": "90579.41"
+   },
+   {
+    "amount": "77356.29"
+   },
+   {
+    "amount": "18828.94"
+   },
+   {
+    "amount": "68902.68"
+   },
+   {
+    "amount": "62048.63"
+   },
+   {
+    "amount": "72776.62"
+   },
+   {
+    "amount": "69822.39"
+   },
+   {
+    "amount": "51969.71"
+   },
+   {
+    "amount": "15657.95"
+   },
+   {
+    "amount": "63441.66"
+   },
+   {
+    "amount": "17764.78"
+   },
+   {
+    "amount": "60289.98"
+   },
+   {
+    "amount": "56212.23"
+   },
+   {
+    "amount": "84172.10"
+   },
+   {
+    "amount": "90746.41"
+   },
+   {
+    "amount": "86308.62"
+   },
+   {
+    "amount": "49950.16"
+   },
+   {
+    "amount": "95884.00"
+   },
+   {
+    "amount": "73276.82"
+   },
+   {
+    "amount": "63102.18"
+   },
+   {
+    "amount": "15849.39"
+   },
+   {
+    "amount": "53882.61"
+   },
+   {
+    "amount": "72252.08"
+   },
+   {
+    "amount": "43234.47"
+   },
+   {
+    "amount": "29813.30"
+   },
+   {
+    "amount": "13861.29"
+   },
+   {
+    "amount": "42857.53"
+   },
+   {
+    "amount": "39383.97"
+   },
+   {
+    "amount": "6849.97"
+   },
+   {
+    "amount": "40544.81"
+   },
+   {
+    "amount": "87272.29"
+   },
+   {
+    "amount": "8151.77"
+   },
+   {
+    "amount": "12979.88"
+   },
+   {
+    "amount": "43793.82"
+   },
+   {
+    "amount": "94331.70"
+   },
+   {
+    "amount": "6066.82"
+   }
+  ],
+  "emails": [
+   {
+    "email": "user001@example.com"
+   },
+   {
+    "email": "user002@example.com"
+   },
+   {
+    "email": "user003@example.com"
+   },
+   {
+    "email": "user004@example.com"
+   },
+   {
+    "email": "user005@example.com"
+   },
+   {
+    "email": "user006@example.com"
+   },
+   {
+    "email": "user007@example.com"
+   },
+   {
+    "email": "user008@example.com"
+   },
+   {
+    "email": "user009@example.com"
+   },
+   {
+    "email": "user010@example.com"
+   },
+   {
+    "email": "user011@example.com"
+   },
+   {
+    "email": "user012@example.com"
+   },
+   {
+    "email": "user013@example.com"
+   },
+   {
+    "email": "user014@example.com"
+   },
+   {
+    "email": "user015@example.com"
+   },
+   {
+    "email": "user016@example.com"
+   },
+   {
+    "email": "user017@example.com"
+   },
+   {
+    "email": "user018@example.com"
+   },
+   {
+    "email": "user019@example.com"
+   },
+   {
+    "email": "user020@example.com"
+   },
+   {
+    "email": "user021@example.com"
+   },
+   {
+    "email": "user022@example.com"
+   },
+   {
+    "email": "user023@example.com"
+   },
+   {
+    "email": "user024@example.com"
+   },
+   {
+    "email": "user025@example.com"
+   },
+   {
+    "email": "user026@example.com"
+   },
+   {
+    "email": "user027@example.com"
+   },
+   {
+    "email": "user028@example.com"
+   },
+   {
+    "email": "user029@example.com"
+   },
+   {
+    "email": "user030@example.com"
+   },
+   {
+    "email": "user031@example.com"
+   },
+   {
+    "email": "user032@example.com"
+   },
+   {
+    "email": "user033@example.com"
+   },
+   {
+    "email": "user034@example.com"
+   },
+   {
+    "email": "user035@example.com"
+   },
+   {
+    "email": "user036@example.com"
+   },
+   {
+    "email": "user037@example.com"
+   },
+   {
+    "email": "user038@example.com"
+   },
+   {
+    "email": "user039@example.com"
+   },
+   {
+    "email": "user040@example.com"
+   },
+   {
+    "email": "user041@example.com"
+   },
+   {
+    "email": "user042@example.com"
+   },
+   {
+    "email": "user043@example.com"
+   },
+   {
+    "email": "user044@example.com"
+   },
+   {
+    "email": "user045@example.com"
+   },
+   {
+    "email": "user046@example.com"
+   },
+   {
+    "email": "user047@example.com"
+   },
+   {
+    "email": "user048@example.com"
+   },
+   {
+    "email": "user049@example.com"
+   },
+   {
+    "email": "user050@example.com"
+   },
+   {
+    "email": "user051@example.com"
+   },
+   {
+    "email": "user052@example.com"
+   },
+   {
+    "email": "user053@example.com"
+   },
+   {
+    "email": "user054@example.com"
+   },
+   {
+    "email": "user055@example.com"
+   },
+   {
+    "email": "user056@example.com"
+   },
+   {
+    "email": "user057@example.com"
+   },
+   {
+    "email": "user058@example.com"
+   },
+   {
+    "email": "user059@example.com"
+   },
+   {
+    "email": "user060@example.com"
+   }
+  ],
+  "references": [
+   {
+    "reference": "REF-062163"
+   },
+   {
+    "reference": "REF-743199"
+   },
+   {
+    "reference": "REF-137093"
+   },
+   {
+    "reference": "REF-984530"
+   },
+   {
+    "reference": "REF-517268"
+   },
+   {
+    "reference": "REF-898849"
+   },
+   {
+    "reference": "REF-663929"
+   },
+   {
+    "reference": "REF-521125"
+   },
+   {
+    "reference": "REF-578766"
+   },
+   {
+    "reference": "REF-336979"
+   },
+   {
+    "reference": "REF-785261"
+   },
+   {
+    "reference": "REF-864113"
+   },
+   {
+    "reference": "REF-065900"
+   },
+   {
+    "reference": "REF-446397"
+   },
+   {
+    "reference": "REF-367636"
+   },
+   {
+    "reference": "REF-145062"
+   },
+   {
+    "reference": "REF-154501"
+   },
+   {
+    "reference": "REF-961158"
+   },
+   {
+    "reference": "REF-096274"
+   },
+   {
+    "reference": "REF-280758"
+   },
+   {
+    "reference": "REF-253916"
+   },
+   {
+    "reference": "REF-990062"
+   },
+   {
+    "reference": "REF-201929"
+   },
+   {
+    "reference": "REF-540536"
+   },
+   {
+    "reference": "REF-708995"
+   },
+   {
+    "reference": "REF-639498"
+   },
+   {
+    "reference": "REF-407238"
+   },
+   {
+    "reference": "REF-530013"
+   },
+   {
+    "reference": "REF-060261"
+   },
+   {
+    "reference": "REF-650667"
+   },
+   {
+    "reference": "REF-972512"
+   },
+   {
+    "reference": "REF-766340"
+   },
+   {
+    "reference": "REF-696461"
+   },
+   {
+    "reference": "REF-827267"
+   },
+   {
+    "reference": "REF-306562"
+   },
+   {
+    "reference": "REF-830160"
+   },
+   {
+    "reference": "REF-550117"
+   },
+   {
+    "reference": "REF-942035"
+   },
+   {
+    "reference": "REF-346368"
+   },
+   {
+    "reference": "REF-057465"
+   },
+   {
+    "reference": "REF-073908"
+   },
+   {
+    "reference": "REF-025336"
+   },
+   {
+    "reference": "REF-425838"
+   },
+   {
+    "reference": "REF-042364"
+   },
+   {
+    "reference": "REF-050528"
+   },
+   {
+    "reference": "REF-765413"
+   },
+   {
+    "reference": "REF-717414"
+   },
+   {
+    "reference": "REF-800294"
+   },
+   {
+    "reference": "REF-046551"
+   },
+   {
+    "reference": "REF-875402"
+   },
+   {
+    "reference": "REF-415519"
+   },
+   {
+    "reference": "REF-173991"
+   },
+   {
+    "reference": "REF-714405"
+   },
+   {
+    "reference": "REF-165948"
+   },
+   {
+    "reference": "REF-853634"
+   },
+   {
+    "reference": "REF-080752"
+   },
+   {
+    "reference": "REF-281807"
+   },
+   {
+    "reference": "REF-066585"
+   },
+   {
+    "reference": "REF-607800"
+   },
+   {
+    "reference": "REF-312942"
+   }
+  ]
+ }
+}

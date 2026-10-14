@@ -1,0 +1,21 @@
+{
+  "train_cache": "../data/speaker-train-cache",
+  "validation_cache": "../data/speaker-val-cache",
+  "output_dir": "../outputs/qwen_speaker",
+  "width": 512,
+  "batch_size": 32,
+  "max_steps": 5000,
+  "learning_rate": 0.0003,
+  "precision": "bf16",
+  "workers": 4,
+  "seed": 42,
+  "eval_every": 250,
+  "holdout_speakers": true,
+  "language_weights": {
+    "ar": 0.65,
+    "en": 0.15,
+    "hi": 0.075,
+    "zh": 0.075,
+    "ml": 0.05
+  }
+}

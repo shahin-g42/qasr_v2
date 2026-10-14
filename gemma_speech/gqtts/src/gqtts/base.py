@@ -27,21 +27,41 @@ from gemma_speech._vendor.qwen_tts.inference.qwen3_tts_tokenizer import Qwen3TTS
 
 from .speaker import SpeakerAdapter, audio_frames
 
+_RENAMED_CLASSES = {}
+
+
+def public_class_name(original):
+    """Keep acoustic, generator and codec implementations in distinct namespaces."""
+    name = original.__name__
+    for prefix, replacement in (
+        ("Gemma4Audio", "GQTTSAcoustic"),
+        ("Gemma4", "GQTTSAcousticPrimitive"),
+        ("Qwen3TTSTokenizer", "GQTTSCodec"),
+        ("Qwen3TTS", "GQTTSGenerator"),
+    ):
+        if name.startswith(prefix):
+            return replacement + name[len(prefix) :]
+    return "GQTTSSpeakerAdapter" if original is SpeakerAdapter else None
+
 
 def name_modules(module):
     for child in module.modules():
         original = type(child)
-        name = original.__name__
-        if name.startswith(("Gemma4", "Qwen3TTS")) or name == "SpeakerAdapter":
-            name = (
-                name.replace("Gemma4Audio", "GQTTSAcoustic")
-                .replace("Gemma4", "GQTTS")
-                .replace("Qwen3TTS", "GQTTS")
-                .replace("SpeakerAdapter", "GQTTSSpeakerAdapter")
-            )
-            if name not in globals():
-                globals()[name] = type(name, (original,), {"__module__": __name__})
-            child.__class__ = globals()[name]
+        name = public_class_name(original)
+        if name is None:
+            continue
+        renamed = _RENAMED_CLASSES.get(original)
+        if renamed is None:
+            existing = globals().get(name)
+            if existing is not None:
+                raise ValueError(f"GQTTS class alias collision: {name} for {original}")
+            renamed = type(name, (original,), {"__module__": __name__})
+            _RENAMED_CLASSES[original] = renamed
+            globals()[name] = renamed
+        # Never substitute the implementation of another source class.
+        if renamed.__bases__ != (original,):
+            raise TypeError(f"GQTTS alias has incorrect implementation: {name}")
+        child.__class__ = renamed
 
 
 class GQTTSBase(nn.Module):

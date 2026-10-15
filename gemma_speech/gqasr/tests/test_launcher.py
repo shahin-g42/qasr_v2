@@ -67,3 +67,15 @@ def test_training_batch_and_existing_index(name):
     assert cfg["expected_world_size"] * cfg["batch_size"] == 1920
     assert cfg["language_batch_counts"] == {"ar": 10, "en": 6, "hi": 2, "ml": 1, "zh": 1}
     assert cfg["index_path"].endswith("/indexes/full_v81.sqlite")
+
+
+def test_explicit_gpu_ids_override_inherited_single_gpu():
+    result = launch("0", CUDA_VISIBLE_DEVICES="0", GPU_IDS="0,1,2,3,4,5,6,7")
+    assert result.returncode == 0, result.stderr
+    assert "CUDA_VISIBLE_DEVICES=0,1,2,3,4,5,6,7" in result.stdout
+
+
+def test_scheduler_visibility_is_preserved():
+    result = launch("0", CUDA_VISIBLE_DEVICES="3", GPU_IDS="")
+    assert result.returncode == 0, result.stderr
+    assert "CUDA_VISIBLE_DEVICES=3 " in result.stdout

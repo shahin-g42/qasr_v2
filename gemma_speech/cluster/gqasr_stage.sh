@@ -5,6 +5,10 @@ STAGE="${1:?Stages: doctor download export verify scan rescan-ml preflight augme
 shift
 ENV_DIR="${GEMMA_SPEECH_ENV:-$ROOT/.venv}"
 source "$ENV_DIR/bin/activate"
+# Preserve the launcher selection even if environment activation changes visibility.
+if [[ -n "${GQASR_CUDA_VISIBLE_DEVICES+x}" ]]; then
+  export CUDA_VISIBLE_DEVICES="$GQASR_CUDA_VISIBLE_DEVICES"
+fi
 mkdir -p "$ROOT/logs" "$ROOT/gqasr/verification"
 exec > >(tee "$ROOT/logs/gqasr-${STAGE}-$(date -u +%Y%m%dT%H%M%SZ)-${NODE_RANK:-local}.log") 2>&1
 export TOKENIZERS_PARALLELISM=false
@@ -16,13 +20,24 @@ case "$STAGE" in
     nvidia-smi
     python - <<'PYCODE'
 import os
+import sys
 import torch
 import transformers
 expected = int(os.environ.get("NPROC_PER_NODE", "8"))
 assert torch.__version__.split("+")[0] == "2.11.0", torch.__version__
 assert transformers.__version__ == "5.19.0", transformers.__version__
+visible = torch.cuda.device_count()
+print({"python": sys.executable, "CUDA_VISIBLE_DEVICES": os.environ.get("CUDA_VISIBLE_DEVICES"),
+       "NVIDIA_VISIBLE_DEVICES": os.environ.get("NVIDIA_VISIBLE_DEVICES"),
+       "visible_gpus": visible, "expected_gpus": expected}, flush=True)
+if visible != expected:
+    raise SystemExit(
+        f"PyTorch sees {visible} GPUs; this launcher requires {expected}. "
+        "Check CUDA_VISIBLE_DEVICES and your GPU allocation. For a dedicated eight-GPU node, "
+        "launch with GPU_IDS=0,1,2,3,4,5,6,7 bash scripts/run_gqasr_12node.sh YOUR_RANK. "
+        "If visibility is already correct, check container/scheduler GPU access."
+    )
 assert torch.cuda.is_available(), "CUDA is unavailable"
-assert torch.cuda.device_count() == expected, (torch.cuda.device_count(), expected)
 for i in range(expected):
     with torch.cuda.device(i):
         assert torch.cuda.is_bf16_supported(), f"GPU {i} lacks BF16"

@@ -27,7 +27,7 @@ The configs use the **22 training and 6 evaluation manifests** from QASR's `conf
 
 Language quotas are exact across the ten accumulated microbatches on every rank: 10 Arabic, 6 English, 2 Hindi, 1 Malayalam, 1 Chinese. Sampling uses replacement with deterministic rank/update seeds, so resume does not require a corpus-sized permutation. This is not an epoch traversal. Microbatch accumulation preserves the source example count, but changes loss weighting and stochastic execution; it is not a numerically identical run.
 
-QASR's online code-switching, SpecAugment, speed perturbation, noise and codec augmentation have **not been ported**. These are explicitly disabled. Logging is JSONL instead of W&B, and DDP replaces ZeRO-2. The recipe therefore uses the source data and training budget without claiming to reproduce every source behavior. H100 memory, throughput and scaling need cluster validation.
+The full stage now uses QASR's online code-switching, SpecAugment, speed perturbation, noise and codec simulation. The bridge warm-up remains unaugmented. Logging is JSONL and distributed training uses native DDP; this is not an exact reproduction of QASR's optimizer/runtime. H100 throughput and scaling still require cluster validation.
 
 ## Data preparation
 
@@ -65,3 +65,133 @@ The database is built in node-local scratch (`TMPDIR` by default; explicitly use
 Progress is emitted every five seconds, including while waiting for a worker batch: worker count, active manifest, checked/kept/skipped rows, rows/sec, elapsed time, processed manifest-byte percentage and an approximate ETA. The percentage tracks manifest bytes, not audio bytes; ETA will vary with file sizes and storage latency. Publishing the completed database also reports copy progress.
 
 A `.scan.lock` file prevents concurrent new scans against the same index. Ctrl+C terminates workers and removes the current temporary files and lock. After an uncatchable kill or node crash, remove a stale lock only after confirming the recorded host/PID is no longer running. A failed or interrupted run never publishes an incomplete index. An existing completed index is preserved; select a fresh `index_path` to intentionally rebuild it.
+
+## Training augmentation
+
+`configs/02_full_12node.yaml` points to the existing QASR
+`code_switch_indexes/cs_v1/assembled/index.json`. No new audio index or base-model
+export is needed. Keep its frozen `_state/plan.json`, SQLite pools and indexed
+audio at their original locations. Indexed clip text is frozen: correcting the
+training manifests does **not** update code-switch partner transcripts. Rebuild
+affected QASR pools if those source transcripts require correction.
+
+Order and source settings:
+1. Code-switch gate per example: 0.4; whole clips, original anchor first, frozen
+   pair weights/segment counts/gaps/language policy from the existing index.
+2. Speed perturbation: 0.85–1.15, probability 0.37. Out-of-bounds speed changes
+   revert to the pre-speed waveform rather than truncating speech.
+3. MUSAN noise: SNR 5–20 dB, probability 0.37. Missing configured noise files
+   fail preflight rather than silently substituting synthetic noise.
+4. QASR's bandpass/quantization codec **simulation**: probability 0.37.
+5. SpecAugment: two maximum time/frequency masks, ratios 0.05/0.15, batch gate
+   0.37. Padding is preserved; masking follows the actual frontend dimensions.
+
+The packaged runtime needs no QASR model import or second environment. Code-switch
+candidates are retokenized using GQASR and checked against the complete target
+(language header + transcript + EOS); unsuccessful budget attempts retain the
+original example. Source pool selection still reflects the original index's
+eligibility rules. Source language quotas remain anchor quotas; mixed-label
+language assignment follows the index policy.
+
+Evaluation never receives augmentation. Per-update/rank/example seeds make
+augmentation reproducible across worker counts and resume points. Metrics include
+rank-0 last-microbatch gate/fallback and waveform/SpecAugment change information;
+these are diagnostics, not globally aggregated application rates.
+
+After copying corrected manifests back to the cluster, **rebuild the GQASR
+manifest SQLite index** (it stores transcript copies). Select a new `index_path`
+in BOTH stage configs, or move the old index aside while no scan/training is
+running. Then run:
+
+```bash
+bash gemma_speech/cluster/gqasr_stage.sh test -q
+bash gemma_speech/cluster/gqasr_stage.sh scan
+bash gemma_speech/cluster/gqasr_stage.sh preflight
+bash gemma_speech/cluster/gqasr_stage.sh augmentation-smoke --batches 50
+# Launch bridge through the existing 12-node scheduler/torchrun setup.
+# Once bridge/final exists, validate the full-stage augmentation assets:
+GQASR_CONFIG=gemma_speech/gqasr/configs/02_full_12node.yaml bash gemma_speech/cluster/gqasr_stage.sh preflight
+# Launch full through the same 12-node setup after successful preflight.
+```
+
+The Malayalam corrected manifest still contains flagged damaged transcripts;
+resolve or explicitly quarantine them before treating it as clean training data.
+
+### Malayalam quarantine (ml_training_v2)
+
+Both stage configs use the completed cluster index `full_v81.sqlite` and the
+original manifest path `asr_cleaned_manifests/full_v1/ml/data/train_ml_itn_punct.jsonl`.
+The cluster's successful scan confirms that this file was replaced with the
+filtered Malayalam manifest (SHA-256
+`1570b758575849e161408db1e0e0ddcc74553cb96947eebbb4988473d3aaea26`).
+Do not rescan this completed index merely to update the augmentation code.
+
+The exclusion file must also be available at
+`asr_cleaned_manifests/ml_training_v2/quarantine/ml_damaged_transcripts.jsonl`.
+Copy it from the local partition output if it is not already on the cluster.
+It is **not** a training manifest. The code-switch runtime reads it only as an
+exclusion list, matched by audio basename so mount aliases cannot bypass it.
+Missing exclusion data fails rather than silently reintroducing quarantined
+recordings. Other heuristic review flags remain in the training manifest.
+
+### Rescan Malayalam only
+
+Once an earlier full scan has completed, replace only Malayalam train/evaluation
+records while retaining every other language. The destination defaults to the
+selected config's `index_path` and MUST NOT already exist:
+
+```bash
+bash gemma_speech/cluster/gqasr_stage.sh rescan-ml \
+  --source-index gemma_speech/gqasr/indexes/full_v81.sqlite \
+  --output gemma_speech/gqasr/indexes/full_v81_ml_rescanned.sqlite \
+  --workers 0
+```
+
+This scans the Malayalam manifests currently configured in the bridge YAML,
+including audio-header and token-length validation. It checks for leakage against
+retained records, copies the old SQLite database to local scratch, replaces the
+Malayalam rows, and publishes a new index atomically. No existing index is edited.
+`--workers 0` uses available CPUs; `--temp-dir /local/scratch` selects local scratch.
+Progress is printed during scanning, copying and publication. Space is required
+for the copied full index plus the Malayalam subset and the destination index.
+
+If the config's destination already exists, use `--output /absolute/new.sqlite`
+and then set BOTH bridge/full `index_path` values to that new path before training.
+Supply the actual completed index as `--source-index`; never use a scan in progress.
+Other languages' files are assumed unchanged and are NOT read or revalidated.
+Tokenizer, duration limits, path rules, or other-language manifest changes require
+a full scan. The original full-scan skip totals are replaced by explicit rescan
+metadata because the old totals were not recorded per language.
+
+Run `preflight` and `augmentation-smoke` after the rescan. If the scan currently
+running already uses `ml_training_v2`, another Malayalam rescan is unnecessary
+unless the manifest changes again. This prepares a new training run; changing
+the index is intentionally incompatible with exact resume of an old-data run.
+
+### Scan storage exhaustion
+
+`database or disk is full` is a storage/quota failure, not a bad transcript.
+The scan builds its SQLite database in `--scan-temp-dir` (system temporary
+storage by default), and SQLite indexes consume additional space. Inspect the
+`scan_scratch` log entry for the actual directory. Check both filesystem space
+and user/project quota on that volume; `df` alone does not show Lustre quotas.
+The current scanner discards incomplete databases and cannot resume a failed
+partial scan. A language rescan requires a previously completed source index.
+
+Choose a scratch volume with sufficient capacity, preferably local NVMe for
+random-write performance. Shared Lustre scratch also works but can be slower:
+
+```bash
+GQASR_SCAN_SCRATCH=/lustrefs/shared/shahin.konadath/workspace/train/stt/v2/qasr_v2/gqasr_scan_scratch
+mkdir -p "$GQASR_SCAN_SCRATCH"
+df -h "$GQASR_SCAN_SCRATCH" gemma_speech/gqasr/indexes
+# Check your user/project quota using the cluster's quota tooling as well.
+TMPDIR="$GQASR_SCAN_SCRATCH" SQLITE_TMPDIR="$GQASR_SCAN_SCRATCH" \
+  bash gemma_speech/cluster/gqasr_stage.sh scan --scan-temp-dir "$GQASR_SCAN_SCRATCH"
+```
+
+Progress now reports scratch/output free space and working SQLite size. These
+are filesystem values, not quota guarantees. On filesystems supporting hard
+links, scratch on the same filesystem as the output is published without a
+second full database copy. Different filesystems still require space for both
+the working index and the destination copy. No existing index is overwritten.

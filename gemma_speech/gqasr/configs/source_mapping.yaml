@@ -1,7 +1,7 @@
 source: /Users/shahin.konadath/Projects/codex/qasr/configs/v8.1/02_full_12node.yaml
 source_sha256: bc0709a5a8289159941c81c5bbad841047444803aa20b9b98ff9869f4d3b46e8
 preserved:
-- train_manifest
+- train_manifest (except Malayalam quarantine revision)
 - eval_manifest
 - duration bounds
 - target limit
@@ -9,6 +9,8 @@ preserved:
 - full-stage optimizer-update budget
 - full-stage warmup/stable/decay schedule
 changed:
+  malayalam_training: ml_training_v2 excludes 3646 low-mark-ratio rows; quarantine basenames are also excluded from code-switch partners
+  manifest_index: full_v81.sqlite completed on cluster using the filtered Malayalam file copied over its original path
   batching: 2 microbatch x 10 accumulation replaces 20 x 1; same exact per-rank language
     quota and global batch 1920 at 96 GPUs
   initialization: new GQASR pretrained composite and random bridge; warm-up stage
@@ -16,7 +18,7 @@ changed:
   workers: 4 per GPU instead of 12, leaving CPU headroom on 96-core nodes
   distributed: native DDP, not DeepSpeed ZeRO-2
   logging: local JSONL, not wandb
-not_ported:
+full_stage_augmentations:
   code_switch_probability: 0.4
   code_switch_index: /lustrefs/shared/shahin.konadath/workspace/train/stt/v2/qasr_v2/code_switch_indexes/cs_v1/assembled/index.json
   augmentation:

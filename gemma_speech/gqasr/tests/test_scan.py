@@ -157,3 +157,68 @@ def test_worker_autodetection_respects_allocation(monkeypatch):
     assert data.available_scan_workers() == 96
     monkeypatch.setenv("SLURM_CPUS_PER_TASK", "24")
     assert data.available_scan_workers() == 24
+
+
+def test_same_filesystem_publication_does_not_copy(tmp_path, monkeypatch):
+    import gqasr.data as data
+
+    cfg, processor = setup_scan(tmp_path)
+    original = data.tempfile.mkstemp
+
+    def forbid_publication_copy(*args, **kwargs):
+        assert kwargs.get("prefix") != ".gqasr-index-"
+        return original(*args, **kwargs)
+
+    monkeypatch.setattr(data.tempfile, "mkstemp", forbid_publication_copy)
+    scan(cfg, processor, workers=1, temp_dir=tmp_path)
+    assert len(records(cfg["index_path"])) == 16
+
+
+def test_publication_fallback_and_no_clobber(tmp_path, monkeypatch):
+    import errno
+
+    import gqasr.data as data
+
+    source = tmp_path / "source"
+    destination = tmp_path / "destination"
+    source.write_text("complete")
+    destination.write_text("existing")
+    with pytest.raises(FileExistsError):
+        data.publish_scan_index(source, destination)
+    assert destination.read_text() == "existing"
+
+    def cross_device(*args):
+        raise OSError(errno.EXDEV, "cross device")
+
+    monkeypatch.setattr(data.os, "link", cross_device)
+    assert not data.publish_scan_index(source, destination)
+
+
+def test_sqlite_full_reports_storage_and_cleans_partial_index(tmp_path, monkeypatch):
+    from pathlib import Path
+
+    import gqasr.data as data
+
+    cfg, processor = setup_scan(tmp_path)
+    original = data.sqlite3.connect
+
+    class FullConnection:
+        def __init__(self, *args, **kwargs):
+            self.db = original(*args, **kwargs)
+
+        def execute(self, sql, *args):
+            if sql.startswith("SELECT language,text"):
+                error = sqlite3.OperationalError("database or disk is full")
+                error.sqlite_errorcode = sqlite3.SQLITE_FULL
+                raise error
+            return self.db.execute(sql, *args)
+
+        def close(self):
+            self.db.close()
+
+    monkeypatch.setattr(data.sqlite3, "connect", FullConnection)
+    with pytest.raises(RuntimeError, match="--scan-temp-dir"):
+        scan(cfg, processor, workers=1, temp_dir=tmp_path)
+    assert not Path(cfg["index_path"]).exists()
+    assert not list(tmp_path.glob("gqasr-index-*"))
+    assert not list(tmp_path.glob("*.scan.lock"))

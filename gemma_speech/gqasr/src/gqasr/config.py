@@ -42,6 +42,21 @@ def load_config(path):
         raise ValueError("workers must be nonnegative and language quotas positive")
     if not 0 <= cfg["min_lr_ratio"] <= 1 or min(cfg["warmup_steps"], cfg["decay_steps"]) < 0:
         raise ValueError("invalid learning-rate schedule")
+    cfg.setdefault("code_switch_probability", 0.4)
+    if not 0 <= cfg["code_switch_probability"] <= 1:
+        raise ValueError("code_switch_probability must be in [0, 1]")
+    if cfg.get("online_code_switching") and not cfg.get("code_switch_index"):
+        raise ValueError("online_code_switching requires code_switch_index")
+    if cfg.get("augmentation") and not isinstance(cfg["augmentation"], dict):
+        raise ValueError("augmentation must be a mapping or false")
+    if cfg.get("code_switch_index"):
+        cfg["code_switch_index"] = str(
+            (path.parent / Path(cfg["code_switch_index"]).expanduser()).resolve()
+        )
+    if cfg.get("code_switch_exclude_manifest"):
+        cfg["code_switch_exclude_manifest"] = str(
+            (path.parent / Path(cfg["code_switch_exclude_manifest"]).expanduser()).resolve()
+        )
     return cfg
 
 
@@ -104,6 +119,10 @@ def prepare(source, output):
         yaml.safe_dump(cfg, sort_keys=False, allow_unicode=True)
     )
     cfg.update(
+        online_code_switching=bool(src.get("code_switch_index")),
+        code_switch_index=src.get("code_switch_index"),
+        code_switch_probability=src.get("code_switch_probability", 0.4),
+        augmentation=src.get("augmentation", False),
         base_model="../outputs/bridge/final",
         output_dir="../outputs/full",
         acoustic_layers=12,
@@ -142,7 +161,7 @@ def prepare(source, output):
             "distributed": "native DDP, not DeepSpeed ZeRO-2",
             "logging": "local JSONL, not wandb",
         },
-        "not_ported": {
+        "full_stage_augmentations": {
             "code_switch_probability": src.get("code_switch_probability"),
             "code_switch_index": src.get("code_switch_index"),
             "augmentation": src.get("augmentation"),

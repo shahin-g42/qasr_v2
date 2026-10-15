@@ -1,5 +1,6 @@
 """Disk-backed manifest indexing and exact per-update language sampling."""
 
+import errno
 import hashlib
 import json
 import math
@@ -42,6 +43,39 @@ def available_scan_workers():
         count = os.cpu_count() or 1
     allocation = os.environ.get("SLURM_CPUS_PER_TASK")
     return max(1, min(count, int(allocation))) if allocation else max(1, count)
+
+
+def scan_storage_status(working, destination):
+    """Filesystem space is not a user/project-quota guarantee."""
+    scratch = Path(working).parent if working else Path(tempfile.gettempdir())
+    result = {
+        "scratch_directory": str(scratch),
+        "destination_directory": str(Path(destination).parent),
+    }
+    for label, directory in (("scratch", scratch), ("destination", Path(destination).parent)):
+        try:
+            result[label + "_free_gib"] = round(shutil.disk_usage(directory).free / 2**30, 2)
+        except OSError:
+            result[label + "_free_gib"] = None
+    result["working_index_gib"] = (
+        round(Path(working).stat().st_size / 2**30, 2) if working and Path(working).exists() else 0
+    )
+    return result
+
+
+def publish_scan_index(working, destination):
+    """No-copy, no-clobber publication when both files are on one filesystem.
+
+    Return false to request the existing cross-filesystem copy path. Propagate
+    space/quota errors and destination collisions; never hide them as fallback.
+    """
+    try:
+        os.link(working, destination)
+        return True
+    except OSError as exc:
+        if exc.errno in (errno.EXDEV, errno.EPERM, errno.EOPNOTSUPP):
+            return False
+        raise
 
 
 def scan(
@@ -92,6 +126,7 @@ def scan(
             json.dumps(
                 dict(
                     event=event,
+                    **scan_storage_status(temporary, destination),
                     workers=workers,
                     manifest=path,
                     manifests_done=len(sources),
@@ -121,6 +156,7 @@ def scan(
         db.execute("PRAGMA journal_mode=OFF")
         db.execute("PRAGMA synchronous=OFF")
         db.execute("PRAGMA cache_size=-65536")
+        db.execute("PRAGMA temp_store=MEMORY")
         db.execute(
             "CREATE TABLE samples (split TEXT, language TEXT, ordinal INTEGER, audio TEXT, text TEXT, duration REAL, recording_id TEXT, dialect TEXT, source TEXT, line INTEGER, PRIMARY KEY(split,language,ordinal), UNIQUE(split,audio))"
         )
@@ -135,6 +171,9 @@ def scan(
                 dict(
                     event="scan_scratch",
                     directory=str(Path(temporary).parent),
+                    working_index=str(temporary),
+                    manifest_total_gib=round(total_bytes / 2**30, 2),
+                    space_note="Check user/project quota as well as filesystem free space; SQLite size is not equal to manifest size.",
                     free_gib=round(shutil.disk_usage(Path(temporary).parent).free / 2**30, 1),
                     chunk_size=chunk_size,
                     max_pending_batches=2 * workers,
@@ -235,6 +274,10 @@ def scan(
                                 ),
                             )
                             source_kept += 1
+                        except sqlite3.Error as exc:
+                            if getattr(exc, "sqlite_errorcode", None) == sqlite3.SQLITE_FULL:
+                                raise
+                            raise ValueError(f"{path}:{line_number}: {exc}") from exc
                         except Exception as exc:
                             raise ValueError(f"{path}:{line_number}: {exc}") from exc
                     processed_bytes += size
@@ -267,6 +310,11 @@ def scan(
             pool.join()
             pool = None
         progress("publishing_index", force=True)
+        with open(temporary, "rb") as complete:
+            os.fsync(complete.fileno())
+        if publish_scan_index(temporary, destination):
+            progress("scan_complete", force=True)
+            return metadata
         fd, published_temp = tempfile.mkstemp(prefix=".gqasr-index-", dir=destination.parent)
         os.close(fd)
         index_size = Path(temporary).stat().st_size
@@ -294,6 +342,29 @@ def scan(
         os.link(published_temp, destination)
         progress("scan_complete", force=True)
         return metadata
+    except (sqlite3.Error, OSError) as exc:
+        if getattr(exc, "sqlite_errorcode", None) == sqlite3.SQLITE_FULL or getattr(
+            exc, "errno", None
+        ) in (errno.ENOSPC, errno.EDQUOT):
+            status = scan_storage_status(temporary, destination)
+            print(
+                json.dumps(
+                    {
+                        "event": "scan_storage_exhausted",
+                        "rows_checked": processed_rows,
+                        "last_manifest": path if "path" in locals() else None,
+                        **status,
+                    }
+                ),
+                flush=True,
+            )
+            raise RuntimeError(
+                "Scan storage exhausted (disk space, quota, or SQLite limit), not a transcript error. "
+                f"Storage: {status}. Check df and user/project quota, then restart with "
+                "--scan-temp-dir on a sufficiently large volume. The incomplete working index "
+                "is discarded; this scan does not support partial resume."
+            ) from exc
+        raise
     finally:
         if pool:
             pool.terminate()
@@ -322,7 +393,7 @@ class ManifestIndex(Dataset):
         return dict(self.__dict__, db=None)
 
     def __getitem__(self, key):
-        language, ordinal = key
+        language, ordinal = key[:2]
         if self.db is None:
             self.db = sqlite3.connect(f"file:{self.path}?mode=ro", uri=True)
         row = self.db.execute(
@@ -332,6 +403,7 @@ class ManifestIndex(Dataset):
         if row is None:
             raise IndexError(key)
         return {
+            **({"augmentation_seed": key[2]} if len(key) > 2 else {}),
             "id": f"{self.split}:{language}:{ordinal}",
             "audio": row[0],
             "text": row[1],
@@ -348,9 +420,21 @@ class StratifiedUpdateSampler(Sampler):
     corpus-sized shuffled index. Repeated examples are intentional sampling.
     """
 
-    def __init__(self, counts, quotas, batch_size, steps, rank=0, world=1, seed=42, start=0):
+    def __init__(
+        self,
+        counts,
+        quotas,
+        batch_size,
+        steps,
+        rank=0,
+        world=1,
+        seed=42,
+        start=0,
+        augmentation_seeds=False,
+    ):
         self.counts, self.quotas, self.batch_size, self.steps = counts, quotas, batch_size, steps
         self.rank, self.world, self.seed, self.start = rank, world, seed, start
+        self.augmentation_seeds = augmentation_seeds
         self.accumulation = sum(quotas.values()) // batch_size
         if (
             set(counts) != set(quotas)
@@ -373,7 +457,12 @@ class StratifiedUpdateSampler(Sampler):
             ]
             order = torch.randperm(len(keys), generator=generator).tolist()
             for start in range(0, len(keys), self.batch_size):
-                yield [keys[i] for i in order[start : start + self.batch_size]]
+                yield [
+                    (*keys[i], f"{self.seed}:{self.rank}:{update}:{start}:{i}")
+                    if self.augmentation_seeds
+                    else keys[i]
+                    for i in order[start : start + self.batch_size]
+                ]
 
 
 def load_wave(path, minimum, maximum):
@@ -394,20 +483,82 @@ def load_wave(path, minimum, maximum):
 
 
 class Collator:
-    def __init__(self, processor, cfg):
+    def __init__(self, processor, cfg, training=False):
         self.processor, self.cfg = processor, cfg
+        self.augmenter = self.switcher = None
+        if training:
+            from .augmentation import build_training_transforms
+
+            self.augmenter, self.switcher = build_training_transforms(processor, cfg)
 
     def __call__(self, rows):
-        waves = [
-            load_wave(
-                r["audio"], self.cfg["min_duration_seconds"], self.cfg["max_duration_seconds"]
+        from contextlib import nullcontext
+
+        from .augmentation import augmentation_rng
+
+        active = self.augmenter is not None or self.switcher is not None
+        with augmentation_rng(rows) if active else nullcontext():
+            return self._batch(rows)
+
+    def _batch(self, rows):
+        rows = [dict(r) for r in rows]
+        waves = []
+        for row in rows:
+            wave = load_wave(
+                row["audio"], self.cfg["min_duration_seconds"], self.cfg["max_duration_seconds"]
             )
-            for r in rows
-        ]
+            if self.switcher:
+                original = dict(row)
+                mixed, audit = self.switcher.augment(
+                    {**row, "audio_path": row["audio"], "waveform": wave},
+                    self.cfg["code_switch_probability"],
+                )
+                # Check the actual full target, including header/EOS. Never truncate
+                # speech to fit text; a rejected mix falls back to the whole anchor.
+                if (
+                    audit["applied"]
+                    and len(self.processor.target(mixed["text"], mixed["language"]))
+                    > self.cfg["max_target_length"]
+                ):
+                    audit = {**audit, "applied": False, "reason": "full_target_budget"}
+                elif audit["applied"]:
+                    row.update(
+                        text=mixed["text"], language=mixed["language"], duration=mixed["duration"]
+                    )
+                    wave = mixed["waveform"]
+                row["augmentation_audit"] = audit
+                row["anchor_language"] = original["language"]
+            if self.augmenter:
+                before = wave
+                wave = self.augmenter.augment_waveform(
+                    wave,
+                    min_audio_seconds=self.cfg["min_duration_seconds"],
+                    max_audio_seconds=self.cfg["max_duration_seconds"],
+                )
+                row.setdefault("augmentation_audit", {})["waveform_changed"] = not np.array_equal(
+                    before, wave
+                )
+            if (
+                not np.isfinite(wave).all()
+                or not self.cfg["min_duration_seconds"]
+                <= len(wave) / 16000
+                <= self.cfg["max_duration_seconds"]
+            ):
+                raise ValueError("Augmented waveform violates audio bounds")
+            waves.append(wave)
         batch = self.processor.batch(
             waves,
             [r["text"] for r in rows],
             [r["language"] for r in rows],
             self.cfg["max_target_length"],
         )
+        if self.augmenter:
+            features, mask = batch["input_features"], batch["input_features_mask"]
+            if features.ndim != 3 or features.shape[:2] != mask.shape:
+                raise ValueError("SpecAugment requires time-major features and matching mask")
+            batch["input_features"] = self.augmenter.augment_features(features, mask)
+            for i, row in enumerate(rows):
+                row.setdefault("augmentation_audit", {})["specaugment_changed"] = not torch.equal(
+                    features[i], batch["input_features"][i]
+                )
         return batch, rows

@@ -56,6 +56,21 @@ def preflight(
             raise ValueError("existing index/config mismatch")
         result["scan_complete"] = True
         result["counts"] = index.metadata["counts"]
+    if result["base_model_exists"] and (
+        cfg.get("online_code_switching") or cfg.get("augmentation")
+    ):
+        from .augmentation import build_training_transforms
+
+        augmenter, switcher = build_training_transforms(GQASRProcessor(cfg["base_model"]), cfg)
+        result["augmentation"] = {
+            "code_switch_index": cfg.get("code_switch_index"),
+            "code_switch_probability": cfg.get("code_switch_probability"),
+            "retokenized_with_gqasr": switcher is not None,
+            "code_switch_excluded_audio_names": len(switcher._excluded_audio_names)
+            if switcher
+            else 0,
+            "acoustic_augmentation": augmenter is not None,
+        }
     result["ready_to_train"] = (
         not missing and result["base_model_exists"] and result["scan_complete"]
     )
@@ -85,6 +100,21 @@ def main():
     p.add_argument(
         "--scan-temp-dir", help="Node-local scratch directory for SQLite; defaults to TMPDIR"
     )
+    p.add_argument("--report")
+    p = sub.add_parser("rescan-language")
+    p.add_argument("--config", required=True)
+    p.add_argument("--source-index", required=True)
+    p.add_argument("--language", default="ml")
+    p.add_argument("--output", help="New destination; defaults to config index_path")
+    p.add_argument("--workers", type=int, default=0)
+    p.add_argument("--chunk-size", type=int, default=128)
+    p.add_argument("--progress-seconds", type=float, default=5.0)
+    p.add_argument("--temp-dir", help="Node-local scratch")
+    p.add_argument("--report")
+    p = sub.add_parser("augmentation-smoke")
+    p.add_argument("--config", required=True)
+    p.add_argument("--model", help="Use exported base tokenizer/frontend before bridge training")
+    p.add_argument("--batches", type=int, default=20)
     p.add_argument("--report")
     p = sub.add_parser("train")
     p.add_argument("--config", required=True)
@@ -123,6 +153,17 @@ def main():
             args["progress_seconds"],
             args["scan_temp_dir"],
         )
+    elif command == "rescan-language":
+        from .config import load_config
+        from .processing import GQASRProcessor
+        from .rescan import rescan_language
+
+        cfg = load_config(args.pop("config"))
+        result = rescan_language(cfg, GQASRProcessor(cfg["base_model"]), **args)
+    elif command == "augmentation-smoke":
+        from .augmentation import smoke
+
+        result = smoke(**args)
     elif command == "train":
         from .train import train
 

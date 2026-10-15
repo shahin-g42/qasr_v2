@@ -119,10 +119,6 @@ def train(config, resume=None):
 def _train(cfg, rt, resume):
     if rt.world != cfg["expected_world_size"]:
         raise ValueError(f"config expects {cfg['expected_world_size']} ranks; launched {rt.world}")
-    if cfg["online_code_switching"] or cfg["augmentation"]:
-        raise ValueError(
-            "online code-switching/augmentation are not ported; do not silently enable"
-        )
     torch.manual_seed(cfg["seed"] + rt.rank)
     torch.set_num_threads(max(1, int(os.environ.get("OMP_NUM_THREADS", "2"))))
     if rt.device.type == "cuda":
@@ -224,13 +220,16 @@ def _train(cfg, rt, resume):
         rt.world,
         cfg["data_seed"],
         step,
+        augmentation_seeds=True,
     )
-    collator = Collator(processor, cfg)
+    collator = Collator(processor, cfg, training=True)
+    eval_collator = Collator(processor, cfg)
     loader = DataLoader(
         dataset,
         batch_sampler=sampler,
         collate_fn=collator,
         num_workers=cfg["workers"],
+        multiprocessing_context="spawn" if cfg["workers"] else None,
         pin_memory=rt.device.type == "cuda",
         persistent_workers=cfg["workers"] > 0,
         generator=torch.Generator().manual_seed(cfg["data_seed"]),
@@ -238,7 +237,7 @@ def _train(cfg, rt, resume):
     model.train()
     optimizer.zero_grad(set_to_none=True)
     started = time.monotonic()
-    for microbatch, (batch, _) in enumerate(loader):
+    for microbatch, (batch, rows) in enumerate(loader):
         sync = (microbatch + 1) % cfg["accumulation_steps"] == 0
         context = wrapped.no_sync() if rt.world > 1 and not sync else nullcontext()
         with context:
@@ -263,9 +262,10 @@ def _train(cfg, rt, resume):
             "step": step,
             "rank0_last_microbatch_loss": float(result["loss"].detach()),
             "elapsed_seconds": time.monotonic() - started,
+            "rank0_last_microbatch_augmentation": [r.get("augmentation_audit", {}) for r in rows],
         }
         if step % cfg["eval_steps"] == 0 or step == cfg["max_steps"]:
-            scores, predictions = evaluate(model, validation, collator, cfg, rt)
+            scores, predictions = evaluate(model, validation, eval_collator, cfg, rt)
             record["validation"] = scores
             if rt.main:
                 (output / f"predictions-{step}.jsonl").write_text(

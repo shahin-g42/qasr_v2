@@ -88,3 +88,5 @@ logging_steps: 10
 source_config_sha256: bc0709a5a8289159941c81c5bbad841047444803aa20b9b98ff9869f4d3b46e8
 online_code_switching: false
 augmentation: false
+
+code_switch_exclude_manifest: /lustrefs/shared/shahin.konadath/workspace/train/stt/v2/qasr_v2/asr_cleaned_manifests/ml_training_v2/quarantine/ml_damaged_transcripts.jsonl

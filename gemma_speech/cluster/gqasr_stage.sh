@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 set -euo pipefail
 ROOT=$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)
-STAGE="${1:?Stages: doctor download export verify scan preflight test bridge full transcribe}"
+STAGE="${1:?Stages: doctor download export verify scan rescan-ml preflight augmentation-smoke test bridge full transcribe}"
 shift
 ENV_DIR="${GEMMA_SPEECH_ENV:-$ROOT/.venv}"
 source "$ENV_DIR/bin/activate"
@@ -50,6 +50,17 @@ PYCODE
     export HF_HUB_OFFLINE=1
     gqasr preflight --config "${GQASR_CONFIG:-$BRIDGE}" --scan --verify-audio \
       --report "$ROOT/gqasr/verification/scan-$(date -u +%Y%m%dT%H%M%SZ).json" "$@"
+    ;;
+  rescan-ml)
+    export HF_HUB_OFFLINE=1
+    gqasr rescan-language --config "${GQASR_CONFIG:-$BRIDGE}" --language ml \
+      --report "$ROOT/gqasr/verification/rescan-ml-$(date -u +%Y%m%dT%H%M%SZ).json" "$@"
+    ;;
+  augmentation-smoke)
+    export HF_HUB_OFFLINE=1
+    gqasr augmentation-smoke --config "${GQASR_CONFIG:-$FULL}" \
+      --model "$ROOT/gqasr/models/gqasr-base" \
+      --report "$ROOT/gqasr/verification/augmentation-$(date -u +%Y%m%dT%H%M%SZ).json" "$@"
     ;;
   preflight)
     export HF_HUB_OFFLINE=1

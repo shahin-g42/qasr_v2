@@ -153,11 +153,25 @@ def test_path_rewrite_and_alias():
     assert row[0] == "/lustrefs/taiga/vast40/x.wav"
 
 
-def test_index_training_resume_and_full_stage(tmp_path):
+@pytest.mark.parametrize("augmented", [False, True])
+def test_index_training_resume_and_full_stage(tmp_path, augmented):
     path, cfg = fixture(tmp_path)
+    if augmented:
+        cfg["augmentation"] = {
+            "spec_augment": {"enabled": True, "p": 1.0},
+            "speed_perturb": {"enabled": True, "p": 1.0, "rate_range": [0.85, 1.15]},
+            "noise_injection": {"enabled": True, "p": 1.0},
+            "codec_augment": {"enabled": True, "p": 1.0},
+        }
+        path.write_text(yaml.safe_dump(cfg))
+        from gqasr.augmentation import smoke
+
+        assert smoke(str(path), batches=2)["counts"]["examples"] == 2
     assert ManifestIndex(cfg["index_path"], "train")[("ar", 1)]["text"] == "مرحبا"
     train(path)
     cfg["output_dir"] = str(tmp_path / "resumed")
+    if augmented:
+        cfg["workers"] = 1
     path.write_text(yaml.safe_dump(cfg))
     train(path, tmp_path / "out/checkpoint-00000001")
     original = GQASRForSpeechRecognition.from_pretrained(tmp_path / "out/final")

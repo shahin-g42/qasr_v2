@@ -86,5 +86,32 @@ save_steps: 2083
 save_total_limit: 6
 logging_steps: 10
 source_config_sha256: bc0709a5a8289159941c81c5bbad841047444803aa20b9b98ff9869f4d3b46e8
-online_code_switching: false
-augmentation: false
+online_code_switching: true
+augmentation:
+  spec_augment:
+    enabled: true
+    num_time_masks: 2
+    max_time_mask_ratio: 0.05
+    num_freq_masks: 2
+    max_freq_mask_ratio: 0.15
+    p: 0.37
+  speed_perturb:
+    enabled: true
+    rate_range:
+    - 0.85
+    - 1.15
+    p: 0.37
+  noise_injection:
+    enabled: true
+    noise_dir: /lustrefs/shared/shahin.konadath/workspace/train/stt/musan
+    snr_range:
+    - 5.0
+    - 20.0
+    p: 0.37
+  codec_augment:
+    enabled: true
+    p: 0.37
+code_switch_probability: 0.4
+code_switch_index: /lustrefs/shared/shahin.konadath/workspace/train/stt/v2/qasr_v2/code_switch_indexes/cs_v1/assembled/index.json
+
+code_switch_exclude_manifest: /lustrefs/shared/shahin.konadath/workspace/train/stt/v2/qasr_v2/asr_cleaned_manifests/ml_training_v2/quarantine/ml_damaged_transcripts.jsonl

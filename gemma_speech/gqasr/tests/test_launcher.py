@@ -75,7 +75,7 @@ def test_explicit_gpu_ids_override_inherited_single_gpu():
     assert "CUDA_VISIBLE_DEVICES=0,1,2,3,4,5,6,7" in result.stdout
 
 
-def test_scheduler_visibility_is_preserved():
+def test_default_overrides_inherited_single_gpu():
     result = launch("0", CUDA_VISIBLE_DEVICES="3", GPU_IDS="")
     assert result.returncode == 0, result.stderr
-    assert "CUDA_VISIBLE_DEVICES=3 " in result.stdout
+    assert "CUDA_VISIBLE_DEVICES=0,1,2,3,4,5,6,7 " in result.stdout

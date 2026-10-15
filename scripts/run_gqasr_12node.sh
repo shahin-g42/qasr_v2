@@ -59,8 +59,8 @@ export NCCL_IB_DISABLE="${NCCL_IB_DISABLE:-0}"
 export NCCL_NET_GDR_LEVEL="${NCCL_NET_GDR_LEVEL:-2}"
 export NCCL_BUFFSIZE="${NCCL_BUFFSIZE:-8388608}"
 export CUDA_DEVICE_MAX_CONNECTIONS="${CUDA_DEVICE_MAX_CONNECTIONS:-1}"
-# Respect scheduler-assigned visibility; GPU_IDS provides an explicit override.
-export GQASR_CUDA_VISIBLE_DEVICES="${GPU_IDS:-${CUDA_VISIBLE_DEVICES-0,1,2,3,4,5,6,7}}"
+# This dedicated-node launcher defaults to all eight GPUs; GPU_IDS overrides it.
+export GQASR_CUDA_VISIBLE_DEVICES="${GPU_IDS:-0,1,2,3,4,5,6,7}"
 export CUDA_VISIBLE_DEVICES="$GQASR_CUDA_VISIBLE_DEVICES"
 echo "GPU visibility: CUDA_VISIBLE_DEVICES=$CUDA_VISIBLE_DEVICES (override with GPU_IDS)"
 echo "GQASR $STAGE: rank=$NODE_RANK/12 master=$MASTER_ADDR:$MASTER_PORT config=$GQASR_CONFIG"

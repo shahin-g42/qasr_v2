@@ -11,7 +11,7 @@ preserved:
 changed:
   malayalam_training: ml_training_v2 excludes 3646 low-mark-ratio rows; quarantine basenames are also excluded from code-switch partners
   manifest_index: full_v81.sqlite completed on cluster using the filtered Malayalam file copied over its original path
-  batching: 2 microbatch x 10 accumulation replaces 20 x 1; same exact per-rank language
+  batching: 20 microbatch x 1 accumulation; same exact per-rank language
     quota and global batch 1920 at 96 GPUs
   initialization: new GQASR pretrained composite and random bridge; warm-up stage
     precedes full adaptation

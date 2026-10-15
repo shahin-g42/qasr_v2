@@ -58,8 +58,8 @@ language_batch_counts:
   ml: 1
   zh: 1
 expected_world_size: 96
-batch_size: 2
-accumulation_steps: 10
+batch_size: 20
+accumulation_steps: 1
 eval_batch_size: 4
 precision: bf16
 tf32: true

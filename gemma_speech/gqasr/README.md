@@ -16,7 +16,7 @@ The configs use the **22 training and 6 evaluation manifests** from QASR's `conf
 |---|---|
 | Machines / GPUs | 12 × 8 |
 | Arabic / English / Hindi / Malayalam / Chinese | 50% / 30% / 10% / 5% / 5% |
-| Microbatch / accumulation per GPU | 2 / 10 |
+| Microbatch / accumulation per GPU | 20 / 1 |
 | Effective global batch | 1,920 utterances per optimizer step |
 | Data workers | 4 per GPU, 32 per machine |
 | Precision | BF16 with FP32 parameters, TF32 enabled |
@@ -25,9 +25,32 @@ The configs use the **22 training and 6 evaluation manifests** from QASR's `conf
 | Targets | At most 512 tokens; overlong targets filtered, never truncated |
 | Full-stage learning rates | Bridge/audio 2e-5; decoder 1e-5; embeddings 5e-6 |
 
-Language quotas are exact across the ten accumulated microbatches on every rank: 10 Arabic, 6 English, 2 Hindi, 1 Malayalam, 1 Chinese. Sampling uses replacement with deterministic rank/update seeds, so resume does not require a corpus-sized permutation. This is not an epoch traversal. Microbatch accumulation preserves the source example count, but changes loss weighting and stochastic execution; it is not a numerically identical run.
+Language quotas are exact within each 20-example microbatch on every rank: 10 Arabic, 6 English, 2 Hindi, 1 Malayalam, 1 Chinese. Sampling uses replacement with deterministic rank/update seeds, so resume does not require a corpus-sized permutation. This is not an epoch traversal.
 
 The full stage now uses QASR's online code-switching, SpecAugment, speed perturbation, noise and codec simulation. The bridge warm-up remains unaugmented. Logging is JSONL and distributed training uses native DDP; this is not an exact reproduction of QASR's optimizer/runtime. H100 throughput and scaling still require cluster validation.
+
+
+## Launch on 12 nodes
+
+From the repository root, run rank 0 on node 051 and a unique rank 1–11 on each other node:
+
+```bash
+# Node inception-H100-hpc-051
+bash scripts/run_gqasr_12node.sh 0
+
+# Other nodes
+bash scripts/run_gqasr_12node.sh YOUR_RANK
+```
+
+This starts the bridge stage using the shared gemma_speech environment and completed SQLite index; it does not rescan. All nodes must have matching code, configs and shared artifacts. The launcher checks the environment and eight BF16-capable GPUs per node, then waits for all 96 processes to rendezvous. The default master is `inception-H100-hpc-051`; override it with a second positional argument. Bridge uses port 29611 and full uses 29612; any `MASTER_PORT` override must match across nodes.
+
+Preview without loading weights or touching GPUs with `DRY_RUN=1 bash scripts/run_gqasr_12node.sh 0`. Check the existing index with `bash scripts/run_gqasr_12node.sh 0 --preflight`. Microbatch 20 still requires memory/throughput validation on the cluster with real audio.
+
+After the bridge finishes successfully and publishes its `final/` artifact, launch the full stage on all nodes:
+
+```bash
+bash scripts/run_gqasr_12node.sh YOUR_RANK --stage full
+```
 
 ## Data preparation
 

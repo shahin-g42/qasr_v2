@@ -7,6 +7,14 @@ shift
 export OMP_NUM_THREADS="${OMP_NUM_THREADS:-2}"
 export HF_HUB_OFFLINE=1
 export TOKENIZERS_PARALLELISM=false
-exec torchrun --nnodes="${NNODES:-12}" --nproc_per_node="${NPROC_PER_NODE:-8}" \
-  --node_rank="$NODE_RANK" --master_addr="$MASTER_ADDR" --master_port="${MASTER_PORT:-29500}" \
-  -m gqasr train --config "$CONFIG" "$@"
+CMD=(torchrun --nnodes="${NNODES:-12}" --nproc_per_node="${NPROC_PER_NODE:-8}"
+  --node_rank="$NODE_RANK" --master_addr="$MASTER_ADDR" --master_port="${MASTER_PORT:-29500}"
+  --rdzv_backend=static --rdzv_endpoint="$MASTER_ADDR:${MASTER_PORT:-29500}"
+  --rdzv_conf="timeout=${GQASR_RDZV_TIMEOUT:-7200}"
+  -m gqasr train --config "$CONFIG" "$@")
+if [[ "${DRY_RUN:-0}" == 1 ]]; then
+  printf '%q ' "${CMD[@]}"
+  printf '\n'
+  exit 0
+fi
+exec "${CMD[@]}"

@@ -50,14 +50,17 @@ With Slurm, submit **from the repository root**:
 sbatch gemma_speech/cluster/submit_12node.sh gqasr bridge
 ```
 
-Without Slurm, run the following on each of the 12 nodes, changing `NODE_RANK` from 0 to 11 and using node 0's reachable address:
+Without Slurm, use the rank-based launcher from the repository root:
 
 ```bash
-export MASTER_ADDR=node0-hostname
-export MASTER_PORT=29500
-export NODE_RANK=0
-bash gemma_speech/cluster/gqasr_stage.sh bridge
+# Master inception-H100-hpc-051
+bash scripts/run_gqasr_12node.sh 0
+
+# Other nodes: unique ranks 1 through 11
+bash scripts/run_gqasr_12node.sh YOUR_RANK
 ```
+
+This uses the unified gemma_speech environment and existing completed index without rescanning. Preview with `DRY_RUN=1`; use `--preflight` for an index/config check. An optional second positional argument overrides the master hostname. Bridge defaults to port 29611; full defaults to 29612.
 
 If needed, configure `NCCL_SOCKET_IFNAME` and other fabric settings for your network. The scripts do not guess interface names. All nodes must use matching rank/world-size and rendezvous settings.
 
@@ -69,7 +72,7 @@ Wait for a successful bridge run and its `gemma_speech/gqasr/outputs/bridge/fina
 sbatch gemma_speech/cluster/submit_12node.sh gqasr full
 ```
 
-For manual launch, run `gqasr_stage.sh full` on every node using the same rank setup. The full stage uses the pretrained bridge-stage artifact and resets the optimizer. Defaults are microbatch 2 × accumulation 10 × 96 GPUs, yielding 1,920 utterances per optimizer update with the source's exact language quotas. The source's online code-switching and augmentations are disabled; see `gqasr/configs/source_mapping.yaml`.
+For manual launch, run `bash scripts/run_gqasr_12node.sh YOUR_RANK --stage full` on every node using the same ranks. The full stage uses the pretrained bridge-stage artifact and resets the optimizer. Defaults are microbatch 20 × accumulation 1 × 96 GPUs, yielding 1,920 utterances per optimizer update with the source's exact language quotas. The full stage enables QASR online code-switching and acoustic augmentations; bridge warm-up is unaugmented. Validate microbatch 20 memory usage on real cluster audio; see `gqasr/configs/source_mapping.yaml`.
 
 ## 6. Resume or transcribe
 

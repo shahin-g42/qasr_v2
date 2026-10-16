@@ -8,7 +8,7 @@ The base has approximately 901.9M parameters. The acoustic encoder and text deco
 
 ## Training recipe
 
-`configs/01_bridge_12node.yaml` trains the bridge for 1,000 optimizer steps with the encoder and decoder frozen. `configs/02_full_12node.yaml` starts from the bridge stage's `final/` artifact and keeps the encoder frozen and adapts the bridge, decoder and embeddings for 31,446 optimizer steps. Both expect 96 ranks.
+`configs/01_bridge_12node.yaml` trains the bridge for 1,000 optimizer steps with the encoder and decoder frozen. `configs/02_full_b40_12node.yaml` (the default full-stage config) starts from the bridge stage's `final/` artifact and keeps the encoder frozen and adapts the bridge, decoder and embeddings for 31,446 optimizer steps. All recipes expect 96 ranks. `configs/02_full_12node.yaml` retains batch 20 with accumulation 1 and 62,891 updates.
 
 The configs use the **22 training and 6 evaluation manifests** from QASR's `configs/v8.1/02_full_12node.yaml`. Their paths remain cluster paths. The source SHA and detailed mapping are in `configs/source_mapping.yaml`.
 
@@ -56,6 +56,16 @@ The revised next stage writes to outputs/full_b40_frozen. Its warmup/decay
 steps are 417/3125, evaluation and saves occur every 1042 updates, and learning
 rates are unchanged. The halved schedule preserves approximately the previous
 example budget. Start from bridge/final, not an old batch-20 optimizer checkpoint.
+
+To use the retained batch-20 recipe, set the same override on every node:
+
+```bash
+GQASR_CONFIG="$PWD/gemma_speech/gqasr/configs/02_full_12node.yaml" bash scripts/run_gqasr_12node.sh YOUR_RANK --stage full
+```
+
+It writes to outputs/full_b20_frozen, with 833 warmup steps, 6250 decay steps,
+and evaluation/saves every 2083 updates. Both recipes freeze the encoder and
+use the same learning rates, data index and augmentation settings.
 
 ## Data preparation
 

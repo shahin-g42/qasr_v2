@@ -42,7 +42,7 @@ if [[ "$STAGE" == bridge ]]; then
   CONFIG_NAME=01_bridge_12node.yaml
 else
   DEFAULT_PORT=29612
-  CONFIG_NAME=02_full_12node.yaml
+  CONFIG_NAME=02_full_b40_12node.yaml
 fi
 export MASTER_PORT="${MASTER_PORT:-$DEFAULT_PORT}"
 [[ "$MASTER_PORT" =~ ^[0-9]+$ ]] || { echo 'MASTER_PORT must be an integer' >&2; exit 2; }

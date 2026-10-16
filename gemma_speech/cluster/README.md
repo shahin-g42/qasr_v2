@@ -146,7 +146,12 @@ If the index was already built successfully, use `preflight` and skip `scan`. St
 
 The full launcher now starts a frozen-encoder stage from bridge/final, writing to
 outputs/full_b40_frozen. Only the bridge, decoder and embeddings train.
+The default config is gqasr/configs/02_full_b40_12node.yaml.
 Batch 40 with accumulation 1 across 96 GPUs gives global batch 3840.
+The retained 02_full_12node.yaml uses batch 20, accumulation 1, global batch 1920
+and writes to outputs/full_b20_frozen. Select it on every node with
+`GQASR_CONFIG="$PWD/gemma_speech/gqasr/configs/02_full_12node.yaml"`
+before the launcher command. Both recipes keep the encoder frozen.
 Per-rank quotas are ar=20, en=12, hi=4, ml=2, zh=2.
 
 The schedule preserves approximately the previous example budget: 31446 updates,

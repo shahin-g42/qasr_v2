@@ -64,7 +64,7 @@ def prepare(source, output):
     source, output = Path(source).resolve(), Path(output).resolve()
     src = yaml.safe_load(source.read_text())
     output.mkdir(parents=True, exist_ok=True)
-    for name in ("01_bridge_12node.yaml", "02_full_12node.yaml", "source_mapping.yaml"):
+    for name in ("01_bridge_12node.yaml", "02_full_12node.yaml", "02_full_b40_12node.yaml", "source_mapping.yaml"):
         if (output / name).exists():
             raise FileExistsError(output / name)
     cfg = dict(
@@ -142,6 +142,20 @@ def prepare(source, output):
         eval_steps=(src["eval_steps"] + 1) // 2,
         save_steps=(src["save_steps"] + 1) // 2,
         label_smoothing=src["label_smoothing"],
+    )
+    (output / "02_full_b40_12node.yaml").write_text(
+        yaml.safe_dump(cfg, sort_keys=False, allow_unicode=True)
+    )
+    cfg.update(
+        output_dir="../outputs/full_b20_frozen",
+        batch_size=20,
+        language_batch_counts=dict(src["language_batch_counts"]),
+        max_steps=src["max_steps"],
+        warmup_steps=src["warmup_steps"],
+        decay_steps=src["lr_scheduler_kwargs"]["num_decay_steps"],
+        eval_steps=src["eval_steps"],
+        save_steps=src["save_steps"],
+        logging_steps=10,
     )
     (output / "02_full_12node.yaml").write_text(
         yaml.safe_dump(cfg, sort_keys=False, allow_unicode=True)

@@ -38,7 +38,7 @@ def test_full_launch_and_resume():
     assert result.returncode == 0, result.stderr
     for expected in (
         "--node_rank=11", "--master_addr=master.example", "--master_port=29612",
-        "02_full_12node.yaml", "--resume /shared/checkpoint",
+        "02_full_b40_12node.yaml", "--resume /shared/checkpoint",
     ):
         assert expected in result.stdout
 
@@ -59,23 +59,24 @@ def test_wrong_world_size_rejected():
     assert launch("0", NNODES="1").returncode != 0
 
 
-@pytest.mark.parametrize("name", ["01_bridge_12node.yaml", "02_full_12node.yaml"])
+@pytest.mark.parametrize("name", ["01_bridge_12node.yaml", "02_full_12node.yaml", "02_full_b40_12node.yaml"])
 def test_training_batch_and_existing_index(name):
     cfg = load_config(ROOT / "gemma_speech/gqasr/configs" / name)
     full = name.startswith("02")
-    assert cfg["batch_size"] == (40 if full else 20)
+    large = "_b40_" in name
+    assert cfg["batch_size"] == (40 if large else 20)
     assert cfg["accumulation_steps"] == 1
-    assert cfg["expected_world_size"] * cfg["batch_size"] == (3840 if full else 1920)
+    assert cfg["expected_world_size"] * cfg["batch_size"] == (3840 if large else 1920)
     assert cfg["language_batch_counts"] == (
-        {"ar": 20, "en": 12, "hi": 4, "ml": 2, "zh": 2} if full else
+        {"ar": 20, "en": 12, "hi": 4, "ml": 2, "zh": 2} if large else
         {"ar": 10, "en": 6, "hi": 2, "ml": 1, "zh": 1}
     )
     if full:
         assert cfg["acoustic_layers"] == 0
-        assert cfg["max_steps"] == 31446
-        assert cfg["warmup_steps"] == 417
-        assert cfg["decay_steps"] == 3125
-        assert cfg["eval_steps"] == cfg["save_steps"] == 1042
+        assert cfg["max_steps"] == (31446 if large else 62891)
+        assert cfg["warmup_steps"] == (417 if large else 833)
+        assert cfg["decay_steps"] == (3125 if large else 6250)
+        assert cfg["eval_steps"] == cfg["save_steps"] == (1042 if large else 2083)
     assert cfg["index_path"].endswith("/indexes/full_v81.sqlite")
 
 
@@ -89,3 +90,27 @@ def test_default_overrides_inherited_single_gpu():
     result = launch("0", CUDA_VISIBLE_DEVICES="3", GPU_IDS="")
     assert result.returncode == 0, result.stderr
     assert "CUDA_VISIBLE_DEVICES=0,1,2,3,4,5,6,7 " in result.stdout
+
+
+def test_batch20_override():
+    config = ROOT / "gemma_speech/gqasr/configs/02_full_12node.yaml"
+    result = launch("0", "--stage", "full", GQASR_CONFIG=str(config))
+    assert result.returncode == 0, result.stderr
+    assert str(config) in result.stdout
+    assert "02_full_b40_12node.yaml" not in result.stdout
+
+
+def test_prepare_preserves_both_batch_recipes(tmp_path):
+    from gqasr.config import prepare
+
+    prepare(ROOT / "configs/v8.1/02_full_12node.yaml", tmp_path)
+    small = load_config(tmp_path / "02_full_12node.yaml")
+    large = load_config(tmp_path / "02_full_b40_12node.yaml")
+    for cfg, batch in ((small, 20), (large, 40)):
+        assert cfg["batch_size"] == batch
+        assert cfg["accumulation_steps"] == 1
+        assert cfg["acoustic_layers"] == 0
+        assert sum(cfg["language_batch_counts"].values()) == batch
+    assert small["index_path"] == large["index_path"]
+    assert small["output_dir"] != large["output_dir"]
+    assert abs(small["max_steps"] * 20 - large["max_steps"] * 40) <= 20

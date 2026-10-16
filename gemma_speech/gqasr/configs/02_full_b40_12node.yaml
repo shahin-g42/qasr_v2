@@ -1,0 +1,117 @@
+format_version: 1
+model_name: gqasr
+base_model: ../outputs/bridge/final
+output_dir: ../outputs/full_b40_frozen
+index_path: ../indexes/full_v81.sqlite
+train_manifest:
+  ar:
+  - /lustrefs/shared/shahin.konadath/workspace/train/stt/v2/qasr_v2/asr_cleaned_manifests/full_v1/ar/data/train_ar_ar_ae.jsonl
+  - /lustrefs/shared/shahin.konadath/workspace/train/stt/v2/qasr_v2/asr_cleaned_manifests/full_v1/ar/data/train_ar_ar_ae_train.jsonl
+  - /lustrefs/shared/shahin.konadath/workspace/train/stt/v2/qasr_v2/asr_cleaned_manifests/full_v1/ar/data/train_ar_camel_race.jsonl
+  - /lustrefs/shared/shahin.konadath/workspace/train/stt/v2/qasr_v2/asr_cleaned_manifests/full_v1/ar/data/train_ar_dialect_gulf.jsonl
+  - /lustrefs/shared/shahin.konadath/workspace/train/stt/v2/qasr_v2/asr_cleaned_manifests/full_v1/ar/data/train_ar_el_ar_v1.jsonl
+  - /lustrefs/shared/shahin.konadath/workspace/train/stt/v2/qasr_v2/asr_cleaned_manifests/full_v1/ar/data/train_ar_el_gen_v5.jsonl
+  - /lustrefs/shared/shahin.konadath/workspace/train/stt/v2/qasr_v2/asr_cleaned_manifests/full_v1/ar/data/train_ar_inworld_full.jsonl
+  - /lustrefs/shared/shahin.konadath/workspace/train/stt/v2/qasr_v2/asr_cleaned_manifests/full_v1/ar/data/train_ar_khalid_msa.jsonl
+  - /lustrefs/shared/shahin.konadath/workspace/train/stt/v2/qasr_v2/asr_cleaned_manifests/full_v1/ar/data/train_ar_q3asr.jsonl
+  - /lustrefs/shared/shahin.konadath/workspace/train/stt/v2/qasr_v2/asr_cleaned_manifests/full_v1/ar/data/train_ar_qudratech_batch2.jsonl
+  - /lustrefs/shared/shahin.konadath/workspace/train/stt/v2/qasr_v2/asr_cleaned_manifests/full_v1/ar/data/train_ar_qudratech_phase4.jsonl
+  - /lustrefs/shared/shahin.konadath/workspace/train/stt/v2/qasr_v2/asr_cleaned_manifests/full_v1/ar/data/train_ar_se_v1.jsonl
+  - /lustrefs/shared/shahin.konadath/workspace/train/stt/v2/qasr_v2/asr_cleaned_manifests/full_v1/ar/data/train_ar_spotify_v1.jsonl
+  en:
+  - /lustrefs/shared/shahin.konadath/workspace/train/stt/v2/qasr_v2/asr_cleaned_manifests/full_v1/en/data/train_en_anispeech.jsonl
+  - /lustrefs/shared/shahin.konadath/workspace/train/stt/v2/qasr_v2/asr_cleaned_manifests/full_v1/en/data/train_en_commentary.jsonl
+  - /lustrefs/shared/shahin.konadath/workspace/train/stt/v2/qasr_v2/asr_cleaned_manifests/full_v1/en/data/train_en_expresso.jsonl
+  - /lustrefs/shared/shahin.konadath/workspace/train/stt/v2/qasr_v2/asr_cleaned_manifests/full_v1/en/data/train_en_hifi_tts.jsonl
+  - /lustrefs/shared/shahin.konadath/workspace/train/stt/v2/qasr_v2/asr_cleaned_manifests/full_v1/en/data/train_en_inworld.jsonl
+  - /lustrefs/shared/shahin.konadath/workspace/train/stt/v2/qasr_v2/asr_cleaned_manifests/full_v1/en/data/train_en_q3asr.jsonl
+  hi:
+  - /lustrefs/shared/shahin.konadath/workspace/train/stt/v2/qasr_v2/asr_cleaned_manifests/full_v1/hi/data/train_hi_q3asr.jsonl
+  ml:
+  - /lustrefs/shared/shahin.konadath/workspace/train/stt/v2/qasr_v2/asr_cleaned_manifests/full_v1/ml/data/train_ml_itn_punct.jsonl
+  zh:
+  - /lustrefs/shared/shahin.konadath/workspace/train/stt/v2/qasr_v2/asr_cleaned_manifests/full_v1/zh/data/train_zh_q3asr.jsonl
+eval_manifest:
+  ar:
+  - /lustrefs/shared/shahin.konadath/workspace/train/stt/v2/qasr_v2/asr_cleaned_manifests/full_v1/ar/data/eval_ar_ar_ae.jsonl
+  - /lustrefs/shared/shahin.konadath/workspace/train/stt/v2/qasr_v2/asr_cleaned_manifests/full_v1/ar/data/eval_ar_inworld.jsonl
+  en:
+  - /lustrefs/shared/shahin.konadath/workspace/train/stt/v2/qasr_v2/asr_cleaned_manifests/full_v1/en/data/eval_en_inworld.jsonl
+  hi:
+  - /lustrefs/shared/shahin.konadath/workspace/train/stt/v2/qasr_v2/asr_cleaned_manifests/full_v1/hi/data/eval_hi_inworld.jsonl
+  ml:
+  - /lustrefs/shared/shahin.konadath/workspace/train/stt/v2/qasr_v2/asr_cleaned_manifests/full_v1/ml/data/eval_ml_inworld.jsonl
+  zh:
+  - /lustrefs/shared/shahin.konadath/workspace/train/stt/v2/qasr_v2/asr_cleaned_manifests/full_v1/zh/data/eval_zh_inworld.jsonl
+audio_root: null
+audio_path_rewrites:
+  /vast: /lustrefs/taiga/vast40
+min_duration_seconds: 0.1
+max_duration_seconds: 35.0
+max_target_length: 512
+eval_generation_max_new_tokens: 768
+eval_samples_per_language: 100
+language_batch_counts:
+  ar: 20
+  en: 12
+  hi: 4
+  ml: 2
+  zh: 2
+expected_world_size: 96
+batch_size: 40
+accumulation_steps: 1
+eval_batch_size: 4
+precision: bf16
+tf32: true
+workers: 4
+seed: 42
+data_seed: 42
+acoustic_layers: 0
+decoder_layers: 28
+train_embeddings: true
+gradient_checkpointing: true
+max_steps: 31446
+learning_rate: 2.0e-05
+acoustic_learning_rate: 2.0e-05
+decoder_learning_rate: 1.0e-05
+embedding_learning_rate: 5.0e-06
+weight_decay: 0.01
+grad_clip: 1.0
+warmup_steps: 417
+decay_steps: 3125
+min_lr_ratio: 0.1
+label_smoothing: 0.1
+eval_steps: 1042
+save_steps: 1042
+save_total_limit: 6
+logging_steps: 5
+source_config_sha256: bc0709a5a8289159941c81c5bbad841047444803aa20b9b98ff9869f4d3b46e8
+online_code_switching: true
+augmentation:
+  spec_augment:
+    enabled: true
+    num_time_masks: 2
+    max_time_mask_ratio: 0.05
+    num_freq_masks: 2
+    max_freq_mask_ratio: 0.15
+    p: 0.37
+  speed_perturb:
+    enabled: true
+    rate_range:
+    - 0.85
+    - 1.15
+    p: 0.37
+  noise_injection:
+    enabled: true
+    noise_dir: /lustrefs/shared/shahin.konadath/workspace/train/stt/musan
+    snr_range:
+    - 5.0
+    - 20.0
+    p: 0.37
+  codec_augment:
+    enabled: true
+    p: 0.37
+code_switch_probability: 0.4
+code_switch_index: /lustrefs/shared/shahin.konadath/workspace/train/stt/v2/qasr_v2/code_switch_indexes/cs_v1/assembled/index.json
+
+code_switch_exclude_manifest: /lustrefs/shared/shahin.konadath/workspace/train/stt/v2/qasr_v2/asr_cleaned_manifests/ml_training_v2/quarantine/ml_damaged_transcripts.jsonl

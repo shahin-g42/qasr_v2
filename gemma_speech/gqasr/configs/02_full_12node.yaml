@@ -1,7 +1,7 @@
 format_version: 1
 model_name: gqasr
 base_model: ../outputs/bridge/final
-output_dir: ../outputs/full_b40_frozen
+output_dir: ../outputs/full_b20_frozen
 index_path: ../indexes/full_v81.sqlite
 train_manifest:
   ar:
@@ -52,13 +52,13 @@ max_target_length: 512
 eval_generation_max_new_tokens: 768
 eval_samples_per_language: 100
 language_batch_counts:
-  ar: 20
-  en: 12
-  hi: 4
-  ml: 2
-  zh: 2
+  ar: 10
+  en: 6
+  hi: 2
+  ml: 1
+  zh: 1
 expected_world_size: 96
-batch_size: 40
+batch_size: 20
 accumulation_steps: 1
 eval_batch_size: 4
 precision: bf16
@@ -70,21 +70,21 @@ acoustic_layers: 0
 decoder_layers: 28
 train_embeddings: true
 gradient_checkpointing: true
-max_steps: 31446
+max_steps: 62891
 learning_rate: 2.0e-05
 acoustic_learning_rate: 2.0e-05
 decoder_learning_rate: 1.0e-05
 embedding_learning_rate: 5.0e-06
 weight_decay: 0.01
 grad_clip: 1.0
-warmup_steps: 417
-decay_steps: 3125
+warmup_steps: 833
+decay_steps: 6250
 min_lr_ratio: 0.1
 label_smoothing: 0.1
-eval_steps: 1042
-save_steps: 1042
+eval_steps: 2083
+save_steps: 2083
 save_total_limit: 6
-logging_steps: 5
+logging_steps: 10
 source_config_sha256: bc0709a5a8289159941c81c5bbad841047444803aa20b9b98ff9869f4d3b46e8
 online_code_switching: true
 augmentation:

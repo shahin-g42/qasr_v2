@@ -13,7 +13,7 @@ mkdir -p "$ROOT/logs" "$ROOT/gqasr/verification"
 exec > >(tee "$ROOT/logs/gqasr-${STAGE}-$(date -u +%Y%m%dT%H%M%SZ)-${NODE_RANK:-local}.log") 2>&1
 export TOKENIZERS_PARALLELISM=false
 BRIDGE="$ROOT/gqasr/configs/01_bridge_12node.yaml"
-FULL="$ROOT/gqasr/configs/02_full_12node.yaml"
+FULL="$ROOT/gqasr/configs/02_full_b40_12node.yaml"
 echo "GQASR stage=$STAGE host=$(hostname) time=$(date -u +%Y-%m-%dT%H:%M:%SZ)"
 case "$STAGE" in
   backward-audit)

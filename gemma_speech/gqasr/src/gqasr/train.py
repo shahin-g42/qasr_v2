@@ -17,6 +17,7 @@ from .bootstrap import copy_assets
 from .config import load_config
 from .data import Collator, ManifestIndex, StratifiedUpdateSampler, data_contract
 from .distributed import Runtime
+from .gradients import clip_gradients
 from .metrics import score_predictions
 from .modeling import GQASRForSpeechRecognition
 from .processing import GQASRProcessor
@@ -249,9 +250,7 @@ def _train(cfg, rt, resume):
             loss.backward()
         if not sync:
             continue
-        norm = torch.nn.utils.clip_grad_norm_(model.parameters(), cfg["grad_clip"])
-        if not rt.all_finite(norm):
-            raise FloatingPointError("nonfinite GQASR gradient")
+        clip_gradients(model, cfg["grad_clip"], rt, step)
         factor = schedule(step, cfg)
         for group in optimizer.param_groups:
             group["lr"] = group["base_lr"] * factor

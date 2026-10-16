@@ -89,3 +89,18 @@ def test_zero_failure_exists_without_hybrid():
         p.grad is not None and not torch.isfinite(p.grad).all()
         for p in encoder.parameters()
     )
+
+
+def test_multi_rank_replay_matches_training_sampler():
+    from gqasr.backward_audit import audit_batches
+    from gqasr.data import StratifiedUpdateSampler
+
+    cfg = {"language_batch_counts": {"ar": 2}, "batch_size": 2, "expected_world_size": 96, "data_seed": 42}
+    replay = list(audit_batches({"ar": 1000}, cfg, 2, 3, 0, 1))
+    assert [r for r, _, _ in replay] == [2, 3, 4]
+    for rank, batch, keys in replay:
+        expected = next(iter(StratifiedUpdateSampler(
+            {"ar": 1000}, {"ar": 2}, 2, 1, rank=rank, world=96, seed=42, augmentation_seeds=True,
+        )))
+        assert batch == 0
+        assert keys == expected

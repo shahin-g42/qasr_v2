@@ -3,6 +3,7 @@
 import argparse
 import json
 from contextlib import nullcontext
+from itertools import islice
 
 import torch
 
@@ -10,6 +11,17 @@ from .config import load_config
 from .data import Collator, ManifestIndex, StratifiedUpdateSampler
 from .modeling import GQASRForSpeechRecognition
 from .processing import GQASRProcessor
+
+
+def audit_batches(counts, cfg, rank, rank_count, update, batches):
+    for sampled_rank in range(rank, rank + rank_count):
+        sampler = StratifiedUpdateSampler(
+            counts, cfg["language_batch_counts"], cfg["batch_size"],
+            update + batches, rank=sampled_rank, world=cfg["expected_world_size"],
+            seed=cfg["data_seed"], start=update, augmentation_seeds=True,
+        )
+        for batch_number, keys in enumerate(islice(sampler, batches)):
+            yield sampled_rank, batch_number, keys
 
 
 def main():
@@ -21,11 +33,12 @@ def main():
     parser.add_argument("--no-augmentation", action="store_true")
     parser.add_argument("--anomaly", action="store_true")
     parser.add_argument("--rank", type=int, default=0, help="Replay this training sampler rank")
+    parser.add_argument("--rank-count", type=int, default=1)
     parser.add_argument("--update", type=int, default=0, help="Zero-based sampler update")
     parser.add_argument("--batches", type=int, default=1)
     args = parser.parse_args()
     cfg = load_config(args.config)
-    if not 0 <= args.rank < cfg["expected_world_size"] or args.update < 0 or args.batches < 1:
+    if not 0 <= args.rank < cfg["expected_world_size"] or args.update < 0 or args.batches < 1 or args.rank_count < 1 or args.rank + args.rank_count > cfg["expected_world_size"]:
         parser.error("invalid rank, update or batch count")
     if not torch.cuda.is_available():
         raise RuntimeError("Run the real-weight audit on a cluster CUDA GPU")
@@ -45,22 +58,17 @@ def main():
     index = ManifestIndex(cfg["index_path"], "train")
     processor = GQASRProcessor(cfg["base_model"])
     collator = Collator(processor, cfg, training=not args.no_augmentation)
-    sampler = StratifiedUpdateSampler(
-        index.counts, cfg["language_batch_counts"], cfg["batch_size"],
-        args.update + args.batches, rank=args.rank, world=cfg["expected_world_size"],
-        seed=cfg["data_seed"], start=args.update, augmentation_seeds=True,
-    )
     print(json.dumps({
         "event": "backward_audit_start", **vars(args), "model": cfg["base_model"],
         "optimizer_updates": False, "distributed_reduction": False,
         "torch": str(torch.__version__), "cuda": torch.version.cuda,
     }), flush=True)
-    for batch_number, keys in enumerate(sampler):
-        if batch_number >= args.batches:
-            break
+    for sampled_rank, batch_number, keys in audit_batches(
+        index.counts, cfg, args.rank, args.rank_count, args.update, args.batches
+    ):
         batch, rows = collator([index[key] for key in keys])
         print(json.dumps({
-            "event": "audit_batch", "batch": batch_number,
+            "event": "audit_batch", "rank": sampled_rank, "batch": batch_number,
             "rows": [{k: r.get(k) for k in ("id", "audio", "duration", "language", "augmentation_audit")} for r in rows],
             "feature_shape": list(batch["input_features"].shape),
             "valid_frames": batch["input_features_mask"].sum(-1).tolist(),
@@ -95,7 +103,7 @@ def main():
             group["finite_gradient_norm_fp64"] = float(torch.linalg.vector_norm(torch.stack(norms))) if norms else 0.0
             failed |= bool(group["nonfinite"] or group["missing"])
         print(json.dumps({
-            "event": "backward_audit_result", "batch": batch_number, "loss": float(loss.detach()),
+            "event": "backward_audit_result", "rank": sampled_rank, "batch": batch_number, "loss": float(loss.detach()),
             "groups": groups, "passed": not failed,
             "original_fp32_norm_finite": bool(torch.isfinite(fp32_norm)),
             "peak_allocated_gib": torch.cuda.max_memory_allocated(device) / 2**30,

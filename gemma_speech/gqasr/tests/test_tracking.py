@@ -126,3 +126,29 @@ def test_only_one_writer(tmp_path, sdk):
     first.finish()
     second.finish()
     assert len(sdk[0]) == 1
+
+
+def test_namespace_directory_is_not_sdk(tmp_path, monkeypatch):
+    monkeypatch.delenv("WANDB_MODE", raising=False)
+    monkeypatch.setitem(sys.modules, "wandb", SimpleNamespace(__path__=["/repo/wandb"]))
+    tracker = Tracker(cfg(tmp_path))
+    with pytest.warns(UserWarning, match="tracking disabled"):
+        tracker.log(record())
+    assert isinstance(tracker.error, ImportError)
+    assert "same environment" in str(tracker.error)
+    assert "Keep your existing" in str(tracker.error)
+    assert not (tmp_path / "wandb_tracking.json").exists()
+    tracker.finish()
+
+
+def test_follower_preserves_original_failure(tmp_path, sdk, monkeypatch):
+    def fail(**kwargs):
+        raise AttributeError("specific original failure")
+
+    monkeypatch.setattr(sys.modules["wandb"], "init", fail)
+    (tmp_path / "config.json").write_text(json.dumps(cfg(tmp_path)))
+    (tmp_path / "metrics.jsonl").write_text(json.dumps(record()) + "\n")
+    with pytest.warns(UserWarning), pytest.raises(RuntimeError) as caught:
+        follow(tmp_path)
+    assert isinstance(caught.value.__cause__, AttributeError)
+    assert str(caught.value.__cause__) == "specific original failure"

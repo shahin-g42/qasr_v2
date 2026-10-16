@@ -48,12 +48,21 @@ class Tracker:
         self.lock = None
         self.last_step = -1
         self.previous = None
+        self.error = None
         self.state_path = Path(cfg["output_dir"]) / "wandb_tracking.json"
 
     def start(self):
         import fcntl
 
         import wandb
+
+        if not callable(getattr(wandb, "init", None)) or not callable(getattr(wandb, "Settings", None)):
+            raise ImportError(
+                "The imported 'wandb' is not the W&B SDK. A local wandb/ log directory "
+                "can be imported as a namespace when the SDK is missing. Install into "
+                "the same environment: gemma_speech/.venv/bin/python -m pip install "
+                "'wandb>=0.19,<1'. Keep your existing wandb/ logs."
+            )
 
         self.lock = (self.state_path.parent / "wandb_follower.lock").open("a")
         fcntl.flock(self.lock, fcntl.LOCK_EX | fcntl.LOCK_NB)
@@ -111,8 +120,9 @@ class Tracker:
             self.last_step = record["step"]
             self.save_state()
         except Exception as exc:
+            self.error = exc
             # A tracking outage must not strand the other distributed ranks.
-            warnings.warn(f"W&B tracking disabled ({type(exc).__name__}); metrics.jsonl remains authoritative.", stacklevel=2)
+            warnings.warn(f"W&B tracking disabled ({type(exc).__name__}); metrics.jsonl remains authoritative. Check the tracking environment; the standalone follower reports the original traceback.", stacklevel=2)
             self.enabled = False
 
     def finish(self, exit_code=0):
@@ -147,7 +157,7 @@ def follow(output, follow=False, project="qasr", name=None):
                     continue
                 tracker.log(json.loads(line))
                 if not tracker.enabled:
-                    raise RuntimeError("W&B follower stopped; fix tracking setup and rerun")
+                    raise RuntimeError("W&B follower stopped; see the original exception above") from tracker.error
     finally:
         tracker.finish()
 

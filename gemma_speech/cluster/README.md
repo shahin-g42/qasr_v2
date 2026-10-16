@@ -231,3 +231,44 @@ gemma_speech/.venv/bin/python -m gqasr.console \
 The viewer is read-only and can run alongside the W&B follower. It shows only
 events recorded in metrics.jsonl; it cannot reconstruct checkpoint completion
 or validation-start messages from older runs. Omit --follow for a one-time report.
+
+## Original Qwen3-ASR-1.7B Chinese comparison
+
+Run on a spare cluster GPU, with the shared filesystem mounted at the same paths.
+Uses Qwen's official `Qwen/Qwen3-ASR-1.7B-hf` Transformers-format checkpoint,
+including its original audio encoder and decoder. Uses the existing Transformers
+5.19 environment; do not install qwen-asr or downgrade Transformers.
+
+```bash
+git pull origin main
+bash gemma_speech/cluster/qwen_asr_baseline.sh download
+GPU_IDS=0 EVAL_STEP=7294 bash gemma_speech/cluster/qwen_asr_baseline.sh run
+```
+
+Download pins the resolved HF revision and records it locally. Inference is offline.
+Default batch size is 1 to exclude batch-padding effects. Both automatic language
+detection (the primary comparison) and forced Chinese (diagnostic) run with greedy
+decoding and a 768-token limit. References are never supplied to the model.
+Optional run arguments: `--batch-size 2`, `--modes auto`, `--device cpu`.
+Select another saved evaluation with EVAL_STEP. GQASR_RUN_DIR, QWEN_BASELINE_MODEL,
+GEMMA_SPEECH_ENV and BASELINE_OUTPUT can override paths.
+
+Exactly the Chinese IDs from the chosen saved predictions are looked up in the
+SQLite index, and reference text must match before loading the baseline.
+No rescan, training or modification of model weights is performed.
+Outputs go to a new gqasr/verification/qwen17b-zh-STEP-TIMESTAMP directory:
+
+- samples.jsonl: IDs, audio paths, references and existing GQASR hypotheses.
+- predictions-auto.jsonl / predictions-chinese.jsonl: baseline transcription,
+  language, raw generated text, generation-limit flag and original comparison data.
+- scores.json: GQASR and baseline strict WER/CER, punctuation-insensitive scores,
+  no-Han output counts and generation-limit counts. Chinese WER uses whitespace
+  splitting and is diagnostic; prioritize CER. No ITN normalization is applied.
+- provenance.json: source revision when downloaded by the script, input/config
+  hashes, library versions and inference settings.
+
+Progress prints after each batch. Existing output directories are never overwritten.
+After interruption, use a new output directory for a complete rerun.
+A model agreeing with a reference is corroboration, not proof of label accuracy;
+disagreements still need listening. The pretrained-model GPU run is cluster-side;
+local tests cover sample matching, reference guards and scoring.

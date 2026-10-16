@@ -21,6 +21,7 @@ from .gradients import clip_gradients
 from .metrics import score_predictions
 from .modeling import GQASRForSpeechRecognition
 from .processing import GQASRProcessor
+from .tracking import Tracker, training_config
 
 
 def schedule(step, cfg):
@@ -111,13 +112,17 @@ def save_checkpoint(model, optimizer, cfg, metadata, step, output, rng, final=Fa
 def train(config, resume=None):
     cfg = load_config(config)
     rt = Runtime(cfg["precision"])
+    tracker = Tracker(cfg, main=rt.main, resume=resume)
+    exit_code = 1
     try:
-        _train(cfg, rt, resume)
+        _train(cfg, rt, resume, tracker)
+        exit_code = 0
     finally:
+        tracker.finish(exit_code)
         rt.close()
 
 
-def _train(cfg, rt, resume):
+def _train(cfg, rt, resume, tracker=None):
     if rt.world != cfg["expected_world_size"]:
         raise ValueError(f"config expects {cfg['expected_world_size']} ranks; launched {rt.world}")
     torch.manual_seed(cfg["seed"] + rt.rank)
@@ -162,7 +167,7 @@ def _train(cfg, rt, resume):
     for group, params in parameters.items():
         if params:
             lr = cfg["learning_rate"] if group == "bridge" else cfg[group + "_learning_rate"]
-            groups.append({"params": params, "lr": lr, "base_lr": lr})
+            groups.append({"params": params, "lr": lr, "base_lr": lr, "name": group})
     optimizer = torch.optim.AdamW(groups, weight_decay=cfg["weight_decay"])
     step = 0
     if resume:
@@ -171,16 +176,18 @@ def _train(cfg, rt, resume):
         )
 
         def comparable(c):
-            return {k: v for k, v in c.items() if k not in {"output_dir", "workers"}}
+            return training_config(c)
 
         if (
             comparable(saved["config"]) != comparable(cfg)
             or saved["index_metadata"] != dataset.metadata
         ):
             raise ValueError(
-                "resume requires identical config/index; only output_dir/workers may change"
+                "resume requires identical config/index; only output_dir/workers/logging settings may change"
             )
         optimizer.load_state_dict(saved["optimizer"])
+        for group, name in zip(optimizer.param_groups, (g for g, p in parameters.items() if p), strict=True):
+            group["name"] = name
         step = saved["step"]
         torch.set_rng_state(saved["rng"][rt.rank]["cpu"])
         if rt.device.type == "cuda":
@@ -250,7 +257,7 @@ def _train(cfg, rt, resume):
             loss.backward()
         if not sync:
             continue
-        clip_gradients(model, cfg["grad_clip"], rt, step)
+        gradient_norm = clip_gradients(model, cfg["grad_clip"], rt, step)
         factor = schedule(step, cfg)
         for group in optimizer.param_groups:
             group["lr"] = group["base_lr"] * factor
@@ -260,6 +267,8 @@ def _train(cfg, rt, resume):
         record = {
             "step": step,
             "rank0_last_microbatch_loss": float(result["loss"].detach()),
+            "rank0_gradient_norm": float(gradient_norm),
+            "learning_rates": {g.get("name", str(i)): g["lr"] for i, g in enumerate(optimizer.param_groups)},
             "elapsed_seconds": time.monotonic() - started,
             "rank0_last_microbatch_augmentation": [r.get("augmentation_audit", {}) for r in rows],
         }
@@ -274,6 +283,8 @@ def _train(cfg, rt, resume):
             with (output / "metrics.jsonl").open("a") as f:
                 f.write(json.dumps(record) + "\n")
             print(json.dumps(record), flush=True)
+            if tracker is not None:
+                tracker.log(record)
         if step % cfg["save_steps"] == 0 or step == cfg["max_steps"]:
             rng = {"cpu": torch.get_rng_state()}
             if rt.device.type == "cuda":

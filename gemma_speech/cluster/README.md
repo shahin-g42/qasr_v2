@@ -165,3 +165,47 @@ original valid frames. Padding is untouched. Gradient clipping uses standard
 PyTorch norms again; nonfinite-gradient diagnostics remain. These changes do not
 require a rescan or base-model re-export. Online streaming additions are not part
 of this change.
+
+## W&B curves for GQASR
+
+All three recipes enable `report_to: wandb`, `wandb_project: qasr`, and a
+stage/batch-specific `run_name`. Install the tracking extra in the shared environment
+before a new launch: `gemma_speech/.venv/bin/python -m pip install 'wandb>=0.19,<1'`.
+Authenticate using `gemma_speech/.venv/bin/wandb login` (or an existing
+WANDB_API_KEY environment variable; do not put credentials in YAML).
+WANDB_ENTITY and WANDB_DIR retain the SDK's standard environment behavior.
+WANDB_MODE=offline records locally for later `wandb sync`; WANDB_MODE=disabled
+turns tracking off. Only global rank zero starts a run.
+
+Training loss is explicitly labeled rank0_last_microbatch_loss, not global loss.
+New launches also record rank-0 pre-clipping gradient norm and each optimizer
+group's learning rate. Validation includes strict and Arabic-normalized WER/CER
+for each language/dialect, as available. WER/CER are ratios, not percentages.
+Throughput is measured between logged updates and includes any intervening
+evaluation/checkpoint delays. No audio, transcripts, or model artifacts are uploaded.
+
+For the ALREADY RUNNING batch-40 job, do not restart training. After pulling this
+code and installing/authenticating W&B, run this once in a separate terminal on
+one node (keep it open, e.g. in tmux):
+
+```bash
+gemma_speech/.venv/bin/python -m gqasr.tracking \
+  --output gemma_speech/gqasr/outputs/full_b40_frozen \
+  --project qasr --name gqasr-full-b40 --follow
+```
+
+The follower imports complete existing metrics.jsonl records and tails new ones.
+It cannot recover learning rates/gradient norms absent from the old JSONL.
+Omit --follow to import a completed run. An exclusive lock prevents duplicate
+writers. For online follower restarts, the saved run ID and last submitted step
+avoid replaying old records. SDK submission is not a server durability guarantee;
+the JSONL remains authoritative. Offline segments should each be synced;
+offline SDK resume does not guarantee merging segments into one run.
+
+A training checkpoint resumed into a fresh output directory gets a new W&B run
+with absolute optimizer steps (avoids overlapping history after checkpoint rollback).
+Logging-only config changes are allowed on resume; training/data changes remain
+rejected. A W&B error warns and disables tracking for that process, without
+aborting distributed training or stopping JSONL logging. The follower exits on
+tracking errors so it can be corrected and restarted. Pulling code does not add
+new telemetry to an already-running Python process.

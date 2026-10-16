@@ -18,7 +18,7 @@ changed:
     precedes full adaptation
   workers: 4 per GPU instead of 12, leaving CPU headroom on 96-core nodes
   distributed: native DDP, not DeepSpeed ZeRO-2
-  logging: local JSONL, not wandb
+  logging: local JSONL plus rank-zero W&B metrics
 full_stage_augmentations:
   code_switch_probability: 0.4
   code_switch_index: /lustrefs/shared/shahin.konadath/workspace/train/stt/v2/qasr_v2/code_switch_indexes/cs_v1/assembled/index.json

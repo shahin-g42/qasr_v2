@@ -8,7 +8,7 @@ exec > >(tee "$ROOT/logs/setup-$(date -u +%Y%m%dT%H%M%SZ).log") 2>&1
 source "$ENV_DIR/bin/activate"
 python -m pip install --upgrade pip
 python -m pip install torch==2.11.0 --index-url https://download.pytorch.org/whl/cu128
-python -m pip install -e "$ROOT[dev]"
+python -m pip install -e "$ROOT[dev,tracking]"
 python -m pip check
 python -m pip freeze > "$ROOT/logs/environment.lock.txt"
 python - <<'PY'

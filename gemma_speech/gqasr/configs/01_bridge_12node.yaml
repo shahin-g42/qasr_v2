@@ -90,3 +90,7 @@ online_code_switching: false
 augmentation: false
 
 code_switch_exclude_manifest: /lustrefs/shared/shahin.konadath/workspace/train/stt/v2/qasr_v2/asr_cleaned_manifests/ml_training_v2/quarantine/ml_damaged_transcripts.jsonl
+
+report_to: wandb
+wandb_project: qasr
+run_name: gqasr-bridge-b20

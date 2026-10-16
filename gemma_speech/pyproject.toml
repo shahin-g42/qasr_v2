@@ -16,6 +16,7 @@ dependencies = [
 
 [project.optional-dependencies]
 vocoder = ["vocos==0.1.0", "torchaudio==2.11.0"]
+tracking = ["wandb>=0.19,<1"]
 dev = ["pytest>=8.3", "ruff>=0.16"]
 
 [project.scripts]

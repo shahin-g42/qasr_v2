@@ -70,6 +70,9 @@ def prepare(source, output):
     cfg = dict(
         format_version=1,
         model_name="gqasr",
+        report_to="wandb",
+        wandb_project=src.get("wandb_project", "qasr"),
+        run_name="gqasr-bridge-b20",
         base_model="../models/gqasr-base",
         output_dir="../outputs/bridge",
         index_path="../indexes/full_v81.sqlite",
@@ -125,6 +128,7 @@ def prepare(source, output):
         augmentation=src.get("augmentation", False),
         base_model="../outputs/bridge/final",
         output_dir="../outputs/full_b40_frozen",
+        run_name="gqasr-full-b40",
         batch_size=40,
         accumulation_steps=1,
         language_batch_counts={k: 2 * v for k, v in src["language_batch_counts"].items()},
@@ -148,6 +152,7 @@ def prepare(source, output):
     )
     cfg.update(
         output_dir="../outputs/full_b20_frozen",
+        run_name="gqasr-full-b20",
         batch_size=20,
         language_batch_counts=dict(src["language_batch_counts"]),
         max_steps=src["max_steps"],
@@ -177,7 +182,7 @@ def prepare(source, output):
             "initialization": "new GQASR pretrained composite and random bridge; warm-up stage precedes full adaptation",
             "workers": "4 per GPU instead of 12, leaving CPU headroom on 96-core nodes",
             "distributed": "native DDP, not DeepSpeed ZeRO-2",
-            "logging": "local JSONL, not wandb",
+            "logging": "local JSONL plus rank-zero W&B metrics",
         },
         "full_stage_augmentations": {
             "code_switch_probability": src.get("code_switch_probability"),

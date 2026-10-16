@@ -209,3 +209,25 @@ rejected. A W&B error warns and disables tracking for that process, without
 aborting distributed training or stopping JSONL logging. The follower exits on
 tracking errors so it can be corrected and restarted. Pulling code does not add
 new telemetry to an already-running Python process.
+
+## Readable training console
+
+New launches print compact training summaries, code-switch outcome/pair counts,
+a full validation table (all metric groups, counts, WER/CER and error totals),
+and explicit validation-start/checkpoint-saved messages. WER/CER are displayed
+as percentages in the console; JSONL and W&B retain ratios. Full per-example
+augmentation details remain in metrics.jsonl. Set GQASR_CONSOLE_FORMAT=json to
+retain the previous raw console format.
+
+For an already-running job, view its existing and future records in a separate
+terminal without restarting training:
+
+```bash
+gemma_speech/.venv/bin/python -m gqasr.console \
+  --metrics gemma_speech/gqasr/outputs/full_b40_frozen/metrics.jsonl \
+  --from-step 1042 --follow
+```
+
+The viewer is read-only and can run alongside the W&B follower. It shows only
+events recorded in metrics.jsonl; it cannot reconstruct checkpoint completion
+or validation-start messages from older runs. Omit --follow for a one-time report.

@@ -15,6 +15,7 @@ from torch.utils.data import DataLoader
 
 from .bootstrap import copy_assets
 from .config import load_config
+from .console import print_record
 from .data import Collator, ManifestIndex, StratifiedUpdateSampler, data_contract
 from .distributed import Runtime
 from .gradients import clip_gradients
@@ -105,6 +106,7 @@ def save_checkpoint(model, optimizer, cfg, metadata, step, output, rng, final=Fa
         shutil.rmtree(staging)
     (output / "latest.json.tmp").write_text(json.dumps({"checkpoint": name, "step": step}))
     os.replace(output / "latest.json.tmp", output / "latest.json")
+    print(f"[GQASR] Checkpoint saved at update {step:,}: {destination}", flush=True)
     for old in sorted(output.glob("checkpoint-*"))[: -cfg["save_total_limit"]]:
         shutil.rmtree(old)
 
@@ -273,6 +275,8 @@ def _train(cfg, rt, resume, tracker=None):
             "rank0_last_microbatch_augmentation": [r.get("augmentation_audit", {}) for r in rows],
         }
         if step % cfg["eval_steps"] == 0 or step == cfg["max_steps"]:
+            if rt.main:
+                print(f"[GQASR] Validation started at update {step:,}", flush=True)
             scores, predictions = evaluate(model, validation, eval_collator, cfg, rt)
             record["validation"] = scores
             if rt.main:
@@ -282,7 +286,7 @@ def _train(cfg, rt, resume, tracker=None):
         if rt.main and (step == 1 or step % cfg["logging_steps"] == 0 or "validation" in record):
             with (output / "metrics.jsonl").open("a") as f:
                 f.write(json.dumps(record) + "\n")
-            print(json.dumps(record), flush=True)
+            print_record(record)
             if tracker is not None:
                 tracker.log(record)
         if step % cfg["save_steps"] == 0 or step == cfg["max_steps"]:

@@ -2,7 +2,7 @@
 set -euo pipefail
 ROOT=$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)
 source "${GEMMA_SPEECH_ENV:-$ROOT/.venv}/bin/activate"
-STAGE="${1:?Use download or run}"
+STAGE="${1:?Use download, run or train}"
 shift
 MODEL_DIR="${QWEN_BASELINE_MODEL:-$ROOT/models/qwen3-asr-1.7b-hf}"
 RUN_DIR="${GQASR_RUN_DIR:-$ROOT/gqasr/outputs/full_b40_frozen}"
@@ -31,5 +31,14 @@ PY
       --output "${BASELINE_OUTPUT:-$ROOT/gqasr/verification/qwen17b-zh-${EVAL_STEP:-7294}-$(date -u +%Y%m%dT%H%M%SZ)}" \
       "$@"
     ;;
-  *) echo "Unknown stage: $STAGE (use download or run)" >&2; exit 2 ;;
+  train)
+    export HF_HUB_OFFLINE=1
+    export CUDA_VISIBLE_DEVICES="${GPU_IDS:-0}"
+    python -m gqasr.qwen_baseline \
+      --run-config "$RUN_DIR/config.json" --train \
+      --model "$MODEL_DIR" \
+      --output "${BASELINE_OUTPUT:-$ROOT/gqasr/verification/qwen17b-zh-train-$(date -u +%Y%m%dT%H%M%SZ)}" \
+      "$@"
+    ;;
+  *) echo "Unknown stage: $STAGE (use download, run or train)" >&2; exit 2 ;;
 esac

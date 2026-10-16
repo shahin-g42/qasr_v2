@@ -2,12 +2,13 @@
 import argparse
 import hashlib
 import json
+import random
 import sqlite3
 import time
 import unicodedata
 from pathlib import Path
 
-from .metrics import score_predictions
+from .metrics import edit_distance, score_predictions
 from .text import normalize_text
 
 MODEL = "Qwen/Qwen3-ASR-1.7B-hf"
@@ -42,6 +43,59 @@ def select_samples(index, predictions):
     return samples
 
 
+
+def select_training_samples(index, per_group=500, seed=42):
+    """Uniform reservoir sample within each script stratum; never use ORDER BY RANDOM."""
+    pools = {"han_only": [], "han_latin": []}
+    counts = {key: 0 for key in pools}
+    rng = random.Random(seed)
+    with sqlite3.connect(f"file:{Path(index).resolve()}?mode=ro", uri=True) as db:
+        for ordinal, audio, text, duration, source, line in db.execute(
+            "SELECT ordinal,audio,text,duration,source,line FROM samples "
+            "WHERE split='train' AND language='zh' ORDER BY ordinal"
+        ):
+            has_han = any("\u3400" <= c <= "\u9fff" for c in text)
+            if not has_han:
+                raise ValueError(f"Chinese training record has no Han characters: {ordinal}")
+            group = "han_latin" if any(c.isascii() and c.isalpha() for c in text) else "han_only"
+            counts[group] += 1
+            sample = dict(id=f"train:zh:{ordinal}", language="zh", reference=text,
+                          audio=audio, duration=duration, source=source, source_line=line,
+                          stratum=group)
+            pool = pools[group]
+            if len(pool) < per_group:
+                pool.append(sample)
+            else:
+                position = rng.randrange(counts[group])
+                if position < per_group:
+                    pool[position] = sample
+    if any(n < per_group for n in counts.values()):
+        raise ValueError(f"Not enough rows for {per_group} per group: {counts}")
+    samples = sorted([r for pool in pools.values() for r in pool], key=lambda r: int(r["id"].split(":")[-1]))
+    for row in samples:
+        if not Path(row["audio"]).is_file():
+            raise FileNotFoundError(row["audio"])
+    return samples, counts
+
+
+def review_rows(rows):
+    reviewed = []
+    for row in rows:
+        ref = normalize_text(row["reference"]).replace(" ", "")
+        hyp = normalize_text(row["hypothesis"]).replace(" ", "")
+        def plain(text):
+            return "".join(c for c in text if not unicodedata.category(c).startswith("P"))
+        clean_ref, clean_hyp = plain(ref), plain(hyp)
+        errors = edit_distance(ref, hyp)
+        clean_errors = edit_distance(clean_ref, clean_hyp)
+        reviewed.append({**row, "strict_character_errors": errors,
+                         "strict_cer": errors / len(ref) if ref else None,
+                         "punctuation_insensitive_cer": clean_errors / len(clean_ref) if clean_ref else None,
+                         "reference_has_latin": any(c.isascii() and c.isalpha() for c in ref),
+                         "hypothesis_has_latin": any(c.isascii() and c.isalpha() for c in hyp)})
+    return sorted(reviewed, key=lambda r: r["punctuation_insensitive_cer"] or 0, reverse=True)
+
+
 def summary(rows):
     strict = score_predictions(rows)["strict/all"]
     def no_punctuation(text):
@@ -68,12 +122,18 @@ def run(args):
     from ._qasr.audio import load_mono_audio
 
     cfg = json.loads(Path(args.run_config).read_text())
-    samples = select_samples(cfg["index_path"], args.predictions)
+    population = None
+    if args.train:
+        samples, population = select_training_samples(cfg["index_path"], args.per_group, args.seed)
+    else:
+        samples = select_samples(cfg["index_path"], args.predictions)
     output = Path(args.output)
     output.mkdir(parents=True, exist_ok=False)
     (output / "samples.jsonl").write_text(
         "".join(json.dumps(r, ensure_ascii=False) + "\n" for r in samples)
     )
+    print(json.dumps({"event": "samples_selected", "count": len(samples),
+                      "split": "train" if args.train else "eval", "population": population}), flush=True)
     processor = AutoProcessor.from_pretrained(args.model, local_files_only=True)
     processor.tokenizer.padding_side = "left"
     dtype = torch.bfloat16 if args.device.startswith("cuda") else torch.float32
@@ -90,13 +150,18 @@ def run(args):
         "source_snapshot": json.loads((Path(args.model) / "baseline_source.json").read_text())
         if (Path(args.model) / "baseline_source.json").exists() else None,
         "model_config_sha256": hashlib.sha256(config_file.read_bytes()).hexdigest(),
-        "predictions_sha256": hashlib.sha256(Path(args.predictions).read_bytes()).hexdigest(),
+        "predictions_sha256": hashlib.sha256(Path(args.predictions).read_bytes()).hexdigest() if args.predictions else None,
+        "sample_manifest_sha256": hashlib.sha256((output / "samples.jsonl").read_bytes()).hexdigest(),
+        "selection": {"split": "train" if args.train else "eval", "seed": args.seed,
+                      "per_group": args.per_group if args.train else None, "population": population},
         "torch": str(torch.__version__), "transformers": transformers.__version__,
         "max_new_tokens": args.max_new_tokens, "batch_size": args.batch_size,
         "modes": args.modes, "device": args.device, "dtype": str(dtype),
         "decode": "greedy; no reference text or hotwords supplied",
     }, indent=2))
-    scores = {"gqasr": summary([{**r, "hypothesis": r["gqasr_hypothesis"]} for r in samples])}
+    scores = {} if args.train else {
+        "gqasr": summary([{**r, "hypothesis": r["gqasr_hypothesis"]} for r in samples])
+    }
     started = time.monotonic()
     for mode in args.modes:
         records = []
@@ -106,7 +171,7 @@ def run(args):
                 waves = [np.asarray(load_mono_audio(r["audio"], 16000), dtype=np.float32) for r in batch]
                 inputs = processor.apply_transcription_request(
                     audio=waves, language="Chinese" if mode == "chinese" else None,
-                    prompt="", return_tensors="pt", padding=True, sampling_rate=16000,
+                    prompt="", processor_kwargs={"return_tensors": "pt", "padding": True, "sampling_rate": 16000},
                 ).to(model.device, model.dtype)
                 with torch.inference_mode():
                     generated = model.generate(
@@ -132,6 +197,19 @@ def run(args):
                                   "done": len(records), "total": len(samples),
                                   "elapsed_seconds": round(time.monotonic() - started, 1)}), flush=True)
         scores[mode] = summary(records)
+        if args.train:
+            scores[mode]["by_stratum"] = {
+                group: summary([r for r in records if r["stratum"] == group])
+                for group in ("han_only", "han_latin")
+            }
+            scores[mode]["sampling_note"] = (
+                "Equal-size script strata, not a population-weighted corpus estimate. "
+                "Han+Latin is a text heuristic, not proof of spoken code switching. "
+                "Forced Chinese may suppress correctly spoken English; use auto for label review."
+            )
+        (output / f"review-{mode}.jsonl").write_text(
+            "".join(json.dumps(r, ensure_ascii=False) + "\n" for r in review_rows(records))
+        )
         (output / "scores.json").write_text(json.dumps(scores, indent=2))
         print(f"{mode}: strict CER={scores[mode]['strict']['cer']:.2%}; "
               f"no-Han={scores[mode]['no_han_predictions']}; "
@@ -141,7 +219,11 @@ def run(args):
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--run-config", required=True)
-    parser.add_argument("--predictions", required=True)
+    selection = parser.add_mutually_exclusive_group(required=True)
+    selection.add_argument("--predictions")
+    selection.add_argument("--train", action="store_true")
+    parser.add_argument("--per-group", type=int, default=500)
+    parser.add_argument("--seed", type=int, default=42)
     parser.add_argument("--model", required=True, help="Local official -hf snapshot")
     parser.add_argument("--output", required=True, help="New directory; never overwritten")
     parser.add_argument("--device", default="cuda:0")
@@ -149,7 +231,7 @@ def main():
     parser.add_argument("--max-new-tokens", type=int, default=768)
     parser.add_argument("--modes", nargs="+", choices=["auto", "chinese"], default=["auto", "chinese"])
     args = parser.parse_args()
-    if args.batch_size < 1 or args.max_new_tokens < 1 or len(set(args.modes)) != len(args.modes):
+    if args.per_group < 1 or args.batch_size < 1 or args.max_new_tokens < 1 or len(set(args.modes)) != len(args.modes):
         parser.error("Positive batch/token counts and unique modes are required")
     run(args)
 

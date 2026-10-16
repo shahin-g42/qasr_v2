@@ -272,3 +272,28 @@ After interruption, use a new output directory for a complete rerun.
 A model agreeing with a reference is corroboration, not proof of label accuracy;
 disagreements still need listening. The pretrained-model GPU run is cluster-side;
 local tests cover sample matching, reference guards and scoring.
+
+### Larger Chinese training-label audit
+
+Reuse the downloaded baseline on a spare GPU:
+```bash
+GPU_IDS=0 bash gemma_speech/cluster/qwen_asr_baseline.sh train
+```
+
+Defaults to 1,000 distinct indexed training records: 500 with Han characters and
+no ASCII letters, and 500 with both. Sampling is deterministic (seed 42), uniform
+within each stratum, with bounded-memory reservoir sampling. No expensive SQLite
+random sort, rescanning audio corpus, or changes to the index are needed.
+Both auto-detection and forced-Chinese modes run. Override with --per-group 1000
+for 2,000 examples, or --seed 43 for another sample. Batch size remains 1 by default.
+
+Outputs go to a new qwen17b-zh-train-TIMESTAMP directory. scores.json includes
+separate strata; the pooled score describes this balanced audit sample, not the
+population-weighted training corpus. No GQASR training-set inference is performed.
+review-auto.jsonl and review-chinese.jsonl rank disagreements by punctuation-insensitive
+CER and retain source manifest/line, audio path, reference, raw output and Latin-letter
+presence. The exact sample and selection seed/population counts are saved.
+Use automatic mode as the primary label check: forced Chinese may suppress English
+that really is present in mixed speech. Latin-letter presence is a heuristic, not
+a verified language label. Neither mode supplies ground truth; listen to flagged
+clips before correcting labels. ITN differences are still included in CER.

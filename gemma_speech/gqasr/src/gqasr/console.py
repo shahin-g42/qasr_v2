@@ -11,14 +11,27 @@ def percent(value):
     return "n/a" if value is None else f"{100 * value:.2f}%"
 
 
-def format_record(record):
+def format_record(record, config=None):
     step = record["step"]
     elapsed = record.get("elapsed_seconds", 0)
+    config = config or {}
+    total = config.get("max_steps")
+    progress = f"{step:,}"
+    if total and total > 0:
+        progress += f" / {total:,} ({100 * step / total:.2f}%) | remaining {max(0, total - step):,}"
     lines = [
         "",
-        f"=== GQASR | update {step:,} | elapsed {elapsed / 3600:.2f} h ===",
+        f"=== GQASR | update {progress} | elapsed {elapsed / 3600:.2f} h ===",
         f"Training loss (rank 0, last microbatch): {record['rank0_last_microbatch_loss']:.5f}",
     ]
+    upcoming = []
+    if total and step < total:
+        for key, label in (("eval_steps", "validation"), ("save_steps", "checkpoint")):
+            interval = config.get(key)
+            if interval and interval > 0:
+                upcoming.append(f"{label}: update {min(total, (step // interval + 1) * interval):,}")
+    if upcoming:
+        lines.append("Next " + " | ".join(upcoming))
     if "rank0_gradient_norm" in record:
         lines.append(f"Gradient norm (rank 0, before clipping): {record['rank0_gradient_norm']:.5g}")
     if record.get("learning_rates"):
@@ -67,11 +80,11 @@ def format_record(record):
     return "\n".join(lines)
 
 
-def print_record(record):
+def print_record(record, config=None):
     if os.environ.get("GQASR_CONSOLE_FORMAT", "pretty") == "json":
         print(json.dumps(record), flush=True)
     else:
-        print(format_record(record), flush=True)
+        print(format_record(record, config), flush=True)
 
 
 def main():
@@ -80,7 +93,10 @@ def main():
     parser.add_argument("--follow", action="store_true")
     parser.add_argument("--from-step", type=int, default=0)
     args = parser.parse_args()
-    with Path(args.metrics).open() as source:
+    metrics = Path(args.metrics)
+    config_path = metrics.parent / "config.json"
+    config = json.loads(config_path.read_text()) if config_path.exists() else {}
+    with metrics.open() as source:
         while True:
             position = source.tell()
             line = source.readline()
@@ -92,7 +108,7 @@ def main():
                 continue
             record = json.loads(line)
             if record["step"] >= args.from_step:
-                print_record(record)
+                print_record(record, config)
 
 
 if __name__ == "__main__":

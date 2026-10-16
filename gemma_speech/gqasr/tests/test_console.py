@@ -48,3 +48,34 @@ def test_raw_json_mode(monkeypatch, capsys):
     monkeypatch.setenv("GQASR_CONSOLE_FORMAT", "json")
     print_record(sample())
     assert json.loads(capsys.readouterr().out) == sample()
+
+
+def test_progress_and_next_events():
+    record = sample()
+    record["step"] = 1945
+    output = format_record(record, {"max_steps": 31446, "eval_steps": 1042, "save_steps": 1042})
+    assert "1,945 / 31,446 (6.19%)" in output
+    assert "remaining 29,501" in output
+    assert "validation: update 2,084" in output
+    assert "checkpoint: update 2,084" in output
+
+
+def test_completed_progress_has_no_future_events():
+    record = sample()
+    record["step"] = 31446
+    output = format_record(record, {"max_steps": 31446, "eval_steps": 1042})
+    assert "(100.00%)" in output
+    assert "remaining 0" in output
+    assert "Next " not in output
+
+
+def test_viewer_reads_saved_run_config(tmp_path, monkeypatch, capsys):
+    from gqasr.console import main
+
+    metrics = tmp_path / "metrics.jsonl"
+    metrics.write_text(json.dumps(sample()) + "\n")
+    (tmp_path / "config.json").write_text(json.dumps({"max_steps": 31446}))
+    monkeypatch.setattr("sys.argv", ["console", "--metrics", str(metrics)])
+    monkeypatch.delenv("GQASR_CONSOLE_FORMAT", raising=False)
+    main()
+    assert "1,042 / 31,446 (3.31%)" in capsys.readouterr().out

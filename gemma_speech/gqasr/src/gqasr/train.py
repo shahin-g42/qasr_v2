@@ -286,7 +286,7 @@ def _train(cfg, rt, resume, tracker=None):
         if rt.main and (step == 1 or step % cfg["logging_steps"] == 0 or "validation" in record):
             with (output / "metrics.jsonl").open("a") as f:
                 f.write(json.dumps(record) + "\n")
-            print_record(record)
+            print_record(record, cfg)
             if tracker is not None:
                 tracker.log(record)
         if step % cfg["save_steps"] == 0 or step == cfg["max_steps"]:

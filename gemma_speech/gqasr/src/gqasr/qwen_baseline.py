@@ -148,7 +148,8 @@ def run(args):
     model.to(args.device).eval()
     config_file = Path(args.model) / "config.json"
     (output / "provenance.json").write_text(json.dumps({
-        "model": str(Path(args.model).resolve()), "official_repository": MODEL,
+        "model": str(Path(args.model).resolve()), "official_repository": json.loads((Path(args.model) / "baseline_source.json").read_text())["repository"]
+        if (Path(args.model) / "baseline_source.json").exists() else None,
         "source_snapshot": json.loads((Path(args.model) / "baseline_source.json").read_text())
         if (Path(args.model) / "baseline_source.json").exists() else None,
         "model_config_sha256": hashlib.sha256(config_file.read_bytes()).hexdigest(),

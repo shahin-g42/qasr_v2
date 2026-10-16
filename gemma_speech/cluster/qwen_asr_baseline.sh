@@ -31,10 +31,14 @@ PY
       --output "${BASELINE_OUTPUT:-$ROOT/gqasr/verification/qwen17b-zh-${EVAL_STEP:-7294}-$(date -u +%Y%m%dT%H%M%SZ)}" \
       "$@"
     ;;
-  train)
+  train|train-parallel)
     export HF_HUB_OFFLINE=1
     export CUDA_VISIBLE_DEVICES="${GPU_IDS:-0}"
-    python -m gqasr.qwen_baseline \
+    PARALLEL_ARGS=()
+    if [[ "$STAGE" == train-parallel ]]; then
+      PARALLEL_ARGS=(--gpus "${GPU_IDS:-0,1,2,3,4,5,6,7}")
+    fi
+    python -m gqasr.qwen_baseline "${PARALLEL_ARGS[@]}" \
       --run-config "$RUN_DIR/config.json" --train \
       --model "$MODEL_DIR" \
       --output "${BASELINE_OUTPUT:-$ROOT/gqasr/verification/qwen17b-zh-train-$(date -u +%Y%m%dT%H%M%SZ)}" \

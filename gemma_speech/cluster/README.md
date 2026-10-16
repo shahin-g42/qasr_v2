@@ -297,3 +297,26 @@ Use automatic mode as the primary label check: forced Chinese may suppress Engli
 that really is present in mixed speech. Latin-letter presence is a heuristic, not
 a verified language label. Neither mode supplies ground truth; listen to flagged
 clips before correcting labels. ITN differences are still included in CER.
+
+### Parallel baseline audit on one spare eight-GPU node
+
+```bash
+GPU_IDS=0,1,2,3,4,5,6,7 \
+  bash gemma_speech/cluster/qwen_asr_baseline.sh train-parallel --per-group 1000
+```
+
+This audits 2,000 distinct samples in both modes. train-parallel defaults to all
+eight GPUs; set GPU_IDS to a subset to use fewer. Sample selection runs once,
+then one independent model process per GPU receives a disjoint shard.
+Batch size defaults to 1 per GPU; this increases concurrency without changing
+the single-example decoding baseline. Model loading and storage contention mean
+speedup will not necessarily equal the GPU count.
+
+The parent prints combined per-mode progress every five seconds. Detailed logs
+and provenance are retained under worker-N.log and worker-N/. Final predictions,
+review files and scores.json are merged at the top-level output directory.
+All modes must finish with exactly the selected IDs and matching references
+before aggregate scores are published. Scores are recomputed from pooled
+predictions, never averaged across workers. Failed workers cause the launcher
+to stop its remaining workers and retain partial artifacts for debugging.
+Do not run this command on GPUs occupied by training.

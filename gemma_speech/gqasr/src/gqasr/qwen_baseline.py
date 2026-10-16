@@ -123,7 +123,9 @@ def run(args):
 
     cfg = json.loads(Path(args.run_config).read_text())
     population = None
-    if args.train:
+    if args.samples:
+        samples = read_rows(args.samples)
+    elif args.train:
         samples, population = select_training_samples(cfg["index_path"], args.per_group, args.seed)
     else:
         samples = select_samples(cfg["index_path"], args.predictions)
@@ -200,7 +202,7 @@ def run(args):
         if args.train:
             scores[mode]["by_stratum"] = {
                 group: summary([r for r in records if r["stratum"] == group])
-                for group in ("han_only", "han_latin")
+                for group in ("han_only", "han_latin") if any(r["stratum"] == group for r in records)
             }
             scores[mode]["sampling_note"] = (
                 "Equal-size script strata, not a population-weighted corpus estimate. "
@@ -224,6 +226,8 @@ def main():
     selection.add_argument("--train", action="store_true")
     parser.add_argument("--per-group", type=int, default=500)
     parser.add_argument("--seed", type=int, default=42)
+    parser.add_argument("--samples", help=argparse.SUPPRESS)
+    parser.add_argument("--gpus", help="Comma-separated GPU IDs; one independent worker per GPU")
     parser.add_argument("--model", required=True, help="Local official -hf snapshot")
     parser.add_argument("--output", required=True, help="New directory; never overwritten")
     parser.add_argument("--device", default="cuda:0")
@@ -233,7 +237,11 @@ def main():
     args = parser.parse_args()
     if args.per_group < 1 or args.batch_size < 1 or args.max_new_tokens < 1 or len(set(args.modes)) != len(args.modes):
         parser.error("Positive batch/token counts and unique modes are required")
-    run(args)
+    if args.gpus:
+        from .baseline_parallel import run_parallel
+        run_parallel(args)
+    else:
+        run(args)
 
 
 if __name__ == "__main__":

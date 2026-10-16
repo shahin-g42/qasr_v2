@@ -33,3 +33,48 @@ No-update probes cannot establish optimizer or DDP stability. If failure arose
 after updates, a preceding checkpoint and exact batch replay are required.
 Do not change normalization epsilon, replace NaNs, or freeze layers as a claimed
 root-cause fix without evidence from actual checkpoint/batch backward execution.
+
+REAL CHECKPOINT AUDIT: 2026-10-16, node inception-H100-hpc-051
+Model: outputs/bridge/final, original full-stage config, batch 20, update 0.
+Torch 2.11.0+cu128, CUDA runtime 12.8; no optimizer steps or weight writes.
+Code revision for multi-rank replay: 2684f14.
+
+27 distinct first-update rank batches checked with full BF16 backward:
+- Passed: 0-11, 24-25, 48-53, 72-74 (23 batches).
+- Failed: 12, 26, 54, 75 (4 batches). Each replay stopped at its first failure.
+- Failures were genuine nonfinite acoustic parameter gradients; bridge and
+  decoder gradients were finite. No DDP or gradient clipping was involved.
+- Rank 12 loss remained finite: 3.5793547630.
+
+Controls on rank 12:
+- Frozen encoder, train decoder+bridge, original augmentation: PASS.
+- Full unfrozen model, no augmentation: PASS.
+- Full unfrozen model, FP32, original augmentation: FAIL in acoustic gradients.
+- Autograd anomaly: MmBackward0 in acoustic lconv1d.linear_end returned NaN.
+- Full no-checkpointing at batch 20: OOM on dedicated 80GB H100, inconclusive.
+
+Controls on ALL FOUR failing batches (12, 26, 54, 75):
+- Only SpecAugment disabled, waveform augmentation and code switching retained:
+  PASS on all four.
+- Same original SpecAugment mask locations, replace newly zeroed feature cells
+  with valid-frame per-utterance/per-frequency means: PASS on all four.
+  This was a process-local experimental override, NOT a production code change.
+  Mean-fill losses respectively: 3.5597003, 3.5994594, 3.5135832, 3.4584839.
+  These losses do not establish speech quality.
+
+Conclusion: zero-filled SpecAugment regions are the isolated trigger for the
+reproduced real-batch acoustic backward failures. The copied QASR augmentation
+was not validated adequately against this acoustic encoder. FP64 norm clipping
+cannot fix this. The streaming dataset was not in the tested/pushed code.
+Frozen bridge training did not backpropagate through the acoustic encoder and
+also did not enable augmentation. Neither architecture incompatibility in
+principle nor an intrinsically corrupt checkpoint follows from these results.
+
+Limitations: backward-only replay at initial weights; not a completed optimizer
+or distributed training validation. Mean fill needs a proper implementation,
+regression coverage and wider stress tests before use in production. Current
+training configs, model math and saved checkpoints have NOT been changed.
+
+Logs on cluster: gemma_speech/logs/gqasr-backward-audit-20261016T*.log.
+The initial no-checkpointing tests on GPU0 overlapped a user-launched audit and
+OOMed; those results were discarded. Our later replays used separate GPUs.

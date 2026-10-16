@@ -8,7 +8,7 @@ The base has approximately 901.9M parameters. The acoustic encoder and text deco
 
 ## Training recipe
 
-`configs/01_bridge_12node.yaml` trains the bridge for 1,000 optimizer steps with the encoder and decoder frozen. `configs/02_full_12node.yaml` starts from the bridge stage's `final/` artifact and adapts the encoder, decoder and embeddings for 62,891 optimizer steps. Both expect 96 ranks.
+`configs/01_bridge_12node.yaml` trains the bridge for 1,000 optimizer steps with the encoder and decoder frozen. `configs/02_full_12node.yaml` starts from the bridge stage's `final/` artifact and keeps the encoder frozen and adapts the bridge, decoder and embeddings for 31,446 optimizer steps. Both expect 96 ranks.
 
 The configs use the **22 training and 6 evaluation manifests** from QASR's `configs/v8.1/02_full_12node.yaml`. Their paths remain cluster paths. The source SHA and detailed mapping are in `configs/source_mapping.yaml`.
 
@@ -16,16 +16,16 @@ The configs use the **22 training and 6 evaluation manifests** from QASR's `conf
 |---|---|
 | Machines / GPUs | 12 × 8 |
 | Arabic / English / Hindi / Malayalam / Chinese | 50% / 30% / 10% / 5% / 5% |
-| Microbatch / accumulation per GPU | 20 / 1 |
-| Effective global batch | 1,920 utterances per optimizer step |
+| Microbatch / accumulation per GPU | Bridge: 20 / 1; next stage: 40 / 1 |
+| Effective global batch | Bridge: 1,920; next stage: 3,840 utterances per optimizer step |
 | Data workers | 4 per GPU, 32 per machine |
 | Precision | BF16 with FP32 parameters, TF32 enabled |
 | Distributed strategy | Native PyTorch DDP |
 | Audio | Mono 16 kHz, duration 0.1–35 seconds |
 | Targets | At most 512 tokens; overlong targets filtered, never truncated |
-| Full-stage learning rates | Bridge/audio 2e-5; decoder 1e-5; embeddings 5e-6 |
+| Full-stage learning rates | Bridge 2e-5; encoder frozen; decoder 1e-5; embeddings 5e-6 |
 
-Language quotas are exact within each 20-example microbatch on every rank: 10 Arabic, 6 English, 2 Hindi, 1 Malayalam, 1 Chinese. Sampling uses replacement with deterministic rank/update seeds, so resume does not require a corpus-sized permutation. This is not an epoch traversal.
+Bridge quotas are 10 Arabic, 6 English, 2 Hindi, 1 Malayalam, 1 Chinese per rank. Next-stage batch 40 doubles these quotas to 20, 12, 4, 2, 2. Sampling uses replacement with deterministic rank/update seeds, so resume does not require a corpus-sized permutation. This is not an epoch traversal.
 
 The full stage now uses QASR's online code-switching, SpecAugment, speed perturbation, noise and codec simulation. The bridge warm-up remains unaugmented. Logging is JSONL and distributed training uses native DDP; this is not an exact reproduction of QASR's optimizer/runtime. H100 throughput and scaling still require cluster validation.
 
@@ -44,13 +44,18 @@ bash scripts/run_gqasr_12node.sh YOUR_RANK
 
 This starts the bridge stage using the shared gemma_speech environment and completed SQLite index; it does not rescan. All nodes must have matching code, configs and shared artifacts. The launcher checks the environment and eight BF16-capable GPUs per node, then waits for all 96 processes to rendezvous. The default master is `inception-H100-hpc-051`; override it with a second positional argument. Bridge uses port 29611 and full uses 29612; any `MASTER_PORT` override must match across nodes.
 
-Preview without loading weights or touching GPUs with `DRY_RUN=1 bash scripts/run_gqasr_12node.sh 0`. Check the existing index with `bash scripts/run_gqasr_12node.sh 0 --preflight`. Microbatch 20 still requires memory/throughput validation on the cluster with real audio.
+Preview without loading weights or touching GPUs with `DRY_RUN=1 bash scripts/run_gqasr_12node.sh 0`. Check the existing index with `bash scripts/run_gqasr_12node.sh 0 --preflight`. Microbatch 40 still requires memory/throughput validation on the cluster with real audio.
 
 After the bridge finishes successfully and publishes its `final/` artifact, launch the full stage on all nodes:
 
 ```bash
 bash scripts/run_gqasr_12node.sh YOUR_RANK --stage full
 ```
+
+The revised next stage writes to outputs/full_b40_frozen. Its warmup/decay
+steps are 417/3125, evaluation and saves occur every 1042 updates, and learning
+rates are unchanged. The halved schedule preserves approximately the previous
+example budget. Start from bridge/final, not an old batch-20 optimizer checkpoint.
 
 ## Data preparation
 
@@ -106,7 +111,8 @@ Order and source settings:
 3. MUSAN noise: SNR 5–20 dB, probability 0.37. Missing configured noise files
    fail preflight rather than silently substituting synthetic noise.
 4. QASR's bandpass/quantization codec **simulation**: probability 0.37.
-5. SpecAugment: two maximum time/frequency masks, ratios 0.05/0.15, batch gate
+5. SpecAugment: per-utterance per-frequency mean fill over original valid frames,
+   two maximum time/frequency masks, ratios 0.05/0.15, batch gate
    0.37. Padding is preserved; masking follows the actual frontend dimensions.
 
 The packaged runtime needs no QASR model import or second environment. Code-switch

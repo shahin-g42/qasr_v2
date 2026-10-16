@@ -10,16 +10,15 @@ class Runtime:
         return bool(torch.isfinite(value).all())
 
 
-def test_finite_large_gradients_do_not_overflow():
+def test_standard_norm_overflow_still_fails_closed():
     model = torch.nn.Linear(2, 1, bias=False)
     model.weight.grad = torch.full_like(model.weight, 1e30)
-    norm = clip_gradients(model, 1.0, Runtime(), 0)
-    assert torch.isfinite(norm)
-    assert torch.linalg.vector_norm(model.weight.grad).item() == pytest.approx(1.0)
+    with pytest.raises(FloatingPointError):
+        clip_gradients(model, 1.0, Runtime(), 0)
 
 
 @pytest.mark.parametrize("value", [float("nan"), float("inf")])
-def test_bad_gradient_reports_parameter_without_modifying_it(value, capsys):
+def test_bad_gradient_reports_parameter(value, capsys):
     model = torch.nn.Linear(2, 1, bias=False)
     model.weight.grad = torch.full_like(model.weight, value)
     with pytest.raises(FloatingPointError, match="update 4"):

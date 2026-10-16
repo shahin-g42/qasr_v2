@@ -72,7 +72,7 @@ Wait for a successful bridge run and its `gemma_speech/gqasr/outputs/bridge/fina
 sbatch gemma_speech/cluster/submit_12node.sh gqasr full
 ```
 
-For manual launch, run `bash scripts/run_gqasr_12node.sh YOUR_RANK --stage full` on every node using the same ranks. The full stage uses the pretrained bridge-stage artifact and resets the optimizer. Defaults are microbatch 20 × accumulation 1 × 96 GPUs, yielding 1,920 utterances per optimizer update with the source's exact language quotas. The full stage enables QASR online code-switching and acoustic augmentations; bridge warm-up is unaugmented. Validate microbatch 20 memory usage on real cluster audio; see `gqasr/configs/source_mapping.yaml`.
+For manual launch, run `bash scripts/run_gqasr_12node.sh YOUR_RANK --stage full` on every node using the same ranks. The full stage uses the pretrained bridge-stage artifact and resets the optimizer. Defaults are microbatch 40 × accumulation 1 × 96 GPUs, yielding 3,840 utterances per optimizer update with the source's exact language quotas. The full stage enables QASR online code-switching and acoustic augmentations; bridge warm-up is unaugmented. Validate microbatch 40 memory usage on real cluster audio; see `gqasr/configs/source_mapping.yaml`.
 
 ## 6. Resume or transcribe
 
@@ -88,7 +88,7 @@ This config file must be created and edited first. Resume uses the saved optimiz
 
 ```bash
 bash gemma_speech/cluster/gqasr_stage.sh transcribe \
-  --model "$PWD/gemma_speech/gqasr/outputs/full/final" \
+  --model "$PWD/gemma_speech/gqasr/outputs/full_b40_frozen/final" \
   --audio /shared/path/sample.wav --device cuda
 ```
 
@@ -140,3 +140,23 @@ sbatch gemma_speech/cluster/submit_12node.sh gqasr bridge
 ```
 
 If the index was already built successfully, use `preflight` and skip `scan`. Start the full ASR stage only after bridge training completes. For machines without Slurm, use the manual per-node launch instructions above. These model operations run on the cluster; local validation of newly added export code is limited to source checks and test collection.
+
+
+## Revised next-stage recipe (October 16)
+
+The full launcher now starts a frozen-encoder stage from bridge/final, writing to
+outputs/full_b40_frozen. Only the bridge, decoder and embeddings train.
+Batch 40 with accumulation 1 across 96 GPUs gives global batch 3840.
+Per-rank quotas are ar=20, en=12, hi=4, ml=2, zh=2.
+
+The schedule preserves approximately the previous example budget: 31446 updates,
+417 warmup, 3125 decay, evaluation/save every 1042 updates, logging every 5.
+Ceiling rounding adds 1920 examples to the total budget. Learning rates are unchanged.
+The completed bridge recipe is unchanged. Do not resume an old batch-20 optimizer
+checkpoint into this recipe; start from the bridge final artifact.
+
+SpecAugment now fills masked regions with per-frequency means from each utterance's
+original valid frames. Padding is untouched. Gradient clipping uses standard
+PyTorch norms again; nonfinite-gradient diagnostics remain. These changes do not
+require a rescan or base-model re-export. Online streaming additions are not part
+of this change.

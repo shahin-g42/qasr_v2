@@ -62,10 +62,20 @@ def test_wrong_world_size_rejected():
 @pytest.mark.parametrize("name", ["01_bridge_12node.yaml", "02_full_12node.yaml"])
 def test_training_batch_and_existing_index(name):
     cfg = load_config(ROOT / "gemma_speech/gqasr/configs" / name)
-    assert cfg["batch_size"] == 20
+    full = name.startswith("02")
+    assert cfg["batch_size"] == (40 if full else 20)
     assert cfg["accumulation_steps"] == 1
-    assert cfg["expected_world_size"] * cfg["batch_size"] == 1920
-    assert cfg["language_batch_counts"] == {"ar": 10, "en": 6, "hi": 2, "ml": 1, "zh": 1}
+    assert cfg["expected_world_size"] * cfg["batch_size"] == (3840 if full else 1920)
+    assert cfg["language_batch_counts"] == (
+        {"ar": 20, "en": 12, "hi": 4, "ml": 2, "zh": 2} if full else
+        {"ar": 10, "en": 6, "hi": 2, "ml": 1, "zh": 1}
+    )
+    if full:
+        assert cfg["acoustic_layers"] == 0
+        assert cfg["max_steps"] == 31446
+        assert cfg["warmup_steps"] == 417
+        assert cfg["decay_steps"] == 3125
+        assert cfg["eval_steps"] == cfg["save_steps"] == 1042
     assert cfg["index_path"].endswith("/indexes/full_v81.sqlite")
 
 

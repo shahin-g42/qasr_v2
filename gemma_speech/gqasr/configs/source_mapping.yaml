@@ -5,14 +5,15 @@ preserved:
 - eval_manifest
 - duration bounds
 - target limit
-- language quotas
-- full-stage optimizer-update budget
-- full-stage warmup/stable/decay schedule
+- language proportions
+- approximate full-stage example budget
+- approximate full-stage schedule in examples
 changed:
   malayalam_training: ml_training_v2 excludes 3646 low-mark-ratio rows; quarantine basenames are also excluded from code-switch partners
   manifest_index: full_v81.sqlite completed on cluster using the filtered Malayalam file copied over its original path
-  batching: 20 microbatch x 1 accumulation; same exact per-rank language
-    quota and global batch 1920 at 96 GPUs
+  batching: bridge 20 x 1 with global 1920; next stage 40 x 1 with global 3840, doubled quotas and halved step schedule
+  acoustic_training: frozen for the next stage; decoder and bridge remain trainable
+  specaugment: valid-frame per-frequency mean fill replaces zero fill
   initialization: new GQASR pretrained composite and random bridge; warm-up stage
     precedes full adaptation
   workers: 4 per GPU instead of 12, leaving CPU headroom on 96-core nodes

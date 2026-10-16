@@ -28,7 +28,7 @@ class Processor:
     def batch(self, waves, texts, languages, maximum):
         lengths = [len(w) // 160 for w in waves]
         mask = torch.arange(max(lengths))[None] < torch.tensor(lengths)[:, None]
-        features = torch.ones(len(waves), max(lengths), 128) * mask[:, :, None]
+        features = (torch.arange(max(lengths), dtype=torch.float32)[None, :, None] + 1).expand(len(waves), -1, 128) * mask[:, :, None]
         return {"input_features": features, "input_features_mask": mask}
 
 
@@ -130,15 +130,22 @@ def test_pool_tampering_fails(tmp_path):
 
 
 def test_specaugment_preserves_padding_and_masks_valid_frames():
-    x = torch.ones(2, 100, 128)
+    x = torch.arange(2 * 100 * 128, dtype=torch.float32).reshape(2, 100, 128) + 1
     x[1, 40:] = 7  # sentinel padding
     mask = torch.arange(100)[None] < torch.tensor([100, 40])[:, None]
+    original = x.clone()
     aug = SpecAugment(p=1)
     with augmentation_rng([{"augmentation_seed": 3}]):
         y = aug(x, mask)
     assert torch.equal(x[1, 40:], y[1, 40:])
     assert not torch.equal(x, y)
-    assert torch.all(x == torch.where(mask[:, :, None], 1.0, 7.0))
+    assert torch.equal(x, original)
+    for i, length in enumerate((100, 40)):
+        changed = y[i, :length] != x[i, :length]
+        expected = x[i, :length].mean(0).expand(length, -1)
+        assert changed.any()
+        torch.testing.assert_close(y[i, :length][changed], expected[changed])
+    assert not (y[mask] == 0).any()
 
 
 def test_replay_and_rng_isolation(tmp_path):

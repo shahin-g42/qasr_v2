@@ -103,6 +103,7 @@ class SpecAugment:
         if random.random() > self.p:
             return features
 
+        original = features
         features = features.clone()
         batch_size, _max_time, num_freq = features.shape
 
@@ -110,6 +111,10 @@ class SpecAugment:
             valid_length = int(attention_mask[b].sum().item())
             if valid_length <= 1:
                 continue
+
+            # Mean from the original valid frames, before either masking operation.
+            # Exact-zero time regions destabilize the pretrained acoustic backward.
+            fill = original[b, :valid_length].mean(dim=0)
 
             # Per-sample random intensity: how many masks to apply (1 to max)
             n_time_masks = random.randint(1, self.num_time_masks)
@@ -125,7 +130,7 @@ class SpecAugment:
                 if t_width == 0:
                     continue
                 t_start = random.randint(0, valid_length - t_width)
-                features[b, t_start : t_start + t_width, :] = 0.0
+                features[b, t_start : t_start + t_width, :] = fill
 
             # Frequency masking with random widths per sample
             max_f = max(1, int(num_freq * self.max_freq_mask_ratio * intensity))
@@ -134,7 +139,7 @@ class SpecAugment:
                 if f_width == 0:
                     continue
                 f_start = random.randint(0, num_freq - f_width)
-                features[b, :valid_length, f_start : f_start + f_width] = 0.0
+                features[b, :valid_length, f_start : f_start + f_width] = fill[f_start : f_start + f_width]
 
         return features
 

@@ -57,7 +57,11 @@ def run(args):
                 selected = samples[start_index:start_index + args.batch_size]
                 source_rows = selected
                 if args.audio_control == "shift":
-                    source_rows = [samples[(start_index + i + 1) % len(samples)] for i in range(len(selected))]
+                    source_rows = [
+                        {"audio": r["audit_shift_audio"], "id": r["audit_shift_id"]}
+                        if "audit_shift_audio" in r else samples[(start_index + i + 1) % len(samples)]
+                        for i, r in enumerate(selected)
+                    ]
                 waves = [load_mono_audio(r["audio"], 16000) for r in source_rows]
                 batch = {k: v.to(args.device) for k, v in processor.batch(waves).items()}
                 with torch.inference_mode(), torch.autocast(

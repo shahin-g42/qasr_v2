@@ -128,9 +128,72 @@ def audit_data(samples, cfg, checkpoint, output):
     ))
 
 
+def shard_jobs(jobs, samples, output, count):
+    """Split on global batch-four boundaries; keep negative-control pairing fixed."""
+    if count < 1 or not samples:
+        raise ValueError('Positive shard count and nonempty samples required')
+    if len({r['id'] for r in samples}) != len(samples):
+        raise ValueError('Duplicate sample IDs')
+    blocks = [samples[i:i+4] for i in range(0, len(samples), 4)]
+    count = min(count, len(blocks))
+    shards = []
+    folder = output / 'shards'
+    folder.mkdir()
+    for index in range(count):
+        start, end = len(blocks)*index//count, len(blocks)*(index+1)//count
+        rows = [r for block in blocks[start:end] for r in block]
+        path = folder / f'samples-{index:02d}.jsonl'
+        save_rows(path, rows)
+        shards.append((path, rows))
+    tasks = []
+    for job in jobs:
+        for index, (path, rows) in enumerate(shards):
+            name = job['name'] + f'-shard-{index:02d}'
+            command = list(job['command'])
+            destination = folder / name
+            command[command.index('--samples')+1] = str(path)
+            command[command.index('--output')+1] = str(destination)
+            tasks.append(dict(name=name, experiment=job['name'], output=str(destination), command=command,
+                              sample_ids=[r['id'] for r in rows],
+                              cost=sum(r.get('duration', 1) for r in rows) *
+                              (3 if job['name'].endswith('fp32') else 2 if job['name'] == 'qwen1.7b' else 1)))
+    # Longest estimated work first reduces idle GPUs near the end of the queue.
+    return sorted(tasks, key=lambda t: t['cost'], reverse=True)
+
+
+def merge_shards(jobs, tasks, samples):
+    expected = {r['id']: r for r in samples}
+    for job in jobs:
+        destination = Path(job['output'])
+        destination.mkdir(exist_ok=False)
+        for mode in ('auto', 'chinese'):
+            merged = {}
+            for task in tasks:
+                if task['experiment'] != job['name']:
+                    continue
+                rows = read_rows(Path(task['output']) / f'predictions-{mode}.jsonl')
+                if [r['id'] for r in rows] != task['sample_ids']:
+                    raise ValueError(f"Missing/reordered shard rows: {task['name']}")
+                for row in rows:
+                    key = row['id']
+                    if key in merged or key not in expected:
+                        raise ValueError(f'Duplicate/unexpected merged ID: {key}')
+                    if row['reference'] != expected[key]['reference'] or row['audit_group'] != expected[key]['audit_group']:
+                        raise ValueError(f'Reference/group mismatch: {key}')
+                    if job['name'] == 'current-shifted-audio' and row['audio_source_id'] != expected[key]['audit_shift_id']:
+                        raise ValueError(f'Negative-control pairing changed: {key}')
+                    merged[key] = row
+            if set(merged) != set(expected):
+                raise ValueError(f"Incomplete experiment: {job['name']}")
+            save_rows(destination / f'predictions-{mode}.jsonl', [merged[r['id']] for r in samples])
+        dump(destination / 'shard-jobs.json', [t for t in tasks if t['experiment'] == job['name']])
+
+
 def execute(jobs, gpus, output):
     pending = list(jobs)
     active = []
+    finished_rows = 0
+    total_rows = sum(2 * len(job.get("sample_ids", [])) for job in jobs)
     try:
         while pending or active:
             used = {gpu for _, gpu, _, _ in active}
@@ -152,13 +215,18 @@ def execute(jobs, gpus, output):
                     if code:
                         raise RuntimeError(f"{job['name']} failed ({code}); see {output / (job['name']+'.log')}")
                     completed.append(item)
+                    finished_rows += 2 * len(job.get("sample_ids", []))
                     print(f"Completed {job['name']}", flush=True)
             active = [item for item in active if item not in completed]
             progress = {}
             for job, _, _, _ in active:
                 progress[job['name']] = sum(sum(1 for _ in p.open()) for p in Path(job['output']).glob('predictions-*.jsonl'))
-            print(json.dumps(dict(event='comparison_progress', queued=len(pending), generated_rows=progress)), flush=True)
-            if active:
+            done = finished_rows + sum(progress.values())
+            print(json.dumps(dict(event='comparison_progress', queued=len(pending), active_gpus=len(active),
+                                  completed_rows=done, total_rows=total_rows,
+                                  percent=round(100*done/total_rows, 2) if total_rows else None,
+                                  generated_rows=progress)), flush=True)
+            if active and not (completed and pending):
                 time.sleep(5)
     finally:
         for _, _, child, _ in active:
@@ -252,6 +320,9 @@ def main():
     samples = [{**r, 'audit_group': 'eval', 'stratum': 'eval'} for r in select_samples(cfg['index_path'], predictions)]
     train, population = select_training_samples(cfg['index_path'], args.per_group, 42)
     samples += [{**r, 'audit_group': 'train_' + r['stratum']} for r in train]
+    for i, row in enumerate(samples):
+        partner = samples[(i+1) % len(samples)]
+        row.update(audit_shift_audio=partner['audio'], audit_shift_id=partner['id'])
     sample_file = output / 'samples.jsonl'
     save_rows(sample_file, samples)
     dump(output / 'selection.json', dict(seed=42, population=population, per_group=args.per_group,
@@ -300,7 +371,11 @@ def main():
                    '--output', str(output / name)]
         jobs.append(dict(name=name, output=str(output / name), command=command))
     dump(output / 'jobs.json', jobs)
-    execute(jobs, gpus, output)
+    tasks = shard_jobs(jobs, samples, output, len(gpus))
+    dump(output / 'shard-jobs.json', tasks)
+    print(f'Running {len(tasks)} shards across {len(gpus)} GPUs', flush=True)
+    execute(tasks, gpus, output)
+    merge_shards(jobs, tasks, samples)
     report(jobs, output)
     print(f'COMPLETE: {output / "REPORT.md"}', flush=True)
 

@@ -67,3 +67,44 @@ def test_worker_failure_is_not_reported_as_success(tmp_path):
     with pytest.raises(RuntimeError, match='broken failed'):
         execute(jobs, ['0'], tmp_path)
     assert 'test failure' in (tmp_path / 'broken.log').read_text()
+
+
+def test_shards_preserve_batch_boundaries_and_merge_order(tmp_path):
+    from gqasr.comparison_audit import merge_shards, shard_jobs
+    rows = [dict(id=str(i), reference='中文', audit_group='eval', duration=i+1,
+                 audit_shift_id=str((i+1)%19), audit_shift_audio=f'{(i+1)%19}.wav') for i in range(19)]
+    jobs = [dict(name='current-shifted-audio', output=str(tmp_path/'merged'),
+                 command=['worker', '--samples', 'original', '--output', 'original'])]
+    tasks = shard_jobs(jobs, rows, tmp_path, 8)
+    assert len(tasks) == 5
+    covered = []
+    for task in tasks:
+        ids = task['sample_ids']
+        assert int(ids[0]) % 4 == 0
+        assert len(ids) % 4 == 0 or ids[-1] == '18'
+        covered += ids
+        directory = __import__('pathlib').Path(task['output'])
+        directory.mkdir()
+        predictions = [{**rows[int(i)], 'hypothesis': '中文',
+                        'audio_source_id': rows[int(i)]['audit_shift_id']} for i in ids]
+        for mode in ('auto', 'chinese'):
+            save_rows(directory/f'predictions-{mode}.jsonl', predictions)
+    assert set(covered) == {r['id'] for r in rows}
+    merge_shards(jobs, tasks, rows)
+    result = [json.loads(line) for line in (tmp_path/'merged/predictions-auto.jsonl').read_text().splitlines()]
+    assert [r['id'] for r in result] == [r['id'] for r in rows]
+    assert result[-1]['audio_source_id'] == '0'
+
+
+def test_merge_rejects_incomplete_shard(tmp_path):
+    from pathlib import Path
+
+    from gqasr.comparison_audit import merge_shards, shard_jobs
+    rows = [dict(id='1', reference='中文', audit_group='eval')]
+    jobs = [dict(name='current', output=str(tmp_path/'merged'),
+                 command=['worker', '--samples', 'original', '--output', 'original'])]
+    tasks = shard_jobs(jobs, rows, tmp_path, 8)
+    Path(tasks[0]['output']).mkdir()
+    save_rows(Path(tasks[0]['output'])/'predictions-auto.jsonl', [])
+    with pytest.raises(ValueError, match='Missing/reordered'):
+        merge_shards(jobs, tasks, rows)

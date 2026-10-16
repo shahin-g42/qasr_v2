@@ -13,7 +13,17 @@ and 250 Han+Latin training samples, deterministically sampled once for all jobs.
 `--per-group 500` increases this to 1,100 examples. Script strata describe written
 labels, not verified spoken languages. This is a diagnostic sample, not a
 population-weighted benchmark. `GQASR_RUN_DIR`, `EVAL_STEP`, `--output`, and a smaller
-`GPU_IDS` list are supported. Jobs queue when GPUs are fewer than experiments.
+`GPU_IDS` list are supported. Each experiment is split into up to eight sample
+shards (one per requested GPU). A shared queue keeps one worker on each GPU and
+starts the next shard as soon as a worker finishes. Estimated longer shards run
+first to reduce idle GPUs at the end. Model reloads occur between shards.
+
+Shards preserve the original batch-four boundaries and global shifted-audio
+pairing. The merger rejects missing/duplicate IDs or changed references, restores
+original sample order, and computes metrics from pooled predictions, never an
+average of shard percentages. Console progress reports active GPUs, completed
+prediction rows and overall percentage. Detailed worker logs and settings live
+under `shards/` (logs at the run root); merged predictions remain per experiment.
 
 Every experiment uses automatic and Chinese-prefilled greedy decoding, 768-token
 limit, identical audio/reference IDs, and no inference augmentation:

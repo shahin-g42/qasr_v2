@@ -1,0 +1,35 @@
+GQASR backward audit, 2026-10-16
+
+Bridge: acoustic forward is executed without autograd. Decoder operations still
+carry gradients to the bridge, but decoder parameters are frozen.
+Full: all 12 acoustic layers, convolutional frontend, output projection, 28
+decoder layers and embeddings are trainable. Checkpointing and augmentation
+are enabled. Bridge success does not validate these newly opened paths.
+
+Local results (random weights, reduced width, CPU):
+- 12 acoustic layers, nonzero variable-length padded features: finite gradients
+  for bridge/decoder/acoustic/full modes, FP32/BF16, checkpointing on/off.
+- FP32 checkpointing on/off: exactly matching losses and parameter gradients.
+- All-zero features: finite loss but nonfinite acoustic gradients when unfrozen.
+  Reproduced without the hybrid in upstream Gemma4AudioModel itself.
+- Zero features are NOT equivalent to silent waveform log-mel features.
+- These results establish a reproducible failure mode, NOT the cause of the
+  real checkpoint failure. FP64 gradient-norm accumulation cannot repair it.
+- Existing two-layer FP32 tests were inadequate for full-stage readiness.
+
+Run on one free cluster GPU (no optimizer updates, clipping, DDP or saved weights):
+CUDA_VISIBLE_DEVICES=0 bash gemma_speech/cluster/gqasr_backward_matrix.sh --rank 0 --batches 1
+
+Uses full config's base_model (bridge/final) and the existing SQLite index.
+Each fresh process replays the same sampler anchors. Modes isolate trainability,
+then checkpointing, precision and augmentation. Logs are in gemma_speech/logs.
+--rank selects the original sampler rank; --update selects a zero-based update.
+Use the failed rank/update when known. Matrix continues after individual failures.
+
+For an operation-level traceback, replay a failing mode:
+CUDA_VISIBLE_DEVICES=0 bash gemma_speech/cluster/gqasr_stage.sh backward-audit --mode acoustic --rank 0 --update 0 --anomaly
+
+No-update probes cannot establish optimizer or DDP stability. If failure arose
+after updates, a preceding checkpoint and exact batch replay are required.
+Do not change normalization epsilon, replace NaNs, or freeze layers as a claimed
+root-cause fix without evidence from actual checkpoint/batch backward execution.

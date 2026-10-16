@@ -16,6 +16,10 @@ BRIDGE="$ROOT/gqasr/configs/01_bridge_12node.yaml"
 FULL="$ROOT/gqasr/configs/02_full_12node.yaml"
 echo "GQASR stage=$STAGE host=$(hostname) time=$(date -u +%Y-%m-%dT%H:%M:%SZ)"
 case "$STAGE" in
+  backward-audit)
+    export HF_HUB_OFFLINE=1
+    python -m gqasr.backward_audit --config "${GQASR_CONFIG:-$FULL}" "$@"
+    ;;
   doctor)
     nvidia-smi
     python - <<'PYCODE'

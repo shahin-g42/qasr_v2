@@ -50,7 +50,7 @@ def run(args):
     (output / "settings.json").write_text(json.dumps(vars(args), indent=2))
     scores = {}
     start = time.monotonic()
-    for mode in ("auto", "chinese"):
+    for mode in getattr(args, "modes", ("auto", "chinese")):
         rows = []
         with (output / f"predictions-{mode}.jsonl").open("x") as f:
             for start_index in range(0, len(samples), args.batch_size):
@@ -134,6 +134,7 @@ def main():
     parser = argparse.ArgumentParser(description=__doc__)
     for name in ("checkpoint", "run-config", "predictions", "output"):
         parser.add_argument("--" + name, required=True)
+    parser.add_argument("--modes", nargs="+", choices=["auto", "chinese"], default=["auto", "chinese"])
     parser.add_argument("--samples")
     parser.add_argument("--bridge-from")
     parser.add_argument("--decoder-from")

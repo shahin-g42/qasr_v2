@@ -153,7 +153,7 @@ def shard_jobs(jobs, samples, output, count):
             destination = folder / name
             command[command.index('--samples')+1] = str(path)
             command[command.index('--output')+1] = str(destination)
-            tasks.append(dict(name=name, experiment=job['name'], output=str(destination), command=command,
+            tasks.append(dict(name=name, experiment=job['name'], output=str(destination), command=command, modes=job.get('modes', ['auto', 'chinese']),
                               sample_ids=[r['id'] for r in rows],
                               cost=sum(r.get('duration', 1) for r in rows) *
                               (3 if job['name'].endswith('fp32') else 2 if job['name'] == 'qwen1.7b' else 1)))
@@ -166,7 +166,7 @@ def merge_shards(jobs, tasks, samples):
     for job in jobs:
         destination = Path(job['output'])
         destination.mkdir(exist_ok=False)
-        for mode in ('auto', 'chinese'):
+        for mode in job.get('modes', ('auto', 'chinese')):
             merged = {}
             for task in tasks:
                 if task['experiment'] != job['name']:
@@ -193,7 +193,7 @@ def execute(jobs, gpus, output):
     pending = list(jobs)
     active = []
     finished_rows = 0
-    total_rows = sum(2 * len(job.get("sample_ids", [])) for job in jobs)
+    total_rows = sum(len(job.get("modes", ["auto", "chinese"])) * len(job.get("sample_ids", [])) for job in jobs)
     try:
         while pending or active:
             used = {gpu for _, gpu, _, _ in active}
@@ -215,7 +215,7 @@ def execute(jobs, gpus, output):
                     if code:
                         raise RuntimeError(f"{job['name']} failed ({code}); see {output / (job['name']+'.log')}")
                     completed.append(item)
-                    finished_rows += 2 * len(job.get("sample_ids", []))
+                    finished_rows += len(job.get("modes", ["auto", "chinese"])) * len(job.get("sample_ids", []))
                     print(f"Completed {job['name']}", flush=True)
             active = [item for item in active if item not in completed]
             progress = {}

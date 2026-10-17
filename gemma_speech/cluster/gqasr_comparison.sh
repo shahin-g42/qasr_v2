@@ -2,7 +2,7 @@
 set -euo pipefail
 ROOT=$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)
 source "${GEMMA_SPEECH_ENV:-$ROOT/.venv}/bin/activate"
-export TOKENIZERS_PARALLELISM=false OMP_NUM_THREADS="${OMP_NUM_THREADS:-4}"
+export TOKENIZERS_PARALLELISM=false OMP_NUM_THREADS="${OMP_NUM_THREADS:-2}"
 # Downloads happen on the cluster; reuse pinned local snapshots on subsequent runs.
 HF_HUB_OFFLINE=0 python - "$ROOT" <<'PY'
 import json, sys
@@ -25,5 +25,6 @@ PY
 export HF_HUB_OFFLINE=1
 ARGS=()
 if [[ -n "${GQASR_RUN_DIR:-}" ]]; then ARGS+=(--run-dir "$GQASR_RUN_DIR"); fi
-python -m gqasr.comparison_audit --root "$ROOT" --gpus "${GPU_IDS:-0,1,2,3,4,5,6,7}" \
+export MKL_NUM_THREADS="${MKL_NUM_THREADS:-2}" OPENBLAS_NUM_THREADS="${OPENBLAS_NUM_THREADS:-1}"
+python -m gqasr.comparison_audit --root "$ROOT" --gpus "${GPU_IDS:-0,1,2,3,4,5,6,7}" --workers-per-gpu "${WORKERS_PER_GPU:-4}" \
   --eval-step "${EVAL_STEP:-7294}" "${ARGS[@]}" "$@"

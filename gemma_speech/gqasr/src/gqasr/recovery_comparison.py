@@ -49,12 +49,13 @@ def main():
     parser.add_argument('--root', required=True)
     parser.add_argument('--comparison')
     parser.add_argument('--gpus', default='0,1,2,3,4,5,6,7')
+    parser.add_argument('--workers-per-gpu', type=int, default=4)
     parser.add_argument('--output')
     args = parser.parse_args()
     root = Path(args.root).resolve()
     prior = Path(args.comparison).resolve() if args.comparison else root/'gqasr/verification/comparison-20261016T210052Z'
     gpus = args.gpus.split(',')
-    if not all(gpus) or len(set(gpus)) != len(gpus):
+    if args.workers_per_gpu < 1 or not all(gpus) or len(set(gpus)) != len(gpus):
         parser.error('GPU IDs must be unique and nonempty')
     cfg = json.loads((prior/'training-config.json').read_text())
     prior_jobs = json.loads((prior/'jobs.json').read_text())
@@ -66,7 +67,7 @@ def main():
     dump(output/'training-config.json', cfg)
     dump(output/'provenance.json', dict(source_comparison=str(prior), predictions=str(predictions),
                                       checkpoints=json.loads((prior/'checkpoint-sources.json').read_text()),
-                                      modes=['auto'], precision='bf16', batch_size=1, max_new_tokens=768))
+                                      gpus=gpus, workers_per_gpu=args.workers_per_gpu, modes=['auto'], precision='bf16', batch_size=1, max_new_tokens=768))
     for name in ('bridge', 'current'):
         pin_checkpoint(prior/'snapshots'/name, output/'snapshots'/name)
     for asset in ('config.json', 'tokenizer/tokenizer.json', 'preprocessor_config.json'):
@@ -84,10 +85,10 @@ def main():
                    '--samples', str(sample_file), '--output', str(output/name), '--modes', 'auto', *flags]
         jobs.append(dict(name=name, output=str(output/name), command=command, modes=['auto']))
     dump(output/'jobs.json', jobs)
-    tasks = shard_jobs(jobs, samples, output, len(gpus))
+    tasks = shard_jobs(jobs, samples, output, len(gpus)*args.workers_per_gpu)
     dump(output/'shard-jobs.json', tasks)
-    print(f'Recovery comparison: {len(samples)} samples, {len(tasks)} shards, {len(gpus)} GPUs; {output}', flush=True)
-    execute(tasks, gpus, output)
+    print(f'Recovery comparison: {len(samples)} samples, {len(tasks)} shards, {len(gpus)} GPUs × {args.workers_per_gpu} workers; {output}', flush=True)
+    execute(tasks, gpus, output, args.workers_per_gpu)
     merge_shards(jobs, tasks, samples)
     results, records = {}, {}
     for job in jobs:

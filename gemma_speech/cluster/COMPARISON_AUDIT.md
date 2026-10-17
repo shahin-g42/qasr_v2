@@ -13,15 +13,20 @@ and 250 Han+Latin training samples, deterministically sampled once for all jobs.
 `--per-group 500` increases this to 1,100 examples. Script strata describe written
 labels, not verified spoken languages. This is a diagnostic sample, not a
 population-weighted benchmark. `GQASR_RUN_DIR`, `EVAL_STEP`, `--output`, and a smaller
-`GPU_IDS` list are supported. Each experiment is split into up to eight sample
-shards (one per requested GPU). A shared queue keeps one worker on each GPU and
-starts the next shard as soon as a worker finishes. Estimated longer shards run
+`GPU_IDS` list are supported. Each experiment is split into up to 32 sample
+shards (GPU count × workers per GPU). A shared queue runs four workers on each
+GPU by default and starts the next shard as soon as a worker finishes.
+Set `WORKERS_PER_GPU=1` or `--workers-per-gpu 1` to reduce concurrency; the default
+is four for both this suite and `gqasr_recovery_comparison.sh`.
+Each worker loads its own model and CUDA context. Higher concurrency increases
+memory demand and is not a guarantee of linear speedup. Shell defaults use two
+OMP/MKL threads per worker to limit CPU oversubscription with 32 processes. Estimated longer shards run
 first to reduce idle GPUs at the end. Model reloads occur between shards.
 
 Shards preserve the original batch-four boundaries and global shifted-audio
 pairing. The merger rejects missing/duplicate IDs or changed references, restores
 original sample order, and computes metrics from pooled predictions, never an
-average of shard percentages. Console progress reports active GPUs, completed
+average of shard percentages. Console progress reports active GPUs, active workers, capacity, completed
 prediction rows and overall percentage. Detailed worker logs and settings live
 under `shards/` (logs at the run root); merged predictions remain per experiment.
 

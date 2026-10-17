@@ -108,3 +108,37 @@ def test_merge_rejects_incomplete_shard(tmp_path):
     save_rows(Path(tasks[0]['output'])/'predictions-auto.jsonl', [])
     with pytest.raises(ValueError, match='Missing/reordered'):
         merge_shards(jobs, tasks, rows)
+
+
+def test_scheduler_fills_32_slots_without_exceeding_four_per_gpu(tmp_path, monkeypatch):
+    from collections import Counter
+
+    import gqasr.comparison_audit as audit
+    active = Counter()
+    peak = Counter()
+    total_peak = 0
+    assignments = []
+
+    class Child:
+        def __init__(self, command, stdout, stderr, env):
+            nonlocal total_peak
+            self.gpu = env['CUDA_VISIBLE_DEVICES']
+            self.finished = False
+            active[self.gpu] += 1
+            peak[self.gpu] = max(peak[self.gpu], active[self.gpu])
+            total_peak = max(total_peak, sum(active.values()))
+            assignments.append(self.gpu)
+
+        def poll(self):
+            if not self.finished:
+                active[self.gpu] -= 1
+                self.finished = True
+            return 0
+
+    monkeypatch.setattr(audit.subprocess, 'Popen', Child)
+    jobs = [dict(name=f'job-{i}', output=str(tmp_path/f'job-{i}'), command=['worker']) for i in range(40)]
+    audit.execute(jobs, [str(i) for i in range(8)], tmp_path, workers_per_gpu=4)
+    assert total_peak == 32
+    assert peak == {str(i): 4 for i in range(8)}
+    assert len(assignments) == 40
+    assert sum(active.values()) == 0

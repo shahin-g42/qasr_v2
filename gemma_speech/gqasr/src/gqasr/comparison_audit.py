@@ -189,17 +189,21 @@ def merge_shards(jobs, tasks, samples):
         dump(destination / 'shard-jobs.json', [t for t in tasks if t['experiment'] == job['name']])
 
 
-def execute(jobs, gpus, output):
+def execute(jobs, gpus, output, workers_per_gpu=1):
+    if workers_per_gpu < 1 or not gpus or len(set(gpus)) != len(gpus):
+        raise ValueError('Positive workers per GPU and unique GPU IDs required')
     pending = list(jobs)
     active = []
     finished_rows = 0
     total_rows = sum(len(job.get("modes", ["auto", "chinese"])) * len(job.get("sample_ids", [])) for job in jobs)
     try:
         while pending or active:
-            used = {gpu for _, gpu, _, _ in active}
-            for gpu in gpus:
-                if gpu in used or not pending:
-                    continue
+            occupied = {gpu: sum(item[1] == gpu for item in active) for gpu in gpus}
+            free_slots = [gpu for slot in range(workers_per_gpu) for gpu in gpus
+                          if slot >= occupied[gpu]]
+            for gpu in free_slots:
+                if not pending:
+                    break
                 job = pending.pop(0)
                 log = (output / (job['name'] + '.log')).open('w')
                 child = subprocess.Popen(job['command'], stdout=log, stderr=subprocess.STDOUT,
@@ -222,7 +226,8 @@ def execute(jobs, gpus, output):
             for job, _, _, _ in active:
                 progress[job['name']] = sum(sum(1 for _ in p.open()) for p in Path(job['output']).glob('predictions-*.jsonl'))
             done = finished_rows + sum(progress.values())
-            print(json.dumps(dict(event='comparison_progress', queued=len(pending), active_gpus=len(active),
+            print(json.dumps(dict(event='comparison_progress', queued=len(pending), active_gpus=len({item[1] for item in active}), active_workers=len(active),
+                                  worker_capacity=len(gpus)*workers_per_gpu,
                                   completed_rows=done, total_rows=total_rows,
                                   percent=round(100*done/total_rows, 2) if total_rows else None,
                                   generated_rows=progress)), flush=True)
@@ -297,12 +302,13 @@ def main():
     parser.add_argument('--root', required=True)
     parser.add_argument('--run-dir')
     parser.add_argument('--gpus', default='0,1,2,3,4,5,6,7')
+    parser.add_argument('--workers-per-gpu', type=int, default=4)
     parser.add_argument('--per-group', type=int, default=250)
     parser.add_argument('--eval-step', default='7294')
     parser.add_argument('--output')
     args = parser.parse_args()
     gpus = args.gpus.split(',')
-    if args.per_group < 1 or not all(gpus) or len(set(gpus)) != len(gpus):
+    if args.workers_per_gpu < 1 or args.per_group < 1 or not all(gpus) or len(set(gpus)) != len(gpus):
         parser.error('Positive per-group and unique nonempty GPU IDs required')
     root = Path(args.root).resolve()
     run = Path(args.run_dir).resolve() if args.run_dir else root / 'gqasr/outputs/full_b40_frozen'
@@ -315,7 +321,7 @@ def main():
     import transformers
     dump(output / 'runtime.json', dict(torch=str(torch.__version__), transformers=transformers.__version__,
         python=sys.version, git_commit=subprocess.check_output(['git', '-C', str(root), 'rev-parse', 'HEAD'], text=True).strip(),
-        gpus=gpus))
+        gpus=gpus, workers_per_gpu=args.workers_per_gpu))
     predictions = run / f'predictions-{args.eval_step}.jsonl'
     samples = [{**r, 'audit_group': 'eval', 'stratum': 'eval'} for r in select_samples(cfg['index_path'], predictions)]
     train, population = select_training_samples(cfg['index_path'], args.per_group, 42)
@@ -371,10 +377,10 @@ def main():
                    '--output', str(output / name)]
         jobs.append(dict(name=name, output=str(output / name), command=command))
     dump(output / 'jobs.json', jobs)
-    tasks = shard_jobs(jobs, samples, output, len(gpus))
+    tasks = shard_jobs(jobs, samples, output, len(gpus)*args.workers_per_gpu)
     dump(output / 'shard-jobs.json', tasks)
-    print(f'Running {len(tasks)} shards across {len(gpus)} GPUs', flush=True)
-    execute(tasks, gpus, output)
+    print(f'Running {len(tasks)} shards across {len(gpus)} GPUs, {args.workers_per_gpu} workers/GPU', flush=True)
+    execute(tasks, gpus, output, args.workers_per_gpu)
     merge_shards(jobs, tasks, samples)
     report(jobs, output)
     print(f'COMPLETE: {output / "REPORT.md"}', flush=True)

@@ -193,7 +193,8 @@ def test_stream_save_rejects_bad_duration_and_nonfinite_audio(tmp_path):
 
 
 @pytest.mark.parametrize("stage", ["stream-check", "stream-smoke", "stream-prepare", "run"])
-def test_stream_launcher_selects_config_and_online_preparation(tmp_path, stage):
+@pytest.mark.parametrize("custom_settings", [False, True])
+def test_stream_launcher_selects_config_and_online_preparation(tmp_path, monkeypatch, stage, custom_settings):
     import os
     import shutil
     import subprocess
@@ -210,18 +211,26 @@ def test_stream_launcher_selects_config_and_online_preparation(tmp_path, stage):
     cli.write_text(f"#!{sys.executable}\nimport json, os, sys\n"
                    "print(json.dumps({'args': sys.argv[1:], 'offline': os.environ['HF_HUB_OFFLINE']}))\n")
     cli.chmod(0o755)
+    # Reproduce a caller with exported tuning settings (including QASR's test stage).
+    settings = {"WORKERS_PER_GPU": "8", "BATCH_SIZE": "16", "STREAM_WORKERS": "3"}
+    for name, value in settings.items():
+        monkeypatch.setenv(name, value)
     env = {**os.environ, "GQASR_BENCH_INPUT": "stream", "GQASR_BENCH_WORK": str(tmp_path / "work"),
            "GEMMA_SPEECH_ENV": str(root / ".venv")}
-    for name in ("GQASR_BENCH_DATA", "GQASR_BENCH_CONFIG", "STREAM_WORKERS"):
+    # Default assertions must not inherit the caller's benchmark configuration.
+    for name in ("GQASR_BENCH_DATA", "GQASR_BENCH_CONFIG", *settings):
         env.pop(name, None)
+    if custom_settings:
+        env.update(settings)
     proc = subprocess.run(["bash", str(script), stage], env=env, capture_output=True, text=True, check=True)
     event = next(json.loads(line) for line in proc.stdout.splitlines() if line.startswith("{"))
     args = event["args"]
     if stage == "run":
         assert event["offline"] == "1"
         assert args[args.index("--config") + 1].endswith("arabic_leaderboard_streaming.yaml")
-        assert args[args.index("--workers-per-gpu") + 1] == "11"
+        assert args[args.index("--workers-per-gpu") + 1] == ("8" if custom_settings else "11")
+        assert args[args.index("--batch-size") + 1] == ("16" if custom_settings else "1")
     else:
         assert event["offline"] == "0"
         assert args[args.index("--work-dir") + 1] == str(tmp_path / "work")
-        assert args[args.index("--workers") + 1] == "16"
+        assert args[args.index("--workers") + 1] == ("3" if custom_settings else "16")

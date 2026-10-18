@@ -20,15 +20,18 @@ def positive(value):
 def main(argv=None):
     parser = argparse.ArgumentParser(description=__doc__)
     sub = parser.add_subparsers(dest='command', required=True)
-    for name in ('plan', 'run', 'stop', 'status', 'verify', 'assemble', 'peek', 'lock-test'):
+    for name in ('plan', 'run', 'stop', 'status', 'verify', 'assemble', 'peek', 'lock-test', 'refresh-ml'):
         cmd = sub.add_parser(name)
         cmd.add_argument('--run-root', required=True)
-        if name in ('plan', 'verify', 'assemble'):
+        if name in ('plan', 'verify', 'assemble', 'refresh-ml'):
             cmd.add_argument('--jobs', type=positive, default=min(16, os.cpu_count() or 1))
         if name == 'plan':
             cmd.add_argument('--config', default='configs/code_switch/full_v1.yaml')
             cmd.add_argument('--samples', type=positive, help='pilot preview count; production training rejects pilots')
             cmd.add_argument('--limit', type=positive, help='pilot only: index first N rows per train manifest; all eval rows excluded')
+        if name == 'refresh-ml':
+            cmd.add_argument('--source-index', required=True)
+            cmd.add_argument('--quarantine', required=True)
         if name == 'run':
             cmd.add_argument('--procs', type=positive, default=8)
         if name == 'stop':
@@ -46,7 +49,14 @@ def main(argv=None):
     args = parser.parse_args(argv)
     root = Path(args.run_root).resolve()
     try:
-        if args.command == 'plan':
+        plan_file = root / '_state/plan.json'
+        if (plan_file.exists() and json.loads(plan_file.read_text()).get('derived_index')
+                and args.command not in ('peek', 'lock-test')):
+            parser.error('This is a published Malayalam revision. Use training preflight to validate it; do not run/verify/reset/assemble it.')
+        if args.command == 'refresh-ml':
+            from .refresh import refresh_ml
+            refresh_ml(args.source_index, root, args.quarantine, args.jobs)
+        elif args.command == 'plan':
             plan(root, args.config, args.jobs, args.samples, args.limit)
         elif args.command == 'run':
             run(root, args.procs)

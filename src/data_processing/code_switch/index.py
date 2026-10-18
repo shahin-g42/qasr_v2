@@ -168,6 +168,8 @@ def check_frozen(root, p, full=False):
         if full and digest(src['path']) != src['sha256']:
             raise ValueError(f"Frozen manifest hash differs: {src['path']}")
     state = Path(root) / '_state'
+    if p.get('derived_index') and digest(state / 'quarantine.jsonl') != p['derived_index']['quarantine_sha256']:
+        raise ValueError('Frozen quarantine changed')
     if digest(state / 'excluded.json') != p['excluded_sha256']:
         raise ValueError('Eval exclusions changed')
     for name, expected in p['tokenizer_hashes'].items():

@@ -10,7 +10,7 @@ no validation WER/CER. Establish the baseline below before judging Stage 3.
 
 - Initialize weights from the completed `output/v81/full_12node` export.
   Start a fresh optimizer and scheduler; do not resume Stage 2 optimizer state.
-  Save separately to `output/v81/hq_12node`.
+  Save separately to `output/v81/hq_ml_v2_12node`.
 - Use current `asr_cleaned_manifests/full_v1` manifests. Remove only Arabic and
   English `train_*_q3asr` from the anchor pool. Retain all other Stage 2 anchors,
   including Arabic el_ar_v1. Hindi and Chinese have no alternative training
@@ -29,7 +29,7 @@ no validation WER/CER. Establish the baseline below before judging Stage 3.
 - Preserve code-switch probability 0.4 and all four augmentation probabilities
   at 0.37. Preserve the tested duration/token limits and augmentation strengths.
   No speculative new augmentation is introduced during the stage transition.
-- Reuse the existing cs_v1 index, with no plan/run/verify/assemble rebuild.
+- Reuse the unchanged cs_v1 language pools through the Malayalam revision below.
   **Partner clips still come from the full Stage 2 pool**, including ar/en
   q3asr. This is curated-anchor training with full-pool code-switch replay,
   not a purely curated-audio stage. A strictly curated partner pool would
@@ -55,6 +55,44 @@ repeated views but does not remove overfitting risk. Counts exclude neither
 runtime audio failures nor overlength-token replacements; the scan validates
 the dataset's index-time filters. Do not raise the 512-token limit just to
 silence warnings. Audit recurring Malayalam rejects independently.
+
+## Malayalam revision after the cleanup
+
+The Stage 3 config now uses `code_switch_indexes/cs_v1_ml_v2/assembled/index.json`
+and a fresh output directory `output/v81/hq_ml_v2_12node` to avoid mixing index
+receipts or optimizer state from an earlier attempt. GQASR and Stage 2 configs
+are unchanged.
+
+Run once on one cluster machine in qasr3, from the repository root:
+
+```bash
+RUN_ID=cs_v1_ml_v2 JOBS=8 bash scripts/corpus/run_code_switch.sh refresh-ml \
+  --source-index "$PWD/code_switch_indexes/cs_v1/assembled/index.json" \
+  --quarantine "$PWD/asr_cleaned_manifests/ml_training_v2/quarantine/ml_damaged_transcripts.jsonl"
+```
+
+This reads the current Malayalam training manifest at its existing path,
+retokenizes and validates its audio, removes missing/deleted and quarantined
+partners, and publishes a separate Malayalam pool. It also picks up eligible
+new or repaired records. Quarantine is matched by audio basename, as in GQASR.
+Only Malayalam audio is reprocessed. Eval sources and other-language source
+metadata must still match the original plan; newly overlapping cross-language
+partners cause an error. The original `cs_v1` is not modified.
+
+Other language SQLite pools are reused via absolute symlinks, so keep the
+original index in place. Their sizes and source metadata are checked; they
+are not fully rehashed during this refresh. This assumes the published original
+pools remain immutable, as normal training does. The new plan snapshots the
+quarantine file and revised source metadata. Publication is atomic, and a
+failure removes only private staging files. A hard-killed process may leave
+an unpublished `*.building-*` directory; do not use it as an index.
+
+No separate plan/run/verify/assemble command is needed for this revision.
+Those lifecycle commands are refused for a derived index: its non-Malayalam
+pools are referenced, not locally rebuilt from chunks. Validate it with the
+Stage 3 preflight below. For another edit, choose another destination RUN_ID,
+refresh from the original full `cs_v1`, and update a copied Stage 3 config's
+index and output paths. Never mutate a published index during training.
 
 ## 1. Finish Stage 2 and establish a baseline
 
@@ -94,7 +132,7 @@ NNODES=1 bash scripts/run_v81_phase3_12node.sh 0 localhost --smoke-test
 ```
 
 This checks the model forward/backward, code-switch loader and evaluation
-callback using eight GPUs. It writes beneath `hq_12node/smoke-test`, not the
+callback using eight GPUs. It writes beneath `hq_ml_v2_12node/smoke-test`, not the
 production output. It is not a 96-GPU networking rehearsal. Require the
 two-step smoke run to finish without OOM/NaNs before the production launch.
 
@@ -145,7 +183,7 @@ If interrupted, resume a complete **Stage 3** checkpoint on every node:
 
 ```bash
 bash scripts/run_v81_phase3_12node.sh YOUR_RANK \
-  --resume-from-checkpoint /lustrefs/shared/shahin.konadath/workspace/train/stt/v2/qasr_v2/output/v81/hq_12node/checkpoint-1000
+  --resume-from-checkpoint /lustrefs/shared/shahin.konadath/workspace/train/stt/v2/qasr_v2/output/v81/hq_ml_v2_12node/checkpoint-1000
 ```
 
 Replace the checkpoint number with your actual complete checkpoint. Do not
@@ -155,7 +193,7 @@ use `--resume-from-checkpoint` to start Stage 3 from a Stage 2 checkpoint.
 
 ```bash
 CUDA_VISIBLE_DEVICES=0 PYTHONPATH=src python scripts/eval_v81_phase3.py \
-  --model output/v81/hq_12node \
+  --model output/v81/hq_ml_v2_12node \
   --output-dir output/v81/evaluation/stage3_final
 ```
 

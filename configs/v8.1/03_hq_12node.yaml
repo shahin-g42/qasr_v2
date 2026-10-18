@@ -1,8 +1,8 @@
-# Stage 3: curated anchors with 40% code-switch replay from the existing full pool.
+# Stage 3: curated anchors with 40% code-switch replay from the full pool with a validated Malayalam refresh.
 # Fresh optimizer/schedule from the COMPLETED Stage 2 final export; not a Stage 2 resume.
 # Budget uses full_v1 assembled counts; confirm once with --preflight --scan.
 model_name_or_path: /lustrefs/shared/shahin.konadath/workspace/train/stt/v2/qasr_v2/output/v81/full_12node
-output_dir: /lustrefs/shared/shahin.konadath/workspace/train/stt/v2/qasr_v2/output/v81/hq_12node
+output_dir: /lustrefs/shared/shahin.konadath/workspace/train/stt/v2/qasr_v2/output/v81/hq_ml_v2_12node
 freeze_audio_tower: false
 freeze_language_model: false
 train_manifest:
@@ -132,4 +132,4 @@ language_batch_counts:
   zh: 1
 eval_wer_global_language_budget: true
 code_switch_probability: 0.4
-code_switch_index: /lustrefs/shared/shahin.konadath/workspace/train/stt/v2/qasr_v2/code_switch_indexes/cs_v1/assembled/index.json
+code_switch_index: /lustrefs/shared/shahin.konadath/workspace/train/stt/v2/qasr_v2/code_switch_indexes/cs_v1_ml_v2/assembled/index.json

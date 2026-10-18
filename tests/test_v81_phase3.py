@@ -43,7 +43,8 @@ def test_curated_budget_with_real_sampler():
     assert cfg.resume_from_checkpoint is None
     assert cfg.learning_rate == pytest.approx(previous.learning_rate / 5)
     assert cfg.code_switch_probability == previous.code_switch_probability == 0.4
-    assert cfg.code_switch_index == previous.code_switch_index
+    assert '/cs_v1_ml_v2/assembled/index.json' in cfg.code_switch_index
+    assert '/cs_v1/assembled/index.json' in previous.code_switch_index
     assert cfg.eval_manifest == previous.eval_manifest
     for lang in ('ar', 'en'):
         assert not any(p.endswith(f'train_{lang}_q3asr.jsonl') for p in cfg.train_manifest[lang])

@@ -501,3 +501,59 @@ def test_signature_snapshot_parallel_equivalence_and_progress(tmp_path, capsys):
     output = capsys.readouterr().out
     assert '32 threads' in output
     assert 'signatures 62/62' in output
+
+
+def test_malayalam_refresh_keeps_other_pools_and_replaces_text(corpus):
+    import sqlite3
+
+    from data_processing.code_switch.common import digest, load_plan
+    from data_processing.code_switch.index import check_frozen
+    from data_processing.code_switch.refresh import refresh_ml
+
+    root, frozen, _, tokenizer = complete(corpus)
+    source = next(c['source'] for c in frozen['chunks'] if c['lang'] == 'ml')
+    path = Path(source)
+    rows = [json.loads(line) for line in path.read_text().splitlines()]
+    quarantine = root.parent / 'quarantine.jsonl'
+    quarantine.write_text(json.dumps(rows[2]) + '\n')
+    rows[1]['text'] = 'corrected Malayalam text'
+    # Row 3 removed, row 2 explicitly quarantined even if still in source.
+    path.write_text(''.join(json.dumps(r) + '\n' for i, r in enumerate(rows) if i != 3))
+    before = {p.name: digest(p) for p in (root / 'assembled').iterdir()}
+    destination = root.parent / 'revised'
+    refresh_ml(root / 'assembled/index.json', destination, quarantine, jobs=2)
+    assert before == {p.name: digest(p) for p in (root / 'assembled').iterdir()}
+    mixer = OnlineCodeSwitch(destination / 'assembled/index.json', tokenizer, allow_pilot=True)
+    assert mixer.index['pools']['ml']['count'] == 13
+    with sqlite3.connect(destination / 'assembled/ml.sqlite') as db:
+        records = [json.loads(r[0]) for r in db.execute('SELECT record FROM pool ORDER BY id')]
+    assert records[0]['text'] == 'corrected Malayalam text'
+    assert not any(Path(r['audio_filepath']).name in ('ml-0.wav', 'ml-2.wav', 'ml-3.wav') for r in records)
+    for lang in ('ar', 'en', 'hi', 'zh'):
+        assert (destination / f'assembled/{lang}.sqlite').is_symlink()
+    check_frozen(destination, load_plan(destination), full=True)
+    with pytest.raises(ValueError, match='Destination exists'):
+        refresh_ml(root / 'assembled/index.json', destination, quarantine)
+    # Even sources excluded from the curated anchor set remain frozen.
+    en = Path(next(c['source'] for c in frozen['chunks'] if c['lang'] == 'en'))
+    en.write_text(en.read_text() + '\n')
+    with pytest.raises(ValueError, match='Frozen manifest changed'):
+        refresh_ml(root / 'assembled/index.json', root.parent / 'bad', quarantine)
+    assert not (root.parent / 'bad').exists()
+
+
+def test_malayalam_refresh_rejects_cross_language_and_cleans_staging(corpus):
+    from data_processing.code_switch.refresh import refresh_ml
+
+    root, frozen, _, _ = complete(corpus)
+    path = Path(next(c['source'] for c in frozen['chunks'] if c['lang'] == 'ml'))
+    rows = [json.loads(line) for line in path.read_text().splitlines()]
+    rows[1]['audio_filepath'] = str(root.parent / 'en-1.wav')
+    path.write_text(''.join(json.dumps(r) + '\n' for r in rows))
+    quarantine = root.parent / 'quarantine.jsonl'
+    quarantine.write_text('')
+    destination = root.parent / 'bad_overlap'
+    with pytest.raises(ValueError, match='Malayalam overlaps en'):
+        refresh_ml(root / 'assembled/index.json', destination, quarantine, jobs=2)
+    assert not destination.exists()
+    assert not list(root.parent.glob('bad_overlap.building-*'))

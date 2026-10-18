@@ -15,7 +15,7 @@ ARGS=("$COMMAND" --run-root "$ROOT")
 case "$COMMAND" in
   plan) ARGS+=(--config "${CONFIG:-configs/code_switch/full_v1.yaml}" --jobs "${JOBS:-8}") ;;
   run) ARGS+=(--procs "${PROCS:-8}") ;;
-  verify|assemble) ARGS+=(--jobs "${JOBS:-16}") ;;
+  verify|assemble|refresh-ml) ARGS+=(--jobs "${JOBS:-16}") ;;
   stop|status|peek|lock-test) ;;
   *) echo "Unknown command: $COMMAND" >&2; exit 1 ;;
 esac

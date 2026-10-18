@@ -517,8 +517,12 @@ def _build_code_switcher(config, processor, training_args, train_parts):
     mixer = OnlineCodeSwitch(config.code_switch_index, processor.tokenizer, allow_pilot=config.smoke_test)
     indexed_sources = {s["path"]: s for s in mixer.index["sources"]}
     indexed_train = {path for path in indexed_sources if Path(path).name.startswith("train_")}
-    if {str(Path(path).resolve()) for path in config.train_manifest_paths} != indexed_train:
-        raise ValueError("Code-switch index and training manifests differ")
+    # A polish stage may use curated anchors with replay from the larger pool.
+    # Every anchor must still belong to that frozen pool; all source metadata
+    # (including sources omitted from the anchor subset) is checked below.
+    anchors = {str(Path(path).resolve()) for path in config.train_manifest_paths}
+    if not anchors.issubset(indexed_train):
+        raise ValueError(f"Training manifests absent from code-switch index: {sorted(anchors - indexed_train)}")
     for path, expected in indexed_sources.items():
         actual = Path(path).stat()
         if (actual.st_size, actual.st_mtime_ns) != (expected["size"], expected["mtime_ns"]):

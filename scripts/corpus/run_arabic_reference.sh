@@ -1,0 +1,50 @@
+#!/usr/bin/env bash
+# One-node reference pilot; reuse the Yodas3 corrector and saved ASR predictions.
+set -euo pipefail
+cd "$(dirname "$0")/../.."
+REPO="$PWD"
+export PYTHONPATH="$REPO/src:$REPO/gemma_speech/gqasr/src${PYTHONPATH:+:$PYTHONPATH}"
+export OMP_NUM_THREADS=1 MKL_NUM_THREADS=1 OPENBLAS_NUM_THREADS=1 PYTHONUNBUFFERED=1
+PY="${PYTHON:-$REPO/gemma_speech/.venv/bin/python}"
+if [[ ! -x "$PY" ]]; then PY="${PYTHON:-python3}"; fi
+ROOT="${ARABIC_REF_ROOT:-$REPO/verification/arabic-reference-pilot-v1}"
+QASR_RESULTS="${QASR_RESULTS:-$REPO/verification/qasr-stage02-arabic}"
+GQASR_RESULTS="${GQASR_RESULTS:-$REPO/gemma_speech/gqasr/verification/arabic-final-streamed}"
+AUDIO_ROOT="${ARABIC_REF_AUDIO_ROOT:-$REPO/gemma_speech/gqasr/verification/arabic-stream-cache/prepared/audio}"
+LLM_URL="${LLM_URL:-http://localhost:8010}"
+MODEL_NAME="${LLM_MODEL_NAME:-corrector}"
+CHECKPOINT="${LLM_MODEL:-Qwen/Qwen3.6-35B-A3B}"
+COMMAND="${1:?Expected plan|doctor|smoke|run|status|review-pack|import-reviews|score|test|llm-print|llm-start}"
+shift
+CLI=("$PY" -m data_processing.arabic_reference)
+case "$COMMAND" in
+  plan)
+    exec "${CLI[@]}" prepare --prediction "qasr=$QASR_RESULTS/predictions-arabic.jsonl" \
+      --prediction "gqasr=$GQASR_RESULTS/predictions-arabic.jsonl" --output "$ROOT/plan" "$@" ;;
+  doctor)
+    exec "${CLI[@]}" doctor --plan "$ROOT/plan" --audio-root "$AUDIO_ROOT" \
+      --url "$LLM_URL" --model "$MODEL_NAME" --checkpoint "$CHECKPOINT" "$@" ;;
+  smoke|run)
+    EXTRA=(); DEST="$ROOT/proposals"
+    if [[ "$COMMAND" == smoke ]]; then EXTRA=(--smoke); DEST="$ROOT/smoke"; fi
+    exec "${CLI[@]}" propose --plan "$ROOT/plan" --output "$DEST" \
+      --url "$LLM_URL" --model "$MODEL_NAME" --checkpoint "$CHECKPOINT" \
+      --revision "${LLM_REVISION:-unrecorded}" --concurrency "${REF_CONCURRENCY:-16}" \
+      --max-tokens "${REF_MAX_TOKENS:-2048}" "${EXTRA[@]}" "$@" ;;
+  review-pack)
+    exec "${CLI[@]}" review-pack --plan "$ROOT/plan" --proposals "$ROOT/proposals" \
+      --audio-root "$AUDIO_ROOT" --output "$ROOT/listening" "$@" ;;
+  import-reviews)
+    exec "${CLI[@]}" import-reviews --plan "$ROOT/plan" --output "$ROOT/reviewed-v1.jsonl" "$@" ;;
+  score)
+    exec "${CLI[@]}" score --plan "$ROOT/plan" --reviewed "$ROOT/reviewed-v1.jsonl" \
+      --output "$ROOT/scores-v1.json" "$@" ;;
+  status)
+    EXTRA=(); if [[ -f "$ROOT/proposals/run.json" ]]; then EXTRA=(--proposals "$ROOT/proposals"); fi
+    exec "${CLI[@]}" status --plan "$ROOT/plan" "${EXTRA[@]}" "$@" ;;
+  test) exec "$PY" -m pytest tests/test_arabic_reference.py "$@" ;;
+  llm-print|llm-start)
+    export LLM_MODEL="$CHECKPOINT"
+    exec bash scripts/corpus/serve_yodas3_corrector.sh "${COMMAND#llm-}" "$@" ;;
+  *) echo "Unknown stage: $COMMAND" >&2; exit 1 ;;
+esac

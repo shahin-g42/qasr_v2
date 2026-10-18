@@ -1,0 +1,43 @@
+<!doctype html>
+<html lang="en"><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
+<title>Arabic reference pilot — listening review</title>
+<style>
+body{font:16px/1.6 system-ui,sans-serif;background:#f4f6fa;color:#18283b;margin:0}main{max-width:1050px;margin:auto;padding:24px}header,article{background:white;border:1px solid #dce4ee;padding:22px;border-radius:12px;margin-bottom:16px}h1{font-size:26px;margin:0 0 10px}h2{font-size:19px}textarea{box-sizing:border-box;width:100%;min-height:90px;font-size:20px;line-height:1.7;padding:10px;border:1px solid #9caabd;border-radius:6px}input,select,button{font:inherit;padding:8px}button{cursor:pointer}audio{width:100%}label{display:block;margin-top:12px}.candidate{white-space:pre-wrap;overflow-wrap:anywhere;background:#f4f6fa;padding:10px;font-size:20px}.note{color:#59687a}.toolbar{display:flex;gap:10px;flex-wrap:wrap}summary{cursor:pointer;margin-top:12px}#status{white-space:pre-wrap}
+</style><main><header><h1>Arabic reference pilot</h1>
+<p>Listen first and write the spoken words. Preserve dialect, code switching, names, numbers and audible repetitions. The formatted version may change punctuation, spacing, case and conservative diacritics only. Keep number words as spoken.</p>
+<p class="note">Candidate transcripts and the corrector proposal are unverified. If you cannot determine the words, choose Unresolved. Save your review file regularly; this page keeps edits only while it remains open. Reopen a saved file to continue.</p>
+<label>Reviewer ID <input id="reviewer" autocomplete="off"></label><div class="toolbar">
+<button id="save">Download completed reviews</button><label>Resume review file <input id="resume" type="file" accept=".jsonl"></label>
+<select id="filter"><option value="all">All datasets</option></select><button id="prev">Previous</button><button id="next">Next</button></div><p id="status"></p></header><div id="cards"></div></main>
+<script id="jobs-data" type="application/json">__JOBS_JSON__</script>
+<script>
+const jobs=JSON.parse(document.getElementById('jobs-data').textContent);
+const state=new Map(); let page=0; const size=10;
+const byId=new Map(jobs.map(j=>[j.id,j]));
+const el=(tag,text)=>{const e=document.createElement(tag);if(text!==undefined)e.textContent=text;return e;};
+const status=t=>document.getElementById('status').textContent=t;
+for(const ds of [...new Set(jobs.map(j=>j.dataset))]){const o=el('option',ds);o.value=ds;document.getElementById('filter').append(o);}
+function selected(){const f=document.getElementById('filter').value;return jobs.filter(j=>f==='all'||j.dataset===f);}
+function render(){const subset=selected();page=Math.max(0,Math.min(page,Math.ceil(subset.length/size)-1));const cards=document.getElementById('cards');cards.replaceChildren();
+for(const j of subset.slice(page*size,(page+1)*size)){
+ const s=state.get(j.id)||{decision:'pending',audio_listened:false,verified_text:'',ideal_text:'',reason:''};state.set(j.id,s);
+ const card=el('article');card.append(el('h2',`${j.id} · ${j.duration.toFixed(2)} s · ${j.dialect||j.dataset}`));
+ if(j.audio_url){const a=el('audio');a.controls=true;a.preload='none';a.src=j.audio_url;card.append(a);}else card.append(el('p','Audio not included. Generate a listening pack on the cluster before reviewing.'));
+ const heard=el('label');const check=el('input');check.type='checkbox';check.checked=s.audio_listened;check.disabled=!j.audio_url;check.onchange=()=>s.audio_listened=check.checked;heard.append(check,document.createTextNode(' I listened to this recording'));card.append(heard);
+ for(const [key,label] of [['verified_text','Words spoken'],['ideal_text','Formatted transcript'],['reason','Review notes / reason for uncertainty']]){const l=el('label',label);const t=el('textarea');t.dir='auto';t.value=s[key]||'';t.oninput=()=>s[key]=t.value;l.append(t);card.append(l);}
+ const decision=el('select');for(const [v,t]of[['pending','Pending'],['verified','Verified after listening'],['unresolved','Unresolved after listening']]){const o=el('option',t);o.value=v;decision.append(o);}decision.value=s.decision;decision.onchange=()=>s.decision=decision.value;card.append(decision);
+ const candidates=el('details');candidates.append(el('summary','Reveal anonymous candidate transcripts'));
+ for(const c of j.candidates){candidates.append(el('p',`Candidate ${c.label}${c.truncated?' — middle omitted':''}${c.generation_limit_hit?' — generation limit reached':''}`));const p=el('div',c.text+(c.tail?'\n[…]\n'+c.tail:''));p.className='candidate';p.dir='auto';candidates.append(p);}card.append(candidates);
+ if(j.proposal){const d=el('details');d.append(el('summary','Reveal unverified corrector proposal'));const p=el('div',JSON.stringify(j.proposal,null,2));p.className='candidate';p.dir='auto';d.append(p);card.append(d);}
+ cards.append(card);
+}status(`Showing ${subset.length? page*size+1:0}–${Math.min((page+1)*size,subset.length)} of ${subset.length}. Completed in this session: ${[...state.values()].filter(s=>s.decision!=='pending').length}.`);}
+document.getElementById('filter').onchange=()=>{page=0;render();};document.getElementById('prev').onclick=()=>{page--;render();};document.getElementById('next').onclick=()=>{page++;render();};
+document.getElementById('save').onclick=()=>{try{
+ const reviewer=document.getElementById('reviewer').value.trim();if(!reviewer)throw Error('Enter your reviewer ID.');const out=[];
+ for(const [id,s]of state){if(s.decision==='pending')continue;const j=byId.get(id);if(!s.audio_listened||!s.reason.trim())throw Error(`${id}: listening and review notes are required.`);if(s.decision==='verified'&&(!s.verified_text.trim()||!s.ideal_text.trim()))throw Error(`${id}: both transcripts are required.`);
+ out.push({id,binding:j.binding,policy_sha256:j.policy_sha256,audio_sha256:j.audio_sha256,reviewer_id:reviewer,audio_listened:true,decision:s.decision,verified_text:s.decision==='verified'?s.verified_text.trim():null,ideal_text:s.decision==='verified'?s.ideal_text.trim():null,reason:s.reason.trim()});}
+ if(!out.length)throw Error('No completed reviews to download.');const url=URL.createObjectURL(new Blob([out.map(r=>JSON.stringify(r)).join('\n')+'\n'],{type:'application/x-ndjson'}));const a=el('a');a.href=url;a.download='reviews.jsonl';a.click();setTimeout(()=>URL.revokeObjectURL(url),1000);status(`Downloaded ${out.length} completed reviews. Keep this file to resume.`);
+}catch(e){status(e.message);}};
+document.getElementById('resume').onchange=async e=>{try{const file=e.target.files[0];if(!file)return;const rows=(await file.text()).trim().split('\n').map(JSON.parse);const seen=new Set();for(const r of rows){const j=byId.get(r.id);if(!j||r.binding!==j.binding||r.policy_sha256!==j.policy_sha256||r.audio_sha256!==j.audio_sha256||seen.has(r.id))throw Error('Review file does not match this pack, or has duplicate rows.');seen.add(r.id);}if(new Set(rows.map(r=>r.reviewer_id)).size!==1)throw Error('Resume one reviewer file at a time.');for(const r of rows)state.set(r.id,{...r,verified_text:r.verified_text||'',ideal_text:r.ideal_text||''});document.getElementById('reviewer').value=rows[0].reviewer_id;render();}catch(e){status(e.message);}};
+render();
+</script></html>

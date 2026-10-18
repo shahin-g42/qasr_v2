@@ -13,16 +13,70 @@ from pathlib import Path
 
 DATASETS = ("sada", "commonvoice", "masc_clean", "masc_noisy", "mgb2", "casablanca")
 POLICY = {
-    "version": "arabic-reference-pilot-v1",
+    "version": "arabic-reference-pilot-v2",
     "purpose": "evaluation_only",
     "audio_review_required": True,
-    "number_policy": "Preserve spoken number words; digit conversion is deferred in v1.",
-    "diacritics": "Conservative, disambiguating marks; do not invent case endings.",
-    "content": "Preserve dialect, code switching, numbers, negation, names, audible repetitions and incomplete speech. Never paraphrase or complete quotations from memory.",
-    "unclear": "Never infer missing speech from fluency. Unresolved clips stay explicitly unresolved.",
-    "verification": "Text-only corrector output is always proposed, never verified.",
-    "publication": "Internal pilot; source rights, independent review and reference freeze are required before a public benchmark release.",
+    "evidence": "Audio decides spoken content. References, model outputs, language headers and dialect metadata can all be wrong. Fluency, model agreement and lower WER are not proof.",
+    "content": "Preserve dialect, code switching, negation, names, values, hesitations, audible repetition and incomplete speech. Never translate, paraphrase, repair grammar or complete quotations/scripture from memory.",
+    "orthography": "Do not globally equate ه/ة, ى/ي, أ/إ/ا or dialect variants. Word, clitic-spacing, spelling and script changes belong in verified_text with an explanation and audio review, not silently in ideal_text.",
+    "foreign_speech": "Arabic-letter phonetic English and Latin-script English are competing hypotheses. Confirm the spoken language, words and spelling by listening. Use conventional spelling for confidently identified foreign words, retain Arabic for established Arabic loanwords, and leave uncertain names/spelling unresolved. Neither script is automatically better.",
+    "number_policy": "Preserve number words and digits; do not convert between them. Preserve numeric signs, decimal/thousands separators, units, dates, times, email addresses and URLs. Any content correction requires audio evidence.",
+    "formatting": "ideal_text may change punctuation, whitespace layout, case and conservative Arabic vowel marks only. Preserve word boundaries, letters, numbers and punctuation inside numbers/identifiers. Do not split/join words or change apostrophes in foreign words as formatting.",
+    "diacritics": "Add only justified Arabic vowel marks; leave ambiguous vowels unmarked. Do not invent case endings, standardize dialect grammar or remove meaningful foreign accents/Arabic hamza or maddah.",
+    "unclear": "غيرواضح/غير واضح may be an annotation marker or actual spoken words. Listen to distinguish them. Do not fill gaps from context, guess an email/name, or delete uncertain speech to improve WER. Any unresolved span makes the whole clip unresolved in this pilot; no partial-reference scoring.",
+    "repetition": "Generation caps, omitted middles and extreme repetition are warnings, not evidence of speech. Do not copy loops, collapse genuine repeats, infer missing words, or treat shorter output as automatically correct. Audio review must establish the complete words.",
+    "duplicates": "Identical prepared-audio hashes require consistent verified_text and ideal_text across reviewed rows; conflicting transcripts need adjudication. Original rows remain immutable. Duplicate diagnostics are separate from the sampled pilot.",
+    "verification": "Text-only corrector output is always proposed, never verified. Every risk flag needs an explicit proposal note and a human resolution note. A human listening attestation is not independent verification.",
+    "fairness": "Hide model identities, listen before revealing candidates, and never optimize references to favor any system. Score original and reviewed references on the same reviewed subset; retain unresolved coverage and keep diagnostics separate.",
+    "publication": "Internal pilot; source rights, independent review and reference freeze are required before public release. Evaluation audio and corrected references must not enter training; training cleanup and fresh-holdout evaluation are separate stages.",
 }
+
+UNCLEAR_RE = re.compile(r"غير\s*واضح", re.IGNORECASE)
+MARKED_UNCLEAR_RE = re.compile(
+    r"[\[<({]\s*(?:unclear|inaudible|unintelligible|غير\s*(?:واضح|مفهوم|مسموع))\s*[\]>)}]",
+    re.IGNORECASE,
+)
+ISSUE_DESCRIPTIONS = {
+    "unclear_span": "Possible annotation marker or unclear span: distinguish spoken words from a placeholder; do not guess missing speech.",
+    "foreign_script": "Possible foreign speech or script disagreement: confirm the language, words and spelling from audio; script alone is not evidence.",
+    "repetition_or_truncation": "A candidate is capped, clipped or contains long repetition: establish the complete utterance and which repeats are audible.",
+    "duplicate_audio": "Identical prepared audio occurs in multiple rows, possibly with different references: resolve from audio and use consistent reviewed texts.",
+}
+
+
+def suspected_repetition(text):
+    tokens = text.split()
+    for width in range(1, 5):
+        required = max(8, math.ceil(24 / width))
+        run = 0
+        for i in range(width, len(tokens)):
+            run = run + 1 if tokens[i] == tokens[i - width] else 0
+            if run >= (required - 1) * width:
+                return True
+    return False
+
+
+def review_issues(row):
+    texts = [row["text"], *(c["text"] for c in row["candidates"])]
+    issues = set()
+    if any(UNCLEAR_RE.search(t) or MARKED_UNCLEAR_RE.search(t) for t in texts):
+        issues.add("unclear_span")
+    if any(re.search(r"[A-Za-z]", t) for t in texts):
+        issues.add("foreign_script")
+    if any(len(t) > 1800 or suspected_repetition(t) for t in texts) or any(
+        c["generation_limit_hit"] for c in row["candidates"]
+    ):
+        issues.add("repetition_or_truncation")
+    if "duplicate_audio" in row["flags"]:
+        issues.add("duplicate_audio")
+    return {key: ISSUE_DESCRIPTIONS[key] for key in sorted(issues)}
+
+
+def validate_issue_notes(notes, row):
+    if not isinstance(notes, dict) or set(notes) != set(review_issues(row)):
+        raise ValueError("Every review issue requires its own note")
+    if not all(isinstance(note, str) and note.strip() for note in notes.values()):
+        raise ValueError("Review issue notes must be nonempty")
 
 
 def digest(value):
@@ -76,13 +130,40 @@ def write_jsonl(path, rows):
     )
 
 
+# Protect punctuation carrying lexical meaning before treating sentence punctuation as layout.
+PROTECTED_TOKEN_RE = re.compile(
+    r"(?P<identifier>(?:https?://|www\.)[^\s<>]+"
+    r"|[A-Za-z0-9.!#$%&'*+/=?^_`{|}~-]+@[A-Za-z0-9-]+(?:\.[A-Za-z0-9-]+)+)"
+    r"|(?P<number>(?<!\w)(?:[+\-−±]\s*)?(?:\d+(?:[.,٫٬:/\-]\d+)*|[.٫]\d+)(?:\s*[%‰٪])?)"
+    r"|\b\w+(?:[._/@:+#&='’\-]\w+)+\b",
+    re.IGNORECASE,
+)
+ARABIC_VOWEL_MARKS = frozenset(chr(i) for i in range(0x064B, 0x0653)) | {"\u0670"}
+LAYOUT_PUNCTUATION = frozenset(".,،;؛:!?؟…“”«»„\"'()[]{}—–-")
+
+
 def format_signature(text):
-    """Formatting may change punctuation/marks/spacing/case, never base letters or digits."""
-    return "".join(
+    """Preserve word boundaries and meaningful punctuation; ignore only permitted formatting."""
+    text = "".join(
         c
-        for c in unicodedata.normalize("NFKC", text).casefold()
-        if not c.isspace() and c != "\u0640" and unicodedata.category(c)[0] not in ("P", "M")
+        for c in unicodedata.normalize("NFC", text)
+        if c not in ARABIC_VOWEL_MARKS and c != "\u0640"
     )
+    tokens = []
+
+    def layout(part):
+        tokens.extend(
+            "".join(" " if c in LAYOUT_PUNCTUATION else c for c in part).casefold().split()
+        )
+
+    end = 0
+    for match in PROTECTED_TOKEN_RE.finditer(text):
+        layout(text[end : match.start()])
+        token = match.group().rstrip(".,،;؛!?؟")
+        tokens.append(re.sub(r"\s+", "", token) if match.lastgroup else token.casefold())
+        end = match.start() + len(token)
+    layout(text[end:])
+    return " ".join(tokens)
 
 
 def binding(row):
@@ -104,7 +185,7 @@ def validate_source(row):
     if not isinstance(duration, (int, float)) or not math.isfinite(duration) or duration <= 0:
         raise ValueError(f"{row['id']}: invalid actual_duration")
     if row.get("mode") != "arabic":
-        raise ValueError("Pilot v1 accepts forced-Arabic predictions only")
+        raise ValueError("This pilot accepts forced-Arabic predictions only")
 
 
 def prepare(predictions, output, per_dataset=100, seed=20261019):

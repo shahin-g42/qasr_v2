@@ -170,7 +170,9 @@ def propose(
                         "response_model": response.get("model"),
                     }
                 )
-                record["proposal"] = parse_proposal(record["raw_response"], record["finish_reason"])
+                record["proposal"] = parse_proposal(
+                    record["raw_response"], record["finish_reason"], row
+                )
                 record["status"] = (
                     "proposed"
                     if record["proposal"]["proposed_verified_text"] is not None

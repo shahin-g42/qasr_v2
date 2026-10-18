@@ -8,12 +8,15 @@ from collections import Counter, defaultdict
 from pathlib import Path
 
 from .core import (
+    MARKED_UNCLEAR_RE,
     atomic_text,
     digest,
     format_signature,
     load_plan,
     read_jsonl,
+    review_issues,
     sha256,
+    validate_issue_notes,
     write_json,
     write_jsonl,
 )
@@ -68,6 +71,7 @@ def review_pack(plan_root, output, proposals=None, audio_root=None, metadata_onl
                 "dialect": row["metadata"].get("dialect"),
                 "duration": row["actual_duration"],
                 "candidates": blinded(row),
+                "review_issues": review_issues(row),
                 "proposal": proposal,
             }
         )
@@ -82,7 +86,15 @@ def review_pack(plan_root, output, proposals=None, audio_root=None, metadata_onl
     )
     template = Path(__file__).with_name("review.html").read_text()
     encoded = json.dumps(jobs, ensure_ascii=False).replace("<", "\\u003c").replace("&", "\\u0026")
-    atomic_text(output / "index.html", template.replace("__JOBS_JSON__", encoded))
+    policy = (
+        json.dumps(plan["policy"], ensure_ascii=False)
+        .replace("<", "\\u003c")
+        .replace("&", "\\u0026")
+    )
+    atomic_text(
+        output / "index.html",
+        template.replace("__JOBS_JSON__", encoded).replace("__POLICY_JSON__", policy),
+    )
     return {
         "clips": len(jobs),
         "audio_exported": not metadata_only,
@@ -102,6 +114,7 @@ def validate_review(review, row):
         "verified_text",
         "ideal_text",
         "reason",
+        "issue_resolutions",
     }
     if set(review) != required:
         raise ValueError("Review schema mismatch")
@@ -115,6 +128,7 @@ def validate_review(review, row):
         raise ValueError("Audio listening attestation required")
     if review["decision"] not in ("verified", "unresolved"):
         raise ValueError("Review decision must be verified or unresolved")
+    validate_issue_notes(review["issue_resolutions"], row)
     a, b = review["verified_text"], review["ideal_text"]
     if review["decision"] == "unresolved":
         if a is not None or b is not None:
@@ -122,10 +136,19 @@ def validate_review(review, row):
     else:
         if not all(isinstance(t, str) and t.strip() for t in (a, b)):
             raise ValueError("Verified texts must be nonempty")
-        if format_signature(a) != format_signature(b):
+        if not format_signature(a) or format_signature(a) != format_signature(b):
             raise ValueError("Ideal formatting changed letters or digits")
-        if any(marker in a for marker in ("[unclear]", "<unclear>", "[غير واضح]", "[غيرواضح]")):
+        if any(MARKED_UNCLEAR_RE.search(t) for t in (a, b)):
             raise ValueError("Marked unclear span cannot be scored as fully verified")
+
+
+def check_duplicate_review(seen, row):
+    texts = (row["verified_text"], row["ideal_text"])
+    previous = seen.setdefault(row["audio_sha256"], texts)
+    if previous != texts:
+        raise ValueError(
+            "Conflicting verified/ideal transcripts for identical audio; adjudication required"
+        )
 
 
 def import_reviews(plan_root, review_files, output):
@@ -154,11 +177,7 @@ def import_reviews(plan_root, review_files, output):
                 }
             )
             if review["decision"] == "verified":
-                previous = reviewed_hashes.setdefault(row["audio_sha256"], review["verified_text"])
-                if previous != review["verified_text"]:
-                    raise ValueError(
-                        "Conflicting verified transcripts for identical audio; adjudication required"
-                    )
+                check_duplicate_review(reviewed_hashes, updated)
         updated["reviewed_sha256"] = digest(updated)
         output_rows.append(updated)
     output = Path(output)
@@ -183,6 +202,7 @@ def score(plan_root, reviewed_path, output):
     if len(reviewed) != len(originals) or {r["id"] for r in reviewed} != set(by_id):
         raise ValueError("Reviewed manifest coverage differs from pilot")
     eligible = []
+    reviewed_hashes = {}
     for row in reviewed:
         hashed = {k: v for k, v in row.items() if k != "reviewed_sha256"}
         if digest(hashed) != row.get("reviewed_sha256"):
@@ -197,6 +217,7 @@ def score(plan_root, reviewed_path, output):
                 row[k] != row["review"][k] for k in ("verified_text", "ideal_text")
             ):
                 raise ValueError("Reviewed text does not match attestation")
+            check_duplicate_review(reviewed_hashes, row)
             eligible.append(row)
     if not eligible:
         raise ValueError(

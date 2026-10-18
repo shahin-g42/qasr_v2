@@ -13,13 +13,15 @@ import pytest
 from data_processing.arabic_reference.core import (
     DATASETS,
     digest,
+    format_signature,
     load_plan,
     prepare,
     read_jsonl,
+    review_issues,
     sha256,
     write_jsonl,
 )
-from data_processing.arabic_reference.prompts import messages, parse_proposal
+from data_processing.arabic_reference.prompts import blinded, messages, parse_proposal
 from data_processing.arabic_reference.review import import_reviews, review_pack, score
 from data_processing.arabic_reference.runtime import doctor, propose
 
@@ -64,11 +66,35 @@ def plan(tmp_path, inputs):
     return root
 
 
-def proposal_value():
+def proposal_row():
     return {
+        "id": "sada:000000",
+        "text": "مرحبا بكم",
+        "candidates": [],
+        "flags": [],
+        "metadata": {},
+        "actual_duration": 2.0,
+    }
+
+
+def proposal_value(row=None, payload=None):
+    row = row or proposal_row()
+    payload = payload or {"candidates": blinded(row), "review_issues": review_issues(row)}
+    return {
+        "base_candidate": payload["candidates"][0]["label"],
+        "issue_notes": dict.fromkeys(
+            payload["review_issues"], "Needs listening to resolve this issue"
+        ),
         "proposed_verified_text": "مرحبا بكم",
         "proposed_ideal_text": "مرحبًا بكم.",
-        "changes": [],
+        "changes": [
+            {
+                "kind": "formatting",
+                "before": "مرحبا بكم",
+                "after": "مرحبًا بكم.",
+                "reason": "Conservative punctuation and diacritics",
+            }
+        ],
         "uncertainties": ["Requires listening"],
         "reason": "Text-only proposal",
     }
@@ -83,6 +109,7 @@ def human_review(row, decision="verified"):
         "verified_text": "مرحبا بكم" if decision == "verified" else None,
         "ideal_text": "مرحبًا بكم." if decision == "verified" else None,
         "reason": "Listened and compared wording",
+        "issue_resolutions": dict.fromkeys(review_issues(row), "Listened and resolved this issue"),
     }
 
 
@@ -173,14 +200,18 @@ def test_invalid_proposals_rejected(mutation):
     if mutation == "missing_reason":
         value["reason"] = ""
     with pytest.raises(ValueError):
-        parse_proposal(json.dumps(value), finish)
+        parse_proposal(json.dumps(value), finish, proposal_row())
 
 
 def test_unresolved_proposal_and_safe_formatting():
     value = proposal_value()
-    assert parse_proposal(json.dumps(value), "stop") == value
-    value.update(proposed_verified_text=None, proposed_ideal_text=None)
-    assert parse_proposal(json.dumps(value), "stop")["proposed_verified_text"] is None
+    assert parse_proposal(json.dumps(value), "stop", proposal_row()) == value
+    value.update(
+        base_candidate=None, proposed_verified_text=None, proposed_ideal_text=None, changes=[]
+    )
+    assert (
+        parse_proposal(json.dumps(value), "stop", proposal_row())["proposed_verified_text"] is None
+    )
 
 
 @pytest.fixture
@@ -215,7 +246,13 @@ def server():
                 {
                     "choices": [
                         {
-                            "message": {"content": json.dumps(proposal_value())},
+                            "message": {
+                                "content": json.dumps(
+                                    proposal_value(
+                                        payload=json.loads(body["messages"][1]["content"])
+                                    )
+                                )
+                            },
                             "finish_reason": "length" if state["fail"] else "stop",
                         }
                     ],
@@ -448,10 +485,183 @@ def test_launcher_uses_explicit_corrector_not_training_tuning(tmp_path, monkeypa
     )
     args = json.loads(proc.stdout)
     assert args[args.index("--output") + 1] == str(
-        tmp_path / "source repo/verification/arabic-reference-pilot-v1/plan"
+        tmp_path / "source repo/verification/arabic-reference-pilot-v2/plan"
     )
     assert (
         "qasr="
         + str(tmp_path / "source repo/verification/qasr-stage02-arabic/predictions-arabic.jsonl")
         in args
     )
+
+
+@pytest.mark.parametrize(
+    "before,after",
+    [
+        ("3.09", "309"),
+        ("- 5", "5"),
+        (".5", "5"),
+        ("https://example.org/Path", "https://example.org/path"),
+        ("-5", "5"),
+        ("2,400", "2400"),
+        ("٥٫٢", "٥٢"),
+        ("25%", "25"),
+        ("2400", "ألفان وأربعمائة"),
+        ("listener@example.org", "listenerexampleorg"),
+        ("https://example.org/a", "https://example.org/b"),
+        ("can't", "cant"),
+        ("café", "cafe"),
+        ("nowhere", "now here"),
+        ("مافيش", "ما فيش"),
+        ("الطالبات", "الطالبة"),
+        ("رحمه", "رحمة"),
+        ("على", "علي"),
+        ("أحمد", "احمد"),
+        ("آمال", "امال"),
+        ("لا تذهب", "تذهب"),
+        ("x²", "x2"),
+    ],
+)
+def test_formatting_cannot_change_content_or_meaningful_punctuation(before, after):
+    assert format_signature(before) != format_signature(after)
+    value = proposal_value()
+    value.update(proposed_verified_text=before, proposed_ideal_text=after)
+    with pytest.raises(ValueError, match="Formatting changed"):
+        parse_proposal(json.dumps(value), "stop", proposal_row())
+
+
+@pytest.mark.parametrize(
+    "before,after",
+    [
+        ("مرحبا بكم", "مرحبًا بكم!"),
+        ("لا تذهب", "لا، تَذْهَبْ."),
+        ("hello,world", "Hello, world!"),
+        ("hello\nworld", "Hello world."),
+        ("السعر 3.09", "السعر: 3.09."),
+        ("قيمته -5", "قيمته -5!"),
+        ("listener@example.org", "listener@example.org."),
+        ("25 %", "25%"),
+        ("أحمد", "ا\u0654حمد"),
+    ],
+)
+def test_permitted_formatting_preserves_content(before, after):
+    assert format_signature(before) == format_signature(after)
+
+
+def test_risk_notes_cover_unclear_foreign_loop_and_duplicate_audio():
+    row = proposal_row()
+    row.update(text="غير واضح", flags=["duplicate_audio"])
+    row["candidates"] = [
+        {"name": "secret", "text": "English speech", "generation_limit_hit": False},
+        {"name": "secret2", "text": "نحن " * 375, "generation_limit_hit": True},
+    ]
+    payload = json.loads(messages(row)[1]["content"])
+    assert set(payload["review_issues"]) == {
+        "unclear_span",
+        "foreign_script",
+        "repetition_or_truncation",
+        "duplicate_audio",
+    }
+    assert all("secret" not in c for c in payload["candidates"])
+    value = proposal_value(row)
+    value.update(
+        base_candidate=None, proposed_verified_text=None, proposed_ideal_text=None, changes=[]
+    )
+    assert parse_proposal(json.dumps(value), "stop", row) == value
+    value["issue_notes"].pop("unclear_span")
+    with pytest.raises(ValueError, match="Every review issue"):
+        parse_proposal(json.dumps(value), "stop", row)
+
+
+@pytest.mark.parametrize(
+    "mutation",
+    [
+        "no_uncertainty",
+        "no_format_note",
+        "unanchored_edit",
+        "no_word_note",
+        "clipped_basis",
+        "loop",
+        "placeholder",
+    ],
+)
+def test_proposals_require_auditable_evidence(mutation):
+    row = proposal_row()
+    value = proposal_value(row)
+    if mutation == "no_uncertainty":
+        value["uncertainties"] = []
+    elif mutation == "no_format_note":
+        value["changes"] = []
+    elif mutation == "unanchored_edit":
+        value["changes"][0]["before"] = "absent evidence"
+    elif mutation == "no_word_note":
+        value.update(proposed_verified_text="لا تذهب", proposed_ideal_text="لا تذهب", changes=[])
+    elif mutation == "clipped_basis":
+        row["text"] = "س" * 1801
+        value["issue_notes"] = dict.fromkeys(review_issues(row), "Needs listening")
+    elif mutation == "loop":
+        value.update(proposed_verified_text="نحن " * 375, proposed_ideal_text="نحن " * 375)
+    elif mutation == "placeholder":
+        value.update(
+            proposed_verified_text="مرحبا [غير واضح]", proposed_ideal_text="مرحبا [غير واضح]"
+        )
+    with pytest.raises(ValueError):
+        parse_proposal(json.dumps(value), "stop", row)
+
+
+def test_review_requires_issue_resolution_and_allows_spoken_unclear_words():
+    from data_processing.arabic_reference.review import validate_review
+
+    row = proposal_row()
+    row.update(text="غير واضح", binding="b", policy_sha256="p", audio_sha256="a")
+    review = human_review(row)
+    review.update(verified_text="غير واضح", ideal_text="غير واضح.")
+    review["issue_resolutions"] = {
+        "unclear_span": "The speaker actually says these two words; this is not an annotation placeholder."
+    }
+    validate_review(review, row)
+    review["issue_resolutions"] = {}
+    with pytest.raises(ValueError, match="Every review issue"):
+        validate_review(review, row)
+
+
+@pytest.mark.parametrize("marker", ["[غير واضح]", "<غيرواضح>", "[Unclear]", "(inaudible)"])
+def test_placeholder_cannot_be_verified_even_with_listening_attestation(plan, marker):
+    from data_processing.arabic_reference.review import validate_review
+
+    row = load_plan(plan)[1][0]
+    review = human_review(row)
+    review.update(verified_text=marker, ideal_text=marker)
+    with pytest.raises(ValueError, match="Marked unclear"):
+        validate_review(review, row)
+
+
+def test_duplicate_ideal_conflict_rejected_at_import_and_scoring(inputs, tmp_path):
+    pytest.importorskip("rapidfuzz")
+    for _, source in inputs:
+        rows = list(read_jsonl(source))
+        rows[1].update(
+            audio=rows[0]["audio"],
+            audio_sha256=rows[0]["audio_sha256"],
+            actual_duration=rows[0]["actual_duration"],
+        )
+        write_jsonl(source, rows)
+    root = tmp_path / "duplicate-plan"
+    prepare(inputs, root, per_dataset=1)
+    rows = [r for r in load_plan(root)[1] if "duplicate_audio" in r["flags"]]
+    reviews = [human_review(r) for r in rows]
+    path, reviewed = tmp_path / "reviews.jsonl", tmp_path / "reviewed.jsonl"
+    write_jsonl(path, reviews)
+    import_reviews(root, [path], reviewed)
+    reviews[1]["ideal_text"] = "مرحبا بكم!"
+    write_jsonl(path, reviews)
+    with pytest.raises(ValueError, match="Conflicting verified/ideal"):
+        import_reviews(root, [path], tmp_path / "conflict.jsonl")
+    # Scoring must enforce duplicate consistency even for externally constructed reviews.
+    output = list(read_jsonl(reviewed))
+    target = next(r for r in output if r["id"] == reviews[1]["id"])
+    target["ideal_text"] = reviews[1]["ideal_text"]
+    target["review"]["ideal_text"] = target["ideal_text"]
+    target["reviewed_sha256"] = digest({k: v for k, v in target.items() if k != "reviewed_sha256"})
+    write_jsonl(reviewed, output)
+    with pytest.raises(ValueError, match="Conflicting verified/ideal"):
+        score(root, reviewed, tmp_path / "bad-score.json")

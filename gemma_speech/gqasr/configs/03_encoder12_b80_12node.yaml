@@ -2,7 +2,8 @@
 # Retains the requested 31,446 updates: twice the batch-40 sampled-example budget.
 # Continuation from the completed frozen-encoder round; use no --resume on first launch.
 # This encoder has 12 blocks total. Train all blocks and output projection,
-# keeping the convolutional frontend frozen. Same indexed data and augmentation.
+# keeping the convolutional frontend frozen. Same indexed data, waveform augmentation
+# and SpecAugment; synthetic code-switch mixing is disabled for this run.
 format_version: 1
 model_name: gqasr
 base_model: ../outputs/full_b40_frozen/final
@@ -94,7 +95,7 @@ save_steps: 500
 save_total_limit: 8
 logging_steps: 5
 source_config_sha256: bc0709a5a8289159941c81c5bbad841047444803aa20b9b98ff9869f4d3b46e8
-online_code_switching: true
+online_code_switching: false
 augmentation:
   spec_augment:
     enabled: true
@@ -119,7 +120,8 @@ augmentation:
   codec_augment:
     enabled: true
     p: 0.37
-code_switch_probability: 0.4
+code_switch_probability: 0.0
+# Retained for comparison runs; the pool is not opened while code-switching is off.
 code_switch_index: /lustrefs/shared/shahin.konadath/workspace/train/stt/v2/qasr_v2/code_switch_indexes/cs_v1/assembled/index.json
 
 code_switch_exclude_manifest: /lustrefs/shared/shahin.konadath/workspace/train/stt/v2/qasr_v2/asr_cleaned_manifests/ml_training_v2/quarantine/ml_damaged_transcripts.jsonl

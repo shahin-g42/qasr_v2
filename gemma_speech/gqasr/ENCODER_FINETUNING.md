@@ -19,6 +19,7 @@ do not pass `--resume` from the previous frozen-encoder run.
 | Per GPU batch / accumulation | 80 / 1 |
 | Nodes / GPUs | 12 / 96 |
 | Global batch | 7,680 anchor utterances per update |
+| Synthetic code-switch augmentation | Disabled in batch 80; waveform augmentation and SpecAugment remain enabled |
 | Updates | 31,446; sampling with replacement, not an exact epoch traversal |
 | Encoder / bridge LR | 1e-6 / 5e-6 |
 | Decoder / embeddings LR | 2e-6 / 1e-6 |
@@ -34,7 +35,8 @@ Larger batches do not guarantee a faster complete run when the update count is
 unchanged. If the goal is the same sampled-example budget as batch 40, use
 15,723 updates with a separately adjusted schedule instead.
 
-The unchanged `03_encoder12_b40_12node.yaml` remains available. To select it,
+The unchanged `03_encoder12_b40_12node.yaml` remains available with synthetic
+code-switch augmentation enabled. To select it,
 set this on every node before launching or checking:
 
 ```bash
@@ -50,16 +52,20 @@ previous all-blocks selection from also unfreezing its convolutional frontend.
 Earlier recipes retain their behavior when this new option is absent.
 
 The same indexed manifests and language proportions, with per-rank quotas
-ar=40, en=24, hi=8, ml=4, zh=4, are used along with the existing
-code-switch index and quarantined-audio exclusions. No rescan or re-export
-is needed. Online dataset additions are not enabled in this recipe.
+ar=40, en=24, hi=8, ml=4, zh=4, are used. Batch 80 sets
+`online_code_switching: false` and `code_switch_probability: 0.0`: the code-switch
+pool and its quarantine list are not loaded, and no synthetic multilingual
+concatenation is performed. Existing multilingual recordings remain in the
+indexed data. The retained pool paths allow a later comparison run. No rescan
+or re-export is needed. Online dataset additions are not enabled in this recipe.
 Training uses seed 43 for new draws, while validation retains seed 42 and the
 same 460-utterance subset. This keeps the internal curves comparable. Chinese
 remains in training/evaluation; encoder tuning alone is not a demonstrated fix
 for its earlier recognition failures.
 
 SpecAugment stays before the encoder, with the existing per-frequency mean fill
-over valid frames. The zero-fill failure reproducer remains in the tests. The
+over valid frames. Speed, noise and codec augmentation also retain their settings.
+The zero-fill failure reproducer remains in the tests. The
 training optimizer still uses ordinary PyTorch gradient clipping; no FP64 norm
 workaround was reintroduced. FP64 group norms in the optional backward audit
 are diagnostic only; nonfinite FP32 total norms now fail that audit too.

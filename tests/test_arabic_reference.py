@@ -478,7 +478,7 @@ def test_launcher_uses_explicit_corrector_not_training_tuning(tmp_path, monkeypa
     assert args[args.index("--model") + 1] == "corrector"
     if stage != "doctor":
         assert args[args.index("--concurrency") + 1] == "12"
-        destination = "smoke-v3" if stage == "smoke" else "proposals"
+        destination = "smoke-v3.1" if stage == "smoke" else "proposals"
         assert args[args.index("--output") + 1] == str(tmp_path / "out" / destination)
     assert "--batch-size" not in args and "--workers-per-gpu" not in args
     # Only an explicit pilot checkpoint pin constrains the running service.
@@ -899,3 +899,131 @@ def test_ideal_spelling_does_not_replace_substrings_of_other_words():
         ],
     )
     assert parse_proposal(json.dumps(value), "stop", row) == value
+
+
+@pytest.mark.parametrize(
+    "before,after,edits",
+    [
+        (
+            "وقف طويلا تكلمه في حاجتها",
+            "وقف طويلًا تكلّمه في حاجتها.",
+            [("طويلا", "طويلًا"), ("تكلمه", "تكلّمه")],
+        ),
+        ("في ذمتك", "في ذمّتك.", [("ذمتك", "ذمّتك")]),
+    ],
+)
+def test_mislabelled_diacritics_preserve_transcript_and_record_adjustments(before, after, edits):
+    row = proposal_row()
+    row["text"] = before
+    value = proposal_value(row)
+    value.update(
+        proposed_verified_text=before,
+        proposed_ideal_text=after,
+        changes=[
+            {
+                "kind": "ideal_orthography",
+                "before": a,
+                "after": b,
+                "reason": "Incorrect model claim: this adds hamza",
+            }
+            for a, b in edits
+        ]
+        + [
+            {
+                "kind": "formatting",
+                "before": after[:-1],
+                "after": after,
+                "reason": "Terminal period",
+            }
+        ],
+    )
+    raw = json.dumps(value)
+    adjustments = []
+    parsed = parse_proposal(raw, "stop", row, adjustments=adjustments)
+    assert parsed["proposed_verified_text"] == before
+    assert parsed["proposed_ideal_text"] == after
+    assert all(c["kind"] == "formatting" for c in parsed["changes"])
+    assert [n["change_index"] for n in adjustments] == list(range(len(edits)))
+    assert all(
+        n["from_kind"] == "ideal_orthography" and n["to_kind"] == "formatting" for n in adjustments
+    )
+    # The original response and its unverified explanation are retained, not rewritten.
+    assert json.loads(raw) == value
+    assert parsed["changes"][0]["reason"] == value["changes"][0]["reason"]
+
+
+@pytest.mark.parametrize(
+    "before,after",
+    [
+        ("لا تذهب", "تذهب"),
+        ("3.09", "309"),
+        ("-5", "5"),
+        ("رحمه", "رحمة"),
+        ("على", "علي"),
+        ("أم", "ام"),
+        ("بارت تايم", "part-time"),
+        ("مرحبا", "مرحبا"),
+    ],
+)
+def test_edit_normalization_cannot_bypass_content_or_noop_validation(before, after):
+    row = proposal_row()
+    row["text"] = before
+    value = proposal_value(row)
+    value.update(
+        proposed_verified_text=before,
+        proposed_ideal_text=after,
+        changes=[
+            {
+                "kind": "ideal_orthography",
+                "before": before,
+                "after": after,
+                "reason": "Claimed formatting",
+            }
+        ],
+    )
+    adjustments = []
+    with pytest.raises(ValueError):
+        parse_proposal(json.dumps(value), "stop", row, adjustments=adjustments)
+    assert adjustments == []
+
+
+def test_declared_formatting_edits_can_use_prior_formatting_intermediate():
+    row = proposal_row()
+    value = proposal_value(row)
+    value["changes"] = [
+        {"kind": "formatting", "before": "مرحبا", "after": "مرحبًا", "reason": "Vowel mark"},
+        {"kind": "formatting", "before": "مرحبًا بكم", "after": "مرحبًا بكم.", "reason": "Period"},
+    ]
+    assert parse_proposal(json.dumps(value), "stop", row) == value
+    value["changes"][1]["before"] = "absent intermediate"
+    with pytest.raises(ValueError, match="not anchored"):
+        parse_proposal(json.dumps(value), "stop", row)
+
+
+def test_runtime_audits_formatting_reclassification_without_retry_or_verification(
+    plan, tmp_path, server
+):
+    url, state = server
+
+    def reply(body):
+        value = proposal_value(payload=json.loads(body["messages"][1]["content"]))
+        value["changes"][0]["kind"] = "ideal_orthography"
+        return value
+
+    state["reply"] = reply
+    output = tmp_path / "labels"
+    result = propose(plan, output, url=url, model="corrector", smoke=True, emit=lambda _: None)
+    assert state["calls"] == 6 and result["validation_retries"] == 0
+    assert result["normalized_records"] == 6 and result["normalized_edits"] == 6
+    assert result["smoke_checks"]["passed"] and result["verified"] == 0
+    for record in read_jsonl(output / "proposals.jsonl"):
+        assert record["validation_adjustments"] == record["attempts"][0]["validation_adjustments"]
+        assert json.loads(record["raw_response"])["changes"][0]["kind"] == "ideal_orthography"
+        assert record["proposal"]["changes"][0]["kind"] == "formatting"
+        assert record["proposal"]["proposed_ideal_text"] == "مرحبًا بكم."
+        assert record["verified_text"] is None and record["ideal_text"] is None
+    pack = tmp_path / "listening"
+    review_pack(plan, pack, proposals=output, metadata_only=True)
+    jobs = json.loads((pack / "jobs.json").read_text())["jobs"]
+    assert all(len(job["validation_adjustments"]) == 1 for job in jobs)
+    assert "Edit labels were corrected" in (pack / "index.html").read_text()

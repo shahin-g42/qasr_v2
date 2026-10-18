@@ -1,6 +1,6 @@
 # Arabic reference benchmark initiative
 
-Status: the first cluster smoke completed; it exposed excessive abstention and a spelling/formatting classification problem. Policy/prompt v3 addresses those findings and is ready for another cluster smoke. Audio review remains pending.
+Status: both cluster smokes have been inspected. Prompt/parser v3.1 fixes the remaining diacritic-label failure; local replay accepts 13 drafts and one abstention with all six agreement controls passing. Full proposal generation can follow a successful v3.1 cluster smoke. Audio review remains pending.
 This is an evaluation-only initiative. No existing benchmark reference or training label is overwritten.
 
 ## Stages and evidence required
@@ -93,6 +93,48 @@ validation error. Both responses, feedback and usage are retained in each record
 and valid null proposals do not trigger this validation retry. The HTTP client retains
 its existing bounded network retries. Retry usage is included in aggregate totals.
 
+## Second smoke findings and v3.1 repair
+
+The 14-clip v3 cluster smoke returned 12 proposed, one failed and one unresolved in
+18.425 seconds, with four validation retries. Its six agreement controls had five passes
+and one validation failure. The remaining failure was a metadata classification error:
+`طويلا` → `طويلًا` and `تكلمه` → `تكلّمه` add vowel marks, but the corrector labelled them
+`ideal_orthography` and incorrectly called tanwin hamza. In `sada:004898`, the same error
+caused the retry to remove the proposed shadda from `ذمّتك`.
+
+V3.1 computes this distinction from characters. When an anchored `ideal_orthography`
+edit differs only by formatting already permitted in the frozen policy, it records the
+label as `formatting` without changing either transcript. The raw response and original
+model explanation are preserved. `validation_adjustments` records the edit index,
+before/after spans and category correction in the accepted attempt and record; the
+summary counts `normalized_records` and `normalized_edits`. The listening page displays
+these adjustments and explicitly identifies model explanations as unverified. Sequential
+formatting edits may reference the intermediate text produced by earlier edits.
+
+This does not expand the permitted text transformations: real hamza additions still
+require declared spelling edits, and word, numeric, script and unsupported letter changes
+remain rejected. No-op edits remain invalid. V3.1 also clarifies tanwin/shadda versus hamza,
+omitting no-op edits, preserving useful diacritics during repairs, and avoiding invented
+alternative words or morphological explanations. The frozen annotation policy and plan
+remain v3; only the proposer/validator changes. New runs use `smoke-v3.1/` so the original
+`smoke-v3/` evidence stays intact.
+
+All 14 final replies were replayed locally with the revised parser: 13 drafts and one
+abstention, no transcript changes, all six agreement controls passing. The first SADA
+reply with shadda is also accepted unchanged. This is parser replay, not a new model run
+or audio verification. Source record hashes and bindings were checked before inspection.
+
+The drafts are useful starting points for listening, but explanation quality is still
+limited. For example, the Common Voice agreement case invents the rival `شكرا`; an MGB2
+control invents a hamza disagreement; the noisy MASC explanation misses some candidate
+differences. The Casablanca French draft retains a parenthetical annotation that may
+duplicate the spoken content. Review the complete audio and all candidates, not just
+issues mentioned by the proposer. Neither agreement nor fluent explanations certify truth.
+
+After the v3.1 smoke passes, proceed with the 1,059-clip proposal pilot and listening pack.
+All final reference columns remain null until review. Inspect failures, abstentions and
+representative drafts across all datasets before any later expansion beyond this pilot.
+
 ## Retry on the cluster
 
 From the pilot code checkout, after fetching and fast-forwarding the pilot branch:
@@ -105,11 +147,14 @@ export REF_CONCURRENCY=90
 bash scripts/corpus/run_arabic_reference.sh test -q &&
 bash scripts/corpus/run_arabic_reference.sh plan &&
 bash scripts/corpus/run_arabic_reference.sh doctor &&
-bash scripts/corpus/run_arabic_reference.sh smoke
+bash scripts/corpus/run_arabic_reference.sh smoke &&
+bash scripts/corpus/run_arabic_reference.sh run &&
+bash scripts/corpus/run_arabic_reference.sh review-pack
 ```
 
-The new smoke writes to `$ARABIC_REF_ROOT/smoke-v3/`. Its start event and summary include
-the absolute output path. Return that directory for inspection. No serving-model change
+The smoke gate stops this chain if it fails. The new smoke writes to `$ARABIC_REF_ROOT/smoke-v3.1/`. Its start event and summary include
+the absolute output path. Full drafts are in `proposals/`; the listening pack is in
+`listening/`. Return the smoke and full summaries and proposal records for inspection. No serving-model change
 or restart is needed for these client-side changes.
 
 ## First cluster action: plan, doctor, smoke
@@ -158,7 +203,7 @@ curl -fsS http://localhost:8010/health
 
 Wait for model loading and health before `doctor`. These commands do not stop an existing service; container-name or port conflicts should be resolved by identifying the existing service, not automatically replacing it.
 
-Return the doctor output, `smoke-v3/summary.json`, and the smoke records for inspection before the full pilot. Smoke covers each dataset, the longest request, a heavily flagged case and six wording-agreement controls (14 clips on the supplied plan, not all 1,059). The first eight-clip cluster run is recorded above; revised real-model behavior and 90-worker throughput still require cluster validation.
+For the current v3 plan, the prior smoke inspection and parser replay support proceeding to the full proposal pilot after the v3.1 smoke gate passes. For a new dataset or plan, inspect the smoke records before scaling. Smoke covers each dataset, the longest request, a heavily flagged case and six wording-agreement controls (14 clips on the supplied plan, not all 1,059). Both cluster smoke runs are recorded above; the full pilot will provide the first 90-worker throughput evidence.
 
 ## After smoke inspection
 

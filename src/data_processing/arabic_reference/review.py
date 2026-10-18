@@ -73,6 +73,9 @@ def review_pack(plan_root, output, proposals=None, audio_root=None, metadata_onl
                 "candidates": blinded(row),
                 "review_issues": review_issues(row),
                 "proposal": proposal,
+                "validation_adjustments": proposals_by_id.get(row["id"], {}).get(
+                    "validation_adjustments", []
+                ),
             }
         )
     write_json(

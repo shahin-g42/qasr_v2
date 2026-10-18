@@ -277,9 +277,14 @@ def propose(
                         attempt["error"] = f"{type(exc).__name__}: {exc}"
                         raise
                     try:
+                        attempt["validation_adjustments"] = []
                         record["proposal"] = parse_proposal(
-                            record["raw_response"], record["finish_reason"], row
+                            record["raw_response"],
+                            record["finish_reason"],
+                            row,
+                            adjustments=attempt["validation_adjustments"],
                         )
+                        record["validation_adjustments"] = attempt["validation_adjustments"]
                     except ValueError as exc:
                         attempt["validation_error"] = str(exc)
                         if attempt_number == 0 and record["finish_reason"] == "stop":
@@ -360,6 +365,8 @@ def propose(
             ),
             "wall_seconds_this_invocation": round(time.monotonic() - start, 3),
         }
+        summary["normalized_records"] = sum(bool(r.get("validation_adjustments")) for r in records)
+        summary["normalized_edits"] = sum(len(r.get("validation_adjustments", [])) for r in records)
         summary["validation_retries"] = sum(len(r.get("attempts", [])) > 1 for r in records)
         summary["failure_counts"] = dict(
             Counter(r["error"] for r in records if r["status"] == "failed")

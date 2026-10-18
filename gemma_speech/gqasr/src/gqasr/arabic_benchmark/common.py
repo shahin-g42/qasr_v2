@@ -71,6 +71,8 @@ def load_config(path):
 
     path = Path(path).resolve()
     cfg = yaml.safe_load(path.read_text())
+    if cfg.get("backend", "gqasr") not in ("gqasr", "qasr"):
+        raise ValueError("backend must be gqasr or qasr")
     # Relative paths are relative to the configuration, never the invoking shell.
     def resolve(value):
         value = str(value)

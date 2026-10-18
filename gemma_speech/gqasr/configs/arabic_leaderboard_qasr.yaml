@@ -1,0 +1,21 @@
+# Reuses the exact prepared waveforms and official references from the GQASR run.
+format_version: 1
+backend: qasr
+audio_input: stream
+work_dir: ${GQASR_BENCH_WORK}
+checkpoint: ${GQASR_BENCH_CHECKPOINT}
+output_dir: ${GQASR_BENCH_OUTPUT}
+precision: bf16
+max_new_tokens: 768
+task_size: 4
+simultaneous_model_loads: 4
+startup_timeout_seconds: 1800
+progress_timeout_seconds: 1800
+duration_tolerance_seconds: 0.25
+datasets:
+  sada: {}
+  commonvoice: {}
+  masc_clean: {}
+  masc_noisy: {}
+  mgb2: {}
+  casablanca: {}

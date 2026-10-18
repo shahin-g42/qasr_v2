@@ -21,7 +21,10 @@ from .data import official_rows, prepared_rows
 from .scoring import aggregate
 
 
-def checkpoint_identity(path):
+def checkpoint_identity(path, backend="gqasr"):
+    if backend == "qasr":
+        from .qasr_backend import checkpoint_identity as qasr_identity
+        return qasr_identity(path)
     path = Path(path)
     required = [path / name for name in ("config.json", "preprocessor_config.json", "model.safetensors")]
     required += sorted((path / "tokenizer").glob("*"))
@@ -34,6 +37,18 @@ def implementation_identity():
     package = Path(__file__).parent
     files = [*package.glob("*.py"), package.parent / "modeling.py", package.parent / "processing.py"]
     return {str(p.relative_to(package.parent)): sha256(p) for p in sorted(files)}
+
+
+def backend_implementation_identity(backend):
+    result = implementation_identity()
+    if backend == "qasr":
+        import importlib.util
+        spec = importlib.util.find_spec("qasr")
+        if spec is None or not spec.origin:
+            raise ValueError("QASR source unavailable; use the QASR benchmark launcher with repo/src on PYTHONPATH")
+        source = Path(spec.origin).parent
+        result.update({f"qasr/{p.relative_to(source)}": sha256(p) for p in sorted(source.rglob("*.py"))})
+    return result
 
 
 def validate_predictions(expected, found, mode):
@@ -73,7 +88,9 @@ def report(output, expected, identity, elapsed, attempts):
     published = json.loads(Path(__file__).with_name("published_results.json").read_text())
     counts_by_dataset = {ds: sum(r["dataset"] == ds for r in expected) for ds in DATASETS}
     full_suite = all(counts_by_dataset[ds] == CATALOG["datasets"][ds]["rows"] for ds in DATASETS)
-    lines = ["# GQASR — Open Universal Arabic ASR benchmark", "",
+    backend = identity.get("backend", "gqasr")
+    label = backend.upper()
+    lines = [f"# {label} — Open Universal Arabic ASR benchmark", "",
              f"Protocol revision: `{CATALOG['revision']}`. Precision: `{identity['precision']}`.",
              "", "Scores are fractions in JSON and percentages below. ELM CER includes spaces.",
              "Strict scores retain punctuation, diacritics and case; whitespace is canonicalized.",
@@ -125,7 +142,7 @@ def report(output, expected, identity, elapsed, attempts):
                       "average_wer": published_columns["Average WER⬇️"][model_rows[name]],
                       "average_cer": published_columns["Average CER"][model_rows[name]],
                   } for name in comparison_names if name in model_rows},
-                  "gqasr": {}}
+                  backend: {}}
     comparable = full_suite and all(
         values["elm/macro"]["wer"] is not None and values["elm/macro"]["cer"] is not None
         for values in scores.values()
@@ -141,7 +158,7 @@ def report(output, expected, identity, elapsed, attempts):
         comparison["streamed_audio_sources"] = [dict(repository=repo, revision=rev) for repo, rev in streamed_sources]
         comparison["unresolved_requirements"].append("Remote mirror audio byte equivalence to original-provider files is unaudited")
     if comparable:
-        comparison["gqasr"] = {mode: {"average_wer": 100 * values["elm/macro"]["wer"],
+        comparison[backend] = {mode: {"average_wer": 100 * values["elm/macro"]["wer"],
                                       "average_cer": 100 * values["elm/macro"]["cer"]}
                                for mode, values in scores.items()}
         lines += ["## Context from the live leaderboard snapshot", "",
@@ -149,8 +166,8 @@ def report(output, expected, identity, elapsed, attempts):
                   "This table provides context only; the pinned MASC noisy manifest duration differs from the "
                   "current Space listing, and training overlap has not been audited.", "",
                   "| Model / mode | Average WER | Average CER |", "|---|---:|---:|"]
-        for mode, result in comparison["gqasr"].items():
-            lines.append(f"| GQASR ({mode}) | {result['average_wer']:.2f}% | {result['average_cer']:.2f}% |")
+        for mode, result in comparison[backend].items():
+            lines.append(f"| {label} ({mode}) | {result['average_wer']:.2f}% | {result['average_cer']:.2f}% |")
         for name, result in comparison["metrics_percent"].items():
             lines.append(f"| {name} (published) | {result['average_wer']:.2f}% | {result['average_cer']:.2f}% |")
     else:
@@ -235,8 +252,11 @@ def _run(cfg, datasets, gpu_ids, workers_per_gpu, batch_size, limit, output, mod
     if missing_prepared:
         raise ValueError(f"Prepared manifests omit {len(missing_prepared)} selected official samples")
     expected = [prepared_by_id[row["id"]] for row in expected]
-    identities = checkpoint_identity(cfg["checkpoint"])
-    identity = {"version": 1, "catalog": CATALOG, "checkpoint": identities,
+    backend = cfg.get("backend", "gqasr")
+    if backend not in ("gqasr", "qasr"):
+        raise ValueError("backend must be gqasr or qasr")
+    identities = checkpoint_identity(cfg["checkpoint"], backend)
+    identity = {"version": 1, "backend": backend, "catalog": CATALOG, "checkpoint": identities,
                 "selection": fingerprint(expected), "modes": modes, "precision": cfg.get("precision", "bf16"),
                 "max_new_tokens": cfg.get("max_new_tokens", 768), "batch_size": batch_size,
                 "task_size": int(cfg.get("task_size", 16)), "input_mode": "prepared",
@@ -244,7 +264,7 @@ def _run(cfg, datasets, gpu_ids, workers_per_gpu, batch_size, limit, output, mod
                             "torch": importlib.metadata.version("torch"),
                             "transformers": importlib.metadata.version("transformers"),
                             "rapidfuzz": importlib.metadata.version("rapidfuzz")},
-                "implementation": implementation_identity()}
+                "implementation": backend_implementation_identity(backend)}
     run_id = fingerprint(identity)
     path = output / "run.json"
     if path.exists() and json.loads(path.read_text()) != identity:
@@ -287,7 +307,7 @@ def _run(cfg, datasets, gpu_ids, workers_per_gpu, batch_size, limit, output, mod
     workers_on_gpus = [sum(slot % len(gpu_ids) == index for slot in range(slots))
                        for index in range(len(gpu_ids))]
     max_workers_on_gpu = max(workers_on_gpus)
-    settings = {"precision": identity["precision"], "max_new_tokens": identity["max_new_tokens"],
+    settings = {"backend": backend, "precision": identity["precision"], "max_new_tokens": identity["max_new_tokens"],
                 "batch_size": batch_size, "memory_fraction": 0.90 / max_workers_on_gpu}
     if identity["precision"] not in ("bf16", "fp32") or identity["max_new_tokens"] < 1:
         raise ValueError("Invalid inference precision or token budget")
@@ -433,9 +453,9 @@ def _run(cfg, datasets, gpu_ids, workers_per_gpu, batch_size, limit, output, mod
         attempt.update(wall_seconds=time.monotonic() - started, status="complete" if success else "interrupted",
                        workers=ready_info)
         atomic_json(attempts_path, attempts)
-    if checkpoint_identity(cfg["checkpoint"]) != identities:
+    if checkpoint_identity(cfg["checkpoint"], backend) != identities:
         raise ValueError("Checkpoint changed during benchmarking; results cannot be published")
-    if implementation_identity() != identity["implementation"]:
+    if backend_implementation_identity(backend) != identity["implementation"]:
         raise ValueError("Model or benchmark code changed during the run; use a new output directory")
     report(output, expected, identity, attempt["wall_seconds"], attempts)
     final_progress = {"event": "benchmark_complete", "ready_workers": len(ready), "workers": slots,
@@ -445,27 +465,27 @@ def _run(cfg, datasets, gpu_ids, workers_per_gpu, batch_size, limit, output, mod
     print(json.dumps(final_progress), flush=True)
 
 
-def tune(cfg, gpus="0,1,2,3,4,5,6,7", output=None, limit=64):
-    """Measure batch-size headroom at the requested 11 workers per GPU on all GPUs."""
+def tune(cfg, gpus="0,1,2,3,4,5,6,7", output=None, limit=64, workers_per_gpu=11):
+    """Measure batch-size headroom at the requested workers per GPU on all GPUs."""
     if len(gpus.split(",")) != 8:
         raise ValueError("Benchmark tuning uses all eight allocated GPUs")
     root = Path(output or f"{cfg['output_dir']}-tuning")
     candidates = []
     for batch in (1, 2, 4):
-        destination = root / f"w11-b{batch}"
+        destination = root / f"w{workers_per_gpu}-b{batch}"
         try:
-            run(cfg, gpus=gpus, workers_per_gpu=11, batch_size=batch,
+            run(cfg, gpus=gpus, workers_per_gpu=workers_per_gpu, batch_size=batch,
                 limit_per_dataset=limit, output=destination, modes=["arabic"])
             scores = json.loads((destination / "scores.json").read_text())
             splits = scores["performance"]["oom_batch_splits"]
             # Compare the complete same-sized subset even if a candidate was resumed.
             throughput = (scores["diagnostics"]["arabic"]["utterances"]
                           / max(scores["performance"]["total_attempt_wall_seconds"], 1e-9))
-            candidates.append({"workers_per_gpu": 11, "batch_size": batch,
+            candidates.append({"workers_per_gpu": workers_per_gpu, "batch_size": batch,
                                "samples_per_second": throughput, "oom_batch_splits": splits,
                                "status": "complete", "path": str(destination)})
         except RuntimeError as exc:
-            candidates.append({"workers_per_gpu": 11, "batch_size": batch,
+            candidates.append({"workers_per_gpu": workers_per_gpu, "batch_size": batch,
                                "status": "failed", "error": str(exc)})
         atomic_json(root / "tuning.json", candidates)
     successful = [r for r in candidates if r["status"] == "complete"]

@@ -11,25 +11,30 @@ case "${GQASR_BENCH_INPUT:-local}" in
   *) echo "GQASR_BENCH_INPUT must be local or stream" >&2; exit 2 ;;
 esac
 CONFIG="${GQASR_BENCH_CONFIG:-$DEFAULT_CONFIG}"
+LABEL="${GQASR_BENCH_MODEL_NAME:-GQASR}"
 source "$ENV_DIR/bin/activate"
 # Dedicated full-node benchmark: keep doctor and worker selection consistent even
 # when activation inherits an earlier single-GPU training/debug session.
 export GPU_IDS="${GPU_IDS:-0,1,2,3,4,5,6,7}"
 export CUDA_VISIBLE_DEVICES="$GPU_IDS"
 mkdir -p "$ROOT/logs"
-exec > >(tee "$ROOT/logs/gqasr-arabic-${STAGE}-$(date -u +%Y%m%dT%H%M%SZ).log") 2>&1
+exec > >(tee "$ROOT/logs/${LABEL}-arabic-${STAGE}-$(date -u +%Y%m%dT%H%M%SZ).log") 2>&1
 export TOKENIZERS_PARALLELISM=false
 export PYTHONUTF8=1
 export OMP_NUM_THREADS=1 OPENBLAS_NUM_THREADS=1 MKL_NUM_THREADS=1 NUMEXPR_NUM_THREADS=1
 export GQASR_BENCH_EXPECTED_GPUS="${GQASR_BENCH_EXPECTED_GPUS:-8}"
 BENCH="$ENV_DIR/bin/gqasr-arabic-benchmark"
 
-echo "GQASR Arabic benchmark stage=$STAGE host=$(hostname) time=$(date -u +%Y-%m-%dT%H:%M:%SZ)"
+echo "$LABEL Arabic benchmark stage=$STAGE host=$(hostname) time=$(date -u +%Y-%m-%dT%H:%M:%SZ)"
 case "$STAGE" in
   test)
     export HF_HUB_OFFLINE=1
     "$ENV_DIR/bin/python" -m pytest "$ROOT/gqasr/tests/test_arabic_benchmark.py" \
       "$ROOT/gqasr/tests/test_arabic_benchmark_streaming.py" "$@"
+    ;;
+  qasr-test)
+    export HF_HUB_OFFLINE=1
+    "$ENV_DIR/bin/python" -m pytest "$ROOT/gqasr/tests/test_arabic_benchmark_qasr.py" "$@"
     ;;
   source-smoke)
     export HF_HUB_OFFLINE=0
@@ -37,7 +42,11 @@ case "$STAGE" in
     ;;
   doctor)
     export HF_HUB_OFFLINE=1
-    "$BENCH" doctor "$@"
+    if [[ "$LABEL" == QASR ]]; then
+      "$BENCH" doctor --config "$CONFIG" --workers-per-gpu "${WORKERS_PER_GPU:-4}" "$@"
+    else
+      "$BENCH" doctor "$@"
+    fi
     ;;
   stream-check|stream-smoke|stream-prepare)
     export HF_HUB_OFFLINE=0
@@ -71,6 +80,7 @@ case "$STAGE" in
   tune)
     export HF_HUB_OFFLINE=1
     "$BENCH" tune --config "$CONFIG" --gpus "${GPU_IDS:-0,1,2,3,4,5,6,7}" \
+      --workers-per-gpu "${WORKERS_PER_GPU:-11}" \
       --limit-per-dataset "${TUNE_PER_DATASET:-64}" \
       --output "${GQASR_BENCH_TUNING_OUTPUT:-${GQASR_BENCH_OUTPUT}-tuning}" "$@"
     ;;

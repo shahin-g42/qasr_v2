@@ -1,5 +1,60 @@
 # GQASR Arabic leaderboard benchmark
 
+## Benchmark the completed QASR Stage 2 model
+
+QASR uses this same benchmark engine and the exact already-prepared 46,757 clips,
+official references, two decoding modes and ELM/strict scorers. Its native saved
+128-bin audio frontend and Conformer are loaded directly; no weight conversion
+or dataset download is needed. Both models use greedy decoding with a 768-token
+budget and an empty system prompt. Forced Arabic appends
+`language Arabic<asr_text>` to the assistant prefix; auto mode generates the
+language header itself. QASR does not use EAGLE or checkpoint-specific sampling
+penalties during this comparison.
+
+The launcher reads **output_dir** from `configs/v8.1/02_full_12node.yaml`, currently
+`/lustrefs/shared/shahin.konadath/workspace/train/stt/v2/qasr_v2/output/v81/full_12node`.
+It never substitutes Stage 2's initialization model or the untrained Stage 3
+output. Override `QASR_BENCH_CHECKPOINT` only to select a different saved model.
+
+Run from the cluster repository root, using the existing unified
+`gemma_speech/.venv` (Torch 2.11 / Transformers 5.19):
+
+```bash
+git pull origin main
+export QASR_BENCH_WORK="$PWD/gemma_speech/gqasr/verification/arabic-stream-cache"
+export QASR_BENCH_OUTPUT="$PWD/gemma_speech/gqasr/verification/qasr-stage02-arabic"
+export WORKERS_PER_GPU=4
+export BATCH_SIZE=1
+
+bash gemma_speech/cluster/qasr_arabic_leaderboard.sh test -q
+bash gemma_speech/cluster/qasr_arabic_leaderboard.sh doctor
+bash gemma_speech/cluster/qasr_arabic_leaderboard.sh preflight
+bash gemma_speech/cluster/qasr_arabic_leaderboard.sh smoke
+bash gemma_speech/cluster/qasr_arabic_leaderboard.sh run
+```
+
+QASR imports from this checkout's `src/` through `PYTHONPATH`. Do **not** install
+the root QASR project's older training dependency pins into the unified env.
+The `test` stage exercises real tiny sharded QASR save/load and generation, then
+the shared benchmark tests; `smoke` tests the actual cluster weights and GPUs.
+Local CPU tests do not establish full-model CUDA performance or accuracy.
+
+The larger QASR checkpoint defaults to **4 replicas per GPU / 32 total**, batch
+one. Eleven copies of a roughly 3.6B model leave insufficient room under the
+benchmark's 90% GPU memory budget. `doctor` reads the selected checkpoint's tensor
+headers and rejects replica counts whose weight estimate plus 2 GiB minimum
+activation/cache allowance exceeds that budget. This is a necessary headroom
+check, not a measured peak: the long-clip smoke test is still required. Set
+`WORKERS_PER_GPU` explicitly to experiment with more replicas. `tune` compares
+batches 1, 2 and 4 at that selected replica count.
+
+Results go to `qasr-stage02-arabic/REPORT.md`, `scores.json`, and
+`predictions-{arabic,auto}.jsonl`; the smoke run uses a separate `-smoke` directory.
+Every model shard, processor/tokenizer asset, and QASR source file is fingerprinted.
+Changing the backend, weights, code or decoding settings requires a new result
+directory. Existing GQASR results are preserved. The dataset-version, training
+overlap and mirror-equivalence caveats below apply equally to both models.
+
 This package evaluates a saved GQASR checkpoint on every test set listed by the [Open Universal Arabic ASR Leaderboard](https://huggingface.co/spaces/elmresearchcenter/open_universal_arabic_asr_leaderboard): SADA, Common Voice 18 Arabic, MASC clean, MASC noisy, MGB-2, and Casablanca. The live leaderboard uses an equal-weight mean of the six per-dataset WERs for ranking; this benchmark reports that same mean under the leaderboard's Arabic text normalization, plus per-dataset WER/CER, strict WER/CER, optional metadata groups, and generation diagnostics.
 
 The source manifests and scoring recipe are pinned to the upstream evaluation repository revision and SHA-256 values in `src/gqasr/arabic_benchmark/catalog.json`. The upstream [evaluation code](https://github.com/Natural-Language-Processing-Elm/open_universal_arabic_asr_leaderboard) removes punctuation and Arabic diacritics, normalizes hamza/madda forms and Eastern Arabic digits, and attaches a standalone `و` to the following word. ELM CER counts spaces. We implement this normalization locally so inference does not require NeMo. Strict scores preserve punctuation, diacritics, and case after whitespace normalization.

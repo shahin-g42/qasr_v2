@@ -105,7 +105,11 @@ def worker_main(slot, gpu, checkpoint, settings, jobs, events, start_event, load
         try:
             load_started = time.monotonic()
             with load_slots:
-                recognizer = Recognizer(checkpoint, "cpu" if gpu == "cpu" else "cuda:0",
+                recognizer_class = Recognizer
+                if settings.get("backend", "gqasr") == "qasr":
+                    from .qasr_backend import QASRRecognizer
+                    recognizer_class = QASRRecognizer
+                recognizer = recognizer_class(checkpoint, "cpu" if gpu == "cpu" else "cuda:0",
                                         settings["precision"], settings["memory_fraction"])
             torch = recognizer.torch
             import transformers

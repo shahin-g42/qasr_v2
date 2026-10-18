@@ -24,7 +24,7 @@ def mode_list(value):
     return result
 
 
-def doctor():
+def doctor(cfg=None, workers_per_gpu=11):
     import torch
     import transformers
 
@@ -56,13 +56,28 @@ def doctor():
     result["ffmpeg"] = shutil.which("ffmpeg")
     if missing or result["ffmpeg"] is None:
         raise RuntimeError(f"Install the benchmark dependencies and ffmpeg: {result}")
+    if cfg and cfg.get("backend") == "qasr":
+        from qasr import QASRForConditionalGeneration, QASRProcessor
+        from .qasr_backend import check_memory
+        if workers_per_gpu < 1:
+            raise ValueError("workers_per_gpu must be positive")
+        result["backend"] = "qasr"
+        result["checkpoint"] = cfg["checkpoint"]
+        result["model_class"] = QASRForConditionalGeneration.__name__
+        result["processor_class"] = QASRProcessor.__name__
+        result["memory_estimate"] = check_memory(
+            cfg["checkpoint"], cfg.get("precision", "bf16"),
+            min(device["memory_gib"] for device in result["devices"]), workers_per_gpu,
+        )
     print(json.dumps(result, indent=2), flush=True)
 
 
 def main():
-    parser = argparse.ArgumentParser(description="Parallel GQASR Arabic leaderboard benchmark")
+    parser = argparse.ArgumentParser(description="Parallel GQASR/QASR Arabic leaderboard benchmark")
     sub = parser.add_subparsers(dest="command", required=True)
-    sub.add_parser("doctor", help="check the single env, allocated GPUs and CPU affinity")
+    p = sub.add_parser("doctor", help="check the single env, allocated GPUs and CPU affinity")
+    p.add_argument("--config")
+    p.add_argument("--workers-per-gpu", type=int, default=11)
     p = sub.add_parser("source-smoke", help="stream small public test samples and verify audio locally; no GPU")
     p.add_argument("--output", required=True)
     p.add_argument("--per-dialect", type=int, default=2)
@@ -96,15 +111,16 @@ def main():
                    help="deterministic smoke subset; zero runs every official utterance")
     p.add_argument("--modes", type=mode_list, default=["arabic", "auto"])
     p.add_argument("--output")
-    p = sub.add_parser("tune", help="compare batch sizes at 11 workers/GPU across all eight GPUs")
+    p = sub.add_parser("tune", help="compare batch sizes across all eight GPUs")
     p.add_argument("--config", required=True)
     p.add_argument("--gpus", default="0,1,2,3,4,5,6,7")
     p.add_argument("--limit-per-dataset", type=int, default=64)
+    p.add_argument("--workers-per-gpu", type=int, default=11)
     p.add_argument("--output")
 
     args = parser.parse_args()
     if args.command == "doctor":
-        doctor()
+        doctor(load_config(args.config) if args.config else None, args.workers_per_gpu)
         return
     if args.command == "source-smoke":
         from .source_smoke import source_smoke
@@ -141,7 +157,7 @@ def main():
         from .runner import checkpoint_identity
 
         fetch_references(cfg["work_dir"])
-        weights = checkpoint_identity(cfg["checkpoint"])
+        weights = checkpoint_identity(cfg["checkpoint"], cfg.get("backend", "gqasr"))
         if cfg.get("audio_input") == "stream":
             rows = prepared_rows(cfg, args.datasets)
             for row in rows:
@@ -152,6 +168,7 @@ def main():
         else:
             result = check_data(cfg, args.datasets)
         result["checkpoint"] = cfg["checkpoint"]
+        result["backend"] = cfg.get("backend", "gqasr")
         result["checkpoint_files"] = len(weights)
         result["benchmark_datasets"] = list(args.datasets)
         print(json.dumps(result, indent=2, ensure_ascii=False), flush=True)
@@ -173,7 +190,7 @@ def main():
         return
     from .runner import tune
     tune(cfg, gpus=args.gpus, output=args.output or str(Path(cfg["output_dir"]).with_name("tuning")),
-         limit=args.limit_per_dataset)
+         limit=args.limit_per_dataset, workers_per_gpu=args.workers_per_gpu)
 
 
 if __name__ == "__main__":

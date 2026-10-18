@@ -1,4 +1,212 @@
-# Corpus production runbook — 9× H100 nodes
+# Corpus production runbook
+
+## Yodas3 Arabic update — 11 LLM nodes + 2 ASR nodes
+
+`run_yodas3.sh` cleans **all 14 manifests, including MSA**, then creates an
+additive update for QASR and GQASR. The older 9-node bundle workflow starts
+below this section. Use the same shared checkout and `RUN_ID` on every node.
+
+The existing cleaner already asks the LLM to preserve dialect. Its general
+guard can nevertheless accept a formal paraphrase that matches ASR. This
+campaign adds an explicit dialect prompt and quarantines known colloquial →
+MSA replacements even when ASR proposes them. The check compares changed
+token spans, ignores normalized spelling/diacritics, and retries before
+rejecting. This is a conservative heuristic, not a complete dialect detector;
+review a pilot against audio before the full run. Original labels are hints,
+not permission to invent dialect words.
+
+### 1. Environment and services
+
+On each participating machine, activate the existing cleaning environment
+(Python 3.10+, numpy, PyYAML, soundfile, transformers/tokenizers), then:
+
+```bash
+cd /lustrefs/shared/shahin.konadath/workspace/train/stt/v2/qasr_v2
+export RUN_ID=yodas3_v1
+export ASR_URLS="http://ASR_NODE_1:8020 http://ASR_NODE_2:8020"
+export QASR_CONFIG=configs/v8.1/02_full_12node.yaml
+export GQASR_CONFIG=gemma_speech/gqasr/configs/02_full_12node.yaml
+```
+
+Replace the two hostnames. The base configs must describe the existing
+completed GQASR index and the current code-switch index. If your current run
+uses different configs, set these variables before `publish` and `configs`.
+`BASE_CS_INDEX=/absolute/path/to/assembled/index.json` can select a more recent
+compatible code-switch revision. Do not point at an index still being built.
+
+On **each of the two ASR nodes**, select the checkpoint explicitly:
+
+```bash
+export MODEL_DIR=/absolute/path/to/your/qasr/checkpoint
+bash scripts/corpus/run_yodas3.sh asr-preflight
+bash scripts/corpus/run_yodas3.sh asr-start
+```
+
+This reuses `serve_asr_vllm.sh`, with served model `qasr` on port 8020.
+The preflight checks the checkpoint and the installed vLLM integration.
+`asr-print` prints the existing launch recipe. An already healthy compatible
+ASR service can be reused.
+
+On **each of the 11 LLM nodes**, reuse the existing corrector on port 8010,
+or launch one:
+
+```bash
+bash scripts/corpus/run_yodas3.sh llm-print
+bash scripts/corpus/run_yodas3.sh llm-start
+curl -sf http://localhost:8010/health
+```
+
+The launcher uses the repository's pinned vLLM image and defaults to
+`Qwen/Qwen3.6-35B-A3B`, TP=8, served name `corrector`, context 16384. Override
+`LLM_MODEL` with the existing downloaded model or chosen compatible corrector;
+`HF_CACHE`, `LLM_IMAGE`, `LLM_TP`, `LLM_MAX_NUM_SEQS`, and `LLM_GPU_UTIL` are
+configurable. Wait for model loading and `/health` to succeed. If using a
+different port/name, set `LLM_URL` / `LLM_MODEL_NAME` for the workers.
+
+### 2. Pilot, then production cleaning
+
+First use a separate pilot ID, on one LLM node, with the same two ASRs:
+
+```bash
+RUN_ID=yodas3_pilot bash scripts/corpus/run_yodas3.sh plan --limit 200
+RUN_ID=yodas3_pilot FOREGROUND=1 bash scripts/corpus/run_yodas3.sh run
+RUN_ID=yodas3_pilot bash scripts/corpus/run_yodas3.sh verify
+RUN_ID=yodas3_pilot bash scripts/corpus/run_yodas3.sh peek -n 20 --only-changed
+RUN_ID=yodas3_pilot bash scripts/corpus/run_yodas3.sh peek -n 20 --rejects
+```
+
+The limit applies per source. Inspect accepted/rejected examples across the
+14 source files and listen to disputed samples. Pilot output is explicitly
+blocked from production publication. Keep pilot and production roots separate;
+if overriding `ROOT`, change it together with `RUN_ID`.
+
+For production, run `plan` **once**, then `run` on **each of the 11 LLM nodes**:
+
+```bash
+bash scripts/corpus/run_yodas3.sh plan
+# Execute this next command once on every LLM node:
+bash scripts/corpus/run_yodas3.sh run
+```
+
+Workers claim disjoint chunks from the shared plan; no node ranks or manual
+shards are needed. Defaults: 8 worker processes per LLM node, 16 ASR and 16 LLM
+requests per process, local corrector, both shared ASR endpoints with failover.
+Tune `PROCS`, `ASR_CONCURRENCY`, `LLM_CONCURRENCY`, `WINDOWS_IN_FLIGHT` and
+`FLUSH_EVERY` through environment variables. The dialect, duration and diacritic
+policy is frozen. Rerun `run` after a crash to resume committed work; use
+`stop` on a node to stop that node's background workers.
+
+For scheduler-managed execution, after planning and making services healthy on
+the selected nodes, `mkdir -p logs` then submit
+`sbatch --nodelist=<11-corrector-nodes> scripts/corpus/yodas3_clean_11node.slurm`.
+For existing interactive allocations, use the per-node command above. The two
+ASR nodes are separate from these 11 worker nodes.
+
+```bash
+bash scripts/corpus/run_yodas3.sh status
+# Once all chunks are done:
+bash scripts/corpus/run_yodas3.sh verify
+bash scripts/corpus/run_yodas3.sh publish
+bash scripts/corpus/run_yodas3.sh configs
+```
+
+Logs and rejection records are in `asr_cleaned_manifests/$RUN_ID/_logs` and
+`_rejects`. Dialect flags use reason `guard_dialect_erasure`. Publication also
+verifies completion and policy, reconciles original metadata, excludes indexed
+audio paths and held-out recording IDs, and deduplicates new audio paths,
+available audio hashes, and source/time segments. Existing different-path
+duplicates without matching indexed identities are outside this exclusion.
+
+The cleaner retains its five-field schema (`audio_filepath`, `duration`,
+`text`, `org_text`, `asr_text`). Published manifests additionally preserve
+dialect labels/scores/probabilities, source IDs, segment times, code-switch
+metadata and available provenance. They live at:
+
+```text
+asr_cleaned_manifests/yodas3_v1/published/ar/data/train_ar_yodas3_v1_<code>.jsonl
+```
+
+Publication installs new, no-clobber symlinks with the same filenames under
+`asr_cleaned_manifests/full_v1/ar/data` (the requested destination). Existing
+manifests are untouched. Keep the campaign directory: these links and generated
+configs depend on it. `published/release.json` has per-source cleaning and
+exclusion counts; `published/excluded.jsonl` retains publication exclusions.
+Publication can be rerun to finish a partially installed link set.
+
+The 35-second limit remains in force: longer clips are rejected for a later
+segmentation pass, never cropped with full-length labels. The preflight scan
+found 2,989,202 rows, of which 719,707 exceed 35 seconds; actual usable totals
+will be lower after quality/overlap filters. Including MSA does not itself
+balance dialect frequency: this update preserves the base training sampler
+and schedules, and reports each source's accepted hours for that decision.
+
+### 3. Append code-switch partners and the GQASR index
+
+`configs` creates `asr_cleaned_manifests/$RUN_ID/updates/{qasr,gqasr}.yaml` and
+`additions.json`. It appends the new files, preserves existing train/eval lists,
+and uses new output/index paths. It removes the raw Arabic Yodas streaming
+source from the generated GQASR config when present, to avoid also training on
+the uncleaned copy. Other streams remain. Empty manifests are published for
+accounting but omitted from training. The original configs are never edited.
+
+```bash
+# Plan once; uses the matching existing code-switch index:
+bash scripts/corpus/run_yodas3.sh cs-plan
+# Run on participating CPU nodes (no GPU/LLM/ASR requests):
+PROCS=16 bash scripts/corpus/run_yodas3.sh cs-run
+bash scripts/corpus/run_yodas3.sh cs-status
+# Once all chunks complete, run these once:
+JOBS=16 bash scripts/corpus/run_yodas3.sh cs-verify --metadata-only
+bash scripts/corpus/run_yodas3.sh cs-assemble
+```
+
+The new index is `code_switch_indexes/cs_$RUN_ID/assembled/index.json`, shared
+by both generated configs. Only the added Arabic manifests are decoded and
+indexed. Old Arabic partner IDs are preserved in a copied pool; the other four
+language pools are reused by symlink. Existing sources must remain immutable
+and match the base index receipt; stale sources cause a failure, not a silent
+rebuild. Retain the old code-switch root because the update depends on it.
+
+For GQASR, activate its existing training environment (or set `GQASR_PYTHON`
+to that interpreter), then on **one node**:
+
+```bash
+JOBS=32 SCAN_TEMP_DIR=/path/to/large/node-local/scratch \
+  bash scripts/corpus/run_yodas3.sh gqasr-append
+```
+
+This copies the completed base SQLite index and scans only the new manifests
+with audio-header, tokenizer, duration, duplicate and eval-leakage checks. Old
+rows/ordinals stay unchanged; the base index is untouched. It needs scratch
+space for the full copied index plus additions and shared storage for the new
+finished index. It does not reread old manifests or decode old audio. An
+interrupted append restarts the copy/new scan; it does not resume a partial DB.
+See `updates/gqasr_append_report.json` for counts. Existing scan/index locks
+are respected. QASR has no persistent primary dataset index to rebuild; its
+normal startup still reads manifest offsets.
+
+Before training, set `model_name_or_path` (QASR) and `base_model` (GQASR) in
+the **generated** configs to the completed checkpoints you want to continue.
+The generator retains the base configs' starting models. Keep the same
+tokenizer used for the indexes. Use the new output directories and a fresh
+training/sampler state; do not resume an old optimizer/sampler against a
+different data/index contract. Run the existing preflights, for example:
+
+```bash
+CONFIG="$PWD/asr_cleaned_manifests/$RUN_ID/updates/qasr.yaml" \
+  bash scripts/run_v81_phase2_12node.sh 0 localhost --preflight --scan
+PYTHONPATH="$PWD/gemma_speech/gqasr/src:$PWD/src" python -m gqasr preflight \
+  --config "$PWD/asr_cleaned_manifests/$RUN_ID/updates/gqasr.yaml"
+```
+
+The usual launchers can then use those generated configs. Retained corpora are
+not recleaned. Local regression tests cover policy enforcement, publication,
+unchanged old index bytes/IDs, leakage, duplicate conflicts, and both existing
+index readers. A live GPU pilot is still required on the cluster.
+
+---
+
+## Original bundle workflow — 9× H100 nodes
 
 How to **drive** the staged corpus build on the cluster. The modules and their
 flags are documented in `src/data_processing/README.md`; this file is the

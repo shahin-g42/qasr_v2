@@ -102,6 +102,8 @@ def main(argv: list[str] | None = None) -> int:
         return 0
 
     if args.cmd == "run":
+        if args.dialect_guard not in ("off", "quarantine"):
+            ap.error("--dialect-guard must be off or quarantine")
         host = socket.gethostname().split(".")[0]
         # One `run` per node: a second one would start workers with the SAME ids,
         # resuming (and writing) the same chunks as the first.

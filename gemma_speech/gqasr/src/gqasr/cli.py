@@ -111,6 +111,14 @@ def main():
     p.add_argument("--progress-seconds", type=float, default=5.0)
     p.add_argument("--temp-dir", help="Node-local scratch")
     p.add_argument("--report")
+    p = sub.add_parser("append-manifests", help="Scan only newly appended train manifests into a new copy of the index")
+    p.add_argument("--config", required=True)
+    p.add_argument("--source-index", required=True)
+    p.add_argument("--workers", type=int, default=0)
+    p.add_argument("--chunk-size", type=int, default=128)
+    p.add_argument("--progress-seconds", type=float, default=5.0)
+    p.add_argument("--temp-dir")
+    p.add_argument("--report")
     p = sub.add_parser("augmentation-smoke")
     p.add_argument("--config", required=True)
     p.add_argument("--model", help="Use exported base tokenizer/frontend before bridge training")
@@ -130,7 +138,16 @@ def main():
     args = vars(parser.parse_args())
     command = args.pop("command")
     report = args.pop("report", None)
-    if command == "export-base":
+    if command == "append-manifests":
+        from .config import load_config
+        from .data import scan
+        from .processing import GQASRProcessor
+
+        cfg = load_config(args.pop("config"))
+        source_index = args.pop("source_index")
+        result = scan(cfg, GQASRProcessor(cfg["base_model"]), verify_audio=True,
+                      append_from=source_index, **args)
+    elif command == "export-base":
         import torch
 
         from .bootstrap import export_base

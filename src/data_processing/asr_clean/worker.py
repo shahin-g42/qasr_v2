@@ -48,6 +48,7 @@ from pathlib import Path
 
 from . import diacritics
 from .conventions import canonicalize, strip_non_speech
+from .dialect import DIALECT_POLICY, formalizations
 from .endpoints import ASRClient, LLMClient, PermanentError, TransientError
 from .plan import iter_chunk_lines, load_dup_mask, load_plan
 from .prompts import PROMPT_VERSION, guard, messages, parse_response
@@ -91,6 +92,7 @@ class WorkerConfig:
     # Such a clip is re-run once with this penalty; 0 disables the retry.
     asr_loop_penalty: float = 1.2
     ar_diacritics: str = "critical"  # Arabic diacritization pass: critical | full | none
+    dialect_guard: str = "off"       # off | quarantine (opt-in for new dialect campaigns)
     diac_batch: int = 16             # items per diacritization request
     # Batches are also capped by text length (characters of ORIGINAL), so a
     # batch of long transcripts still fits its answer in max_tokens (test4: 4.7%
@@ -268,6 +270,7 @@ class Item:
     llm_raw: str = ""
     agree: bool = False
     diac: str = ""                   # "", "ok" or "failed:<why>"
+    source_dialect: str = ""
 
 
 class Window:
@@ -303,6 +306,7 @@ class ChunkProcessor:
             return
         item.audio_filepath = path
         item.org_text = strip_envelope(text) if isinstance(text, str) else ""
+        item.source_dialect = str(rec.get("dialect") or "")
         d = rec.get("duration")
         item.duration = float(d) if isinstance(d, (int, float)) and d > 0 else None
         if not item.org_text:
@@ -359,6 +363,10 @@ class ChunkProcessor:
         think = self._think(lane) if think is None else think
         payload = [{"org_text": strip_non_speech(it.org_text), "asr_text": it.asr_text} for it in items]
         msgs = messages(payload, lang, lane)
+        if lang == "ar" and self.cfg.dialect_guard == "quarantine":
+            msgs[0]["content"] += "\n\n" + DIALECT_POLICY
+            hints = [{"i": i, "source_dialect_hint": it.source_dialect} for i, it in enumerate(items)]
+            msgs[1]["content"] += "\nUnverified source hints: " + json.dumps(hints, ensure_ascii=False)
         budget = self.cfg.adjudicate_max_tokens if lane == "adjudicate" else self.cfg.format_max_tokens
         est_prompt = sum(len(m["content"]) for m in msgs) // 2 + 64  # conservative chars/token
         max_tokens = max(256, min(budget, self.cfg.llm_context - est_prompt))
@@ -382,6 +390,7 @@ class ChunkProcessor:
                         f"{key}_truncated": int(truncated), f"{key}_errors": int("error" in meta)})
         missing = []
         for i, it in enumerate(items):
+            dialect_detail = ""
             res = parsed.get(i)
             if res is None:
                 missing.append(it)
@@ -393,6 +402,11 @@ class ChunkProcessor:
             try:
                 res["text"] = canonicalize(res["text"], lang)
                 reason = guard(res["text"], it.org_text, it.asr_text, lang, self.cfg.max_divergence)
+                if not reason and lang == "ar" and self.cfg.dialect_guard == "quarantine":
+                    signals = formalizations(it.org_text, res["text"]) + formalizations(it.asr_text, res["text"])
+                    if signals:
+                        reason = "dialect_erasure"
+                        dialect_detail = json.dumps(signals, ensure_ascii=False)
             except Exception as exc:  # one odd output must not kill the worker
                 # (2026-10-10: a "1th" crashed workers, and every worker that took
                 # the chunk over hit the same record again)
@@ -403,14 +417,14 @@ class ChunkProcessor:
                 # The ASR stopped at max_tokens (it looped) and the final text follows
                 # it: the transcript likely ends before the audio does.
                 reason = "follows_truncated_asr"
-            if reason in _RETRYABLE_GUARDS and attempt < self.cfg.max_item_attempts:
+            if reason in (_RETRYABLE_GUARDS | {"dialect_erasure"}) and attempt < self.cfg.max_item_attempts:
                 # a generation glitch (test3: ~1.3% of Indic outputs dropped their
                 # vowel signs): sample again before giving the record up
                 self.tel.add(**{f"guard_retry_{reason}": 1})
                 missing.append(it)
                 continue
             if reason:
-                it.reject, it.detail, it.llm_raw = f"guard_{reason}", "", res["text"]
+                it.reject, it.detail, it.llm_raw = f"guard_{reason}", dialect_detail, res["text"]
             elif (self.cfg.agree_max_added >= 0 and lane == "format"
                   and added_letters(it.org_text, res["text"], lang) > self.cfg.agree_max_added):
                 # Both transcripts agree on these words; an LLM that still rewrites
@@ -510,9 +524,16 @@ class ChunkProcessor:
 
     # -- driver ----------------------------------------------------------------
     def run(self, chunk: dict, paths: RunPaths, claims: Claims, stop_after_windows: int | None = None) -> bool:
+        policy = {k: getattr(self.cfg, k) for k in ("dialect_guard", "ar_diacritics", "min_duration",
+                  "max_duration", "agree_cer", "agree_max_added", "max_divergence")}
         prog = paths.progress_of(chunk) or {
             "chunk": chunk["id"], "status": "running", "offset": chunk["start"], "line": 0,
-            "out_bytes": 0, "rej_bytes": 0, "counts": {}, "started": time.time(), "prompt": PROMPT_VERSION}
+            "out_bytes": 0, "rej_bytes": 0, "counts": {}, "started": time.time(), "prompt": PROMPT_VERSION,
+            "policy": policy}
+        if prog.get("policy", policy) != policy:
+            raise ValueError("Chunk cleaning policy changed; use a new run instead of mixing policies")
+        if "policy" not in prog and self.cfg.dialect_guard != "off":
+            raise ValueError("Cannot enable dialect guard halfway through an existing chunk; use a new run")
         if prog.get("status") == "done":
             return True
         part, rej, rev = paths.part(chunk), paths.rejects(chunk), paths.review(chunk)

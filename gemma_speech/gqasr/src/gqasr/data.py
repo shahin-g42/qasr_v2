@@ -86,6 +86,7 @@ def scan(
     chunk_size=128,
     progress_seconds=5.0,
     temp_dir=None,
+    append_from=None,
 ):
     workers = available_scan_workers() if workers == 0 else workers
     if workers < 1 or chunk_size < 1 or progress_seconds <= 0:
@@ -93,6 +94,11 @@ def scan(
     destination = Path(cfg["index_path"])
     if destination.exists():
         raise FileExistsError(f"index exists; use a new index_path to rebuild: {destination}")
+    base = None
+    if append_from is not None:
+        from .append import append_base
+
+        base = append_base(cfg, processor, append_from)
     destination.parent.mkdir(parents=True, exist_ok=True)
     lock = destination.with_name(destination.name + ".scan.lock")
     try:
@@ -106,6 +112,10 @@ def scan(
     pool, db, temporary, published_temp = None, None, None, None
     started = last_progress = time.monotonic()
     counts, skipped, sources = Counter(), Counter(), []
+    if base:
+        counts.update({(split, lang): n for split, langs in base[1]["counts"].items() for lang, n in langs.items()})
+        sources.extend(base[1]["sources"])
+        skipped.update(base[1].get("skipped", {}))
     processed_bytes = processed_rows = 0
     entries = [
         (split, lang, str(path))
@@ -113,6 +123,8 @@ def scan(
         for lang, paths in cfg[field].items()
         for path in paths
     ]
+    if base:
+        entries = [("train", lang, str(path)) for lang, paths in base[2].items() for path in paths]
     total_bytes = 0
 
     def progress(event, path=None, force=False):
@@ -129,10 +141,11 @@ def scan(
                     **scan_storage_status(temporary, destination),
                     workers=workers,
                     manifest=path,
-                    manifests_done=len(sources),
+                    manifests_done=len(sources) - (len(base[1]["sources"]) if base else 0),
                     manifests_total=len(entries),
                     rows_checked=processed_rows,
                     rows_kept=sum(counts.values()),
+                    rows_retained=sum(n for langs in base[1]["counts"].values() for n in langs.values()) if base else 0,
                     rows_skipped=sum(skipped.values()),
                     skipped=dict(skipped),
                     rows_per_second=round(processed_rows / elapsed, 1),
@@ -157,12 +170,24 @@ def scan(
         db.execute("PRAGMA synchronous=OFF")
         db.execute("PRAGMA cache_size=-65536")
         db.execute("PRAGMA temp_store=MEMORY")
+        if base:
+            progress("copy_existing_index", force=True)
+            with sqlite3.connect(base[0].as_uri() + "?mode=ro", uri=True) as previous:
+                last_backup = [0.0]
+
+                def copied(status, remaining, total):
+                    now = time.monotonic()
+                    if now - last_backup[0] >= progress_seconds or not remaining:
+                        print(json.dumps(dict(event="copy_existing_index", remaining_pages=remaining, total_pages=total)), flush=True)
+                        last_backup[0] = now
+
+                previous.backup(db, pages=4096, progress=copied)
         db.execute(
-            "CREATE TABLE samples (split TEXT, language TEXT, ordinal INTEGER, audio TEXT, text TEXT, duration REAL, recording_id TEXT, dialect TEXT, source TEXT, line INTEGER, PRIMARY KEY(split,language,ordinal), UNIQUE(split,audio))"
+            "CREATE TABLE IF NOT EXISTS samples (split TEXT, language TEXT, ordinal INTEGER, audio TEXT, text TEXT, duration REAL, recording_id TEXT, dialect TEXT, source TEXT, line INTEGER, PRIMARY KEY(split,language,ordinal), UNIQUE(split,audio))"
         )
-        db.execute("CREATE INDEX audio_index ON samples(audio)")
-        db.execute("CREATE INDEX recording_index ON samples(recording_id)")
-        db.execute("CREATE TABLE metadata (key TEXT PRIMARY KEY, value TEXT)")
+        db.execute("CREATE INDEX IF NOT EXISTS audio_index ON samples(audio)")
+        db.execute("CREATE INDEX IF NOT EXISTS recording_index ON samples(recording_id)")
+        db.execute("CREATE TABLE IF NOT EXISTS metadata (key TEXT PRIMARY KEY, value TEXT)")
         tokenizer_json = processor.tokenizer.backend_tokenizer.to_str()
         worker_args = (tokenizer_json, data_contract(cfg), verify_audio)
         progress("scan_start", force=True)
@@ -298,10 +323,14 @@ def scan(
                 for split in ("train", "eval")
             },
             skipped=dict(skipped),
-            audio_headers_checked=verify_audio,
+            audio_headers_checked=verify_audio and (not base or base[1]["audio_headers_checked"]),
             tokenizer_sha256=hashlib.sha256(tokenizer_json.encode()).hexdigest(),
         )
-        db.execute("INSERT INTO metadata VALUES ('index',?)", (json.dumps(metadata),))
+        if base:
+            metadata["append"] = dict(source_index=str(base[0]), previous_counts=base[1]["counts"],
+                                      added_manifests=base[2], new_audio_headers_checked=verify_audio,
+                                      retained_records="Copied unchanged without rereading old manifests or audio; retained sources assumed immutable")
+        db.execute("INSERT OR REPLACE INTO metadata VALUES ('index',?)", (json.dumps(metadata),))
         db.commit()
         db.close()
         db = None

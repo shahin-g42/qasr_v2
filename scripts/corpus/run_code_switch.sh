@@ -9,11 +9,12 @@ export TOKENIZERS_PARALLELISM=false
 RUN_ID="${RUN_ID:?set RUN_ID, identical on all machines}"
 ROOT="${ROOT:-$REPO/code_switch_indexes/$RUN_ID}"
 PY="${PYTHON:-python3}"
-COMMAND="${1:?expected plan|run|stop|status|verify|assemble|peek|lock-test}"
+COMMAND="${1:?expected plan|append-plan|run|stop|status|verify|assemble|peek|lock-test}"
 shift
 ARGS=("$COMMAND" --run-root "$ROOT")
 case "$COMMAND" in
   plan) ARGS+=(--config "${CONFIG:-configs/code_switch/full_v1.yaml}" --jobs "${JOBS:-8}") ;;
+  append-plan) ;;
   run) ARGS+=(--procs "${PROCS:-8}") ;;
   verify|assemble|refresh-ml) ARGS+=(--jobs "${JOBS:-16}") ;;
   stop|status|peek|lock-test) ;;

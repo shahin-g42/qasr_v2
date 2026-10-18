@@ -1,0 +1,22 @@
+# Source selection for: python -m data_processing.asr_clean plan --config <this-file>
+# Use a NEW run root, e.g. asr_cleaned_manifests/yodas3_v1; full_v1 has a frozen plan.
+# This file does not change training sampling or launch processing.
+# Before production: audit dialect erasure, preserve provenance in a sidecar,
+# handle audio >35s, and exclude overlaps with existing training/eval data.
+# Keep MSA separately identifiable when setting the eventual training mixture.
+train_manifest:
+  ar:
+    - /lustrefs/shared/mohammed.naseem/data/asr/AR_HF/Yodas3/manifest_dz.jsonl
+    - /lustrefs/shared/mohammed.naseem/data/asr/AR_HF/Yodas3/manifest_iq.jsonl
+    - /lustrefs/shared/mohammed.naseem/data/asr/AR_HF/Yodas3/manifest_ly.jsonl
+    - /lustrefs/shared/mohammed.naseem/data/asr/AR_HF/Yodas3/manifest_sa.jsonl
+    - /lustrefs/shared/mohammed.naseem/data/asr/AR_HF/Yodas3/manifest_sy.jsonl
+    - /lustrefs/shared/mohammed.naseem/data/asr/AR_HF/Yodas3/manifest_ye.jsonl
+    - /lustrefs/shared/mohammed.naseem/data/asr/AR_HF/Yodas3/manifest_bh.jsonl
+    - /lustrefs/shared/mohammed.naseem/data/asr/AR_HF/Yodas3/manifest_eg.jsonl
+    - /lustrefs/shared/mohammed.naseem/data/asr/AR_HF/Yodas3/manifest_lb.jsonl
+    - /lustrefs/shared/mohammed.naseem/data/asr/AR_HF/Yodas3/manifest_ma.jsonl
+    - /lustrefs/shared/mohammed.naseem/data/asr/AR_HF/Yodas3/manifest_ps.jsonl
+    - /lustrefs/shared/mohammed.naseem/data/asr/AR_HF/Yodas3/manifest_sd.jsonl
+    - /lustrefs/shared/mohammed.naseem/data/asr/AR_HF/Yodas3/manifest_tn.jsonl
+    - /lustrefs/shared/mohammed.naseem/data/asr/AR_HF/Yodas3/manifest_msa.jsonl

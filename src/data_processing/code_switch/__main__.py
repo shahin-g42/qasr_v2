@@ -20,9 +20,12 @@ def positive(value):
 def main(argv=None):
     parser = argparse.ArgumentParser(description=__doc__)
     sub = parser.add_subparsers(dest='command', required=True)
-    for name in ('plan', 'run', 'stop', 'status', 'verify', 'assemble', 'peek', 'lock-test', 'refresh-ml'):
+    for name in ('plan', 'append-plan', 'run', 'stop', 'status', 'verify', 'assemble', 'peek', 'lock-test', 'refresh-ml'):
         cmd = sub.add_parser(name)
         cmd.add_argument('--run-root', required=True)
+        if name == 'append-plan':
+            cmd.add_argument('--source-index', required=True)
+            cmd.add_argument('--manifest', action='append', required=True, help='new Arabic train manifest; repeat')
         if name in ('plan', 'verify', 'assemble', 'refresh-ml'):
             cmd.add_argument('--jobs', type=positive, default=min(16, os.cpu_count() or 1))
         if name == 'plan':
@@ -53,7 +56,10 @@ def main(argv=None):
         if (plan_file.exists() and json.loads(plan_file.read_text()).get('derived_index')
                 and args.command not in ('peek', 'lock-test')):
             parser.error('This is a published Malayalam revision. Use training preflight to validate it; do not run/verify/reset/assemble it.')
-        if args.command == 'refresh-ml':
+        if args.command == 'append-plan':
+            from .append import plan_append
+            plan_append(root, args.source_index, args.manifest)
+        elif args.command == 'refresh-ml':
             from .refresh import refresh_ml
             refresh_ml(args.source_index, root, args.quarantine, args.jobs)
         elif args.command == 'plan':

@@ -161,6 +161,9 @@ def plan(root, config, jobs=5, samples=None, limit=None):
 
 
 def check_frozen(root, p, full=False):
+    if p.get('append_base'):
+        from .append import check_base
+        check_base(p)
     for src in p['sources']:
         st = Path(src['path']).stat()
         if (st.st_size, st.st_mtime_ns) != (src['size'], src['mtime_ns']):
@@ -497,9 +500,14 @@ def verify_unlocked(root, p, jobs, audio=False, metadata_only=False):
     check_frozen(root, p)
     bad = {}
     with ProcessPoolExecutor(max_workers=jobs) as pool:
-        print(f"verify: hashing {len(p['sources'])} frozen manifests; "
-              f"at most {min(jobs, len(p['sources']))} concurrent files", flush=True)
-        futures = [pool.submit(_verify_source_hash, source) for source in p['sources']]
+        # Retained manifests/pools keep their immutable receipt and metadata.
+        # Only the additions need content hashing or audio validation.
+        new_sources = set(p['append_base']['new_sources']) if p.get('append_base') else None
+        sources = [source for source in p['sources']
+                   if new_sources is None or source['path'] in new_sources]
+        print(f"verify: hashing {len(sources)} frozen manifests; "
+              f"at most {min(jobs, len(sources))} concurrent files", flush=True)
+        futures = [pool.submit(_verify_source_hash, source) for source in sources]
         for i, future in enumerate(as_completed(futures), 1):
             name, elapsed = future.result()
             print(f'verify: manifests {i}/{len(futures)}: {name} ({elapsed:.1f}s)', flush=True)
@@ -615,13 +623,17 @@ def assemble(root, jobs):
         tasks = [(str(root), str(temporary), lang, [c for c in p['chunks'] if c['lang'] == lang]) for lang in LANGS]
         print(f'assemble: {min(jobs, len(LANGS))} SQLite writers (one per language); '
               'increasing jobs beyond five does not increase database writers', flush=True)
-        with ProcessPoolExecutor(max_workers=min(jobs, len(LANGS))) as pool:
-            pools = dict(pool.map(_assemble_language, tasks))
+        if p.get('append_base'):
+            from .append import assemble_pools
+            pools = assemble_pools(root, temporary, p)
+        else:
+            with ProcessPoolExecutor(max_workers=min(jobs, len(LANGS))) as pool:
+                pools = dict(pool.map(_assemble_language, tasks))
         # Pools must have disjoint source identities, including path aliases.
         with sqlite3.connect(':memory:') as db:
             for lang in LANGS:
                 db.execute(f'ATTACH DATABASE ? AS {lang}', (str(temporary / f'{lang}.sqlite'),))
-            for i, a in enumerate(LANGS):
+            for i, a in enumerate(() if p.get('append_base') else LANGS):
                 for b in LANGS[i+1:]:
                     small, large = sorted((a, b), key=lambda lang: pools[lang]['count'])
                     print(f'assemble: checking identities {small} -> {large}', flush=True)

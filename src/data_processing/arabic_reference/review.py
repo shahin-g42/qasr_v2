@@ -11,11 +11,11 @@ from .core import (
     MARKED_UNCLEAR_RE,
     atomic_text,
     digest,
-    format_signature,
     load_plan,
     read_jsonl,
     review_issues,
     sha256,
+    validate_ideal_pair,
     validate_issue_notes,
     write_json,
     write_jsonl,
@@ -115,12 +115,15 @@ def validate_review(review, row):
         "ideal_text",
         "reason",
         "issue_resolutions",
+        "ideal_spelling_reason",
     }
     if set(review) != required:
         raise ValueError("Review schema mismatch")
     for field in ("id", "binding", "policy_sha256", "audio_sha256"):
         if review[field] != row[field]:
             raise ValueError(f"Review {field} mismatch")
+    if not isinstance(review["ideal_spelling_reason"], str):
+        raise ValueError("Ideal spelling explanation must be text")
     for field in ("reviewer_id", "reason"):
         if not isinstance(review[field], str) or not review[field].strip():
             raise ValueError(f"Review requires {field}")
@@ -136,8 +139,7 @@ def validate_review(review, row):
     else:
         if not all(isinstance(t, str) and t.strip() for t in (a, b)):
             raise ValueError("Verified texts must be nonempty")
-        if not format_signature(a) or format_signature(a) != format_signature(b):
-            raise ValueError("Ideal formatting changed letters or digits")
+        validate_ideal_pair(a, b, review["ideal_spelling_reason"])
         if any(MARKED_UNCLEAR_RE.search(t) for t in (a, b)):
             raise ValueError("Marked unclear span cannot be scored as fully verified")
 

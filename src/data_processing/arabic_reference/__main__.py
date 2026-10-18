@@ -115,7 +115,13 @@ def main(argv=None):
                 result["finished_proposals"] = len(records)
                 result["missing_or_failed"] = len(rows) - len(records)
         print(json.dumps(result, ensure_ascii=False, indent=2))
-        return int(args.command == "propose" and result["counts"].get("failed", 0) > 0)
+        return int(
+            args.command == "propose"
+            and (
+                result["counts"].get("failed", 0) > 0
+                or (args.smoke and not result["smoke_checks"]["passed"])
+            )
+        )
     except (ValueError, OSError, KeyError, RuntimeError) as exc:
         parser.exit(1, f"ERROR: {exc}\n")
 

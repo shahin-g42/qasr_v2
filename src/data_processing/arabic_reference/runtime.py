@@ -12,8 +12,17 @@ from pathlib import Path
 
 from data_processing.asr_clean.endpoints import JsonClient
 
-from .core import digest, load_plan, sha256, write_json, write_jsonl
-from .prompts import PROMPT_VERSION, SYSTEM, messages, parse_proposal
+from .core import (
+    DATASETS,
+    digest,
+    format_signature,
+    load_plan,
+    review_issues,
+    sha256,
+    write_json,
+    write_jsonl,
+)
+from .prompts import PROMPT_VERSION, REPAIR_INSTRUCTION, SYSTEM, messages, parse_proposal
 
 
 @contextmanager
@@ -98,6 +107,65 @@ def load_record(root, row, run_hash):
     return record
 
 
+def select_smoke(plan, rows):
+    chosen = {next(r["id"] for r in rows if r["dataset"] == ds) for ds in plan["input_counts"]}
+    chosen.add(max(rows, key=lambda r: len(json.dumps(messages(r))))["id"])
+    chosen.add(max(rows, key=lambda r: len(r["flags"]))["id"])
+    controls = {}
+    for ds in DATASETS:
+        eligible = [
+            r
+            for r in rows
+            if r["dataset"] == ds
+            and "pilot" in r["cohorts"]
+            and not review_issues(r)
+            and len(
+                {format_signature(t) for t in [r["text"], *(c["text"] for c in r["candidates"])]}
+            )
+            == 1
+        ]
+        if eligible:
+            selected = min(
+                eligible, key=lambda r: digest([plan["seed"], "wording-control-v1", r["id"]])
+            )
+            controls[ds] = selected["id"]
+            chosen.add(selected["id"])
+    return [r for r in rows if r["id"] in chosen], controls
+
+
+def check_smoke(rows, records, controls):
+    by_id = {r["id"]: r for r in rows}
+    results = {}
+    for record in records:
+        if record["id"] not in controls.values():
+            continue
+        draft = (record.get("proposal") or {}).get("proposed_verified_text")
+        results[record["id"]] = {
+            "status": record["status"],
+            "wording_preserved": isinstance(draft, str)
+            and format_signature(draft) == format_signature(by_id[record["id"]]["text"]),
+        }
+    missing = [ds for ds in DATASETS if ds not in controls]
+    return {
+        "passed": not missing
+        and not any(r["status"] == "failed" for r in records)
+        and len(results) == len(DATASETS)
+        and all(r["status"] == "proposed" and r["wording_preserved"] for r in results.values()),
+        "missing_control_datasets": missing,
+        "agreement_controls": results,
+        "note": "Checks draft production and wording preservation, not audio accuracy or full-run throughput. Review the difficult-case proposals before scaling.",
+    }
+
+
+def combined_usage(attempts):
+    result = Counter()
+    for attempt in attempts:
+        usage = attempt.get("usage")
+        if isinstance(usage, dict):
+            result.update({k: v for k, v in usage.items() if type(v) is int})
+    return dict(result)
+
+
 def propose(
     plan_root,
     output,
@@ -116,12 +184,9 @@ def propose(
         raise ValueError("Invalid request settings")
     plan, all_rows = load_plan(plan_root)
     rows = all_rows
+    controls = {}
     if smoke:
-        # Cover all datasets, plus the longest prompt and the most heavily flagged case.
-        chosen = {next(r["id"] for r in rows if r["dataset"] == ds) for ds in plan["input_counts"]}
-        chosen.add(max(rows, key=lambda r: len(json.dumps(messages(r))))["id"])
-        chosen.add(max(rows, key=lambda r: len(r["flags"]))["id"])
-        rows = [r for r in rows if r["id"] in chosen]
+        rows, controls = select_smoke(plan, rows)
     output = Path(output)
     with exclusive(output):
         server = doctor(url, model, checkpoint, timeout)
@@ -138,6 +203,9 @@ def propose(
             "code": {p.name: sha256(p) for p in sorted(Path(__file__).parent.glob("*.py"))},
             "ids": [r["id"] for r in rows],
             "smoke": smoke,
+            "smoke_controls": controls,
+            "validation_retries": 1,
+            "repair_prompt_sha256": digest(REPAIR_INSTRUCTION),
         }
         run_hash = digest(identity)
         metadata_path = output / "run.json"
@@ -154,6 +222,18 @@ def propose(
                 pending_rows.append(row)
         completed = len(rows) - len(pending_rows)
         start = time.monotonic()
+        emit(
+            json.dumps(
+                {
+                    "event": "reference_start",
+                    "output": str(output.resolve()),
+                    "selected": len(rows),
+                    "resumed": completed,
+                    "concurrency": concurrency,
+                    "smoke_controls": controls,
+                }
+            )
+        )
 
         def one(row):
             record = {
@@ -165,31 +245,54 @@ def propose(
                 "ideal_text": None,
                 "audio_review_required": True,
                 "audio_supplied_to_corrector": False,
+                "attempts": [],
             }
+            conversation = messages(row)
             try:
-                response = client.request(
-                    "POST",
-                    "/chat/completions",
-                    {
-                        "model": model,
-                        "messages": messages(row),
-                        "temperature": 0,
-                        "max_tokens": max_tokens,
-                        "chat_template_kwargs": {"enable_thinking": False},
-                    },
-                )
-                choice = response["choices"][0]
-                record.update(
-                    {
-                        "raw_response": choice["message"].get("content") or "",
-                        "finish_reason": choice.get("finish_reason"),
-                        "usage": response.get("usage", {}),
-                        "response_model": response.get("model"),
-                    }
-                )
-                record["proposal"] = parse_proposal(
-                    record["raw_response"], record["finish_reason"], row
-                )
+                for attempt_number in range(2):
+                    attempt = {"number": attempt_number + 1}
+                    record["attempts"].append(attempt)
+                    try:
+                        response = client.request(
+                            "POST",
+                            "/chat/completions",
+                            {
+                                "model": model,
+                                "messages": conversation,
+                                "temperature": 0,
+                                "max_tokens": max_tokens,
+                                "chat_template_kwargs": {"enable_thinking": False},
+                            },
+                        )
+                        choice = response["choices"][0]
+                        details = {
+                            "raw_response": choice["message"].get("content") or "",
+                            "finish_reason": choice.get("finish_reason"),
+                            "usage": response.get("usage", {}),
+                            "response_model": response.get("model"),
+                        }
+                        attempt.update(details)
+                        record.update(details)
+                    except Exception as exc:
+                        attempt["error"] = f"{type(exc).__name__}: {exc}"
+                        raise
+                    try:
+                        record["proposal"] = parse_proposal(
+                            record["raw_response"], record["finish_reason"], row
+                        )
+                    except ValueError as exc:
+                        attempt["validation_error"] = str(exc)
+                        if attempt_number == 0 and record["finish_reason"] == "stop":
+                            feedback = REPAIR_INSTRUCTION + str(exc)
+                            attempt["repair_feedback"] = feedback
+                            conversation = [
+                                *conversation,
+                                {"role": "assistant", "content": record["raw_response"]},
+                                {"role": "user", "content": feedback},
+                            ]
+                            continue
+                        raise
+                    break
                 record["status"] = (
                     "proposed"
                     if record["proposal"]["proposed_verified_text"] is not None
@@ -197,6 +300,7 @@ def propose(
                 )
             except Exception as exc:
                 record.update({"status": "failed", "error": f"{type(exc).__name__}: {exc}"})
+            record["usage"] = combined_usage(record["attempts"])
             record["record_sha256"] = digest(record)
             write_json(record_path(output, row["id"]), record)
             return record["status"]
@@ -238,6 +342,7 @@ def propose(
         counts = Counter(r["status"] for r in records)
         summary = {
             "run_sha256": run_hash,
+            "output": str(output.resolve()),
             "selected": len(rows),
             "counts": dict(counts),
             "resumed": len(rows) - len(pending_rows),
@@ -255,6 +360,17 @@ def propose(
             ),
             "wall_seconds_this_invocation": round(time.monotonic() - start, 3),
         }
+        summary["validation_retries"] = sum(len(r.get("attempts", [])) > 1 for r in records)
+        summary["failure_counts"] = dict(
+            Counter(r["error"] for r in records if r["status"] == "failed")
+        )
+        summary["failed_examples"] = [
+            {k: r.get(k) for k in ("id", "error", "finish_reason")}
+            for r in records
+            if r["status"] == "failed"
+        ][:10]
+        if smoke:
+            summary["smoke_checks"] = check_smoke(rows, records, controls)
         write_jsonl(output / "proposals.jsonl", records)
         write_json(output / "summary.json", summary)
         return summary

@@ -23,7 +23,7 @@ from data_processing.arabic_reference.core import (
 )
 from data_processing.arabic_reference.prompts import blinded, messages, parse_proposal
 from data_processing.arabic_reference.review import import_reviews, review_pack, score
-from data_processing.arabic_reference.runtime import doctor, propose
+from data_processing.arabic_reference.runtime import check_smoke, doctor, propose, select_smoke
 
 
 @pytest.fixture
@@ -109,6 +109,7 @@ def human_review(row, decision="verified"):
         "verified_text": "مرحبا بكم" if decision == "verified" else None,
         "ideal_text": "مرحبًا بكم." if decision == "verified" else None,
         "reason": "Listened and compared wording",
+        "ideal_spelling_reason": "",
         "issue_resolutions": dict.fromkeys(review_issues(row), "Listened and resolved this issue"),
     }
 
@@ -216,7 +217,7 @@ def test_unresolved_proposal_and_safe_formatting():
 
 @pytest.fixture
 def server():
-    state = {"calls": 0, "fail": False, "root": "example/corrector"}
+    state = {"calls": 0, "fail": False, "root": "example/corrector", "requests": []}
 
     class Handler(BaseHTTPRequestHandler):
         protocol_version = "HTTP/1.1"
@@ -243,16 +244,18 @@ def server():
             assert body["temperature"] == 0 and not body["chat_template_kwargs"]["enable_thinking"]
             assert body["model"] == "corrector"
             state["calls"] += 1
+            state["requests"].append(body)
+            value = (
+                state["reply"](body)
+                if state.get("reply")
+                else proposal_value(payload=json.loads(body["messages"][1]["content"]))
+            )
             self.send(
                 {
                     "choices": [
                         {
                             "message": {
-                                "content": json.dumps(
-                                    proposal_value(
-                                        payload=json.loads(body["messages"][1]["content"])
-                                    )
-                                )
+                                "content": value if isinstance(value, str) else json.dumps(value)
                             },
                             "finish_reason": "length" if state["fail"] else "stop",
                         }
@@ -475,7 +478,7 @@ def test_launcher_uses_explicit_corrector_not_training_tuning(tmp_path, monkeypa
     assert args[args.index("--model") + 1] == "corrector"
     if stage != "doctor":
         assert args[args.index("--concurrency") + 1] == "12"
-        destination = "smoke" if stage == "smoke" else "proposals"
+        destination = "smoke-v3" if stage == "smoke" else "proposals"
         assert args[args.index("--output") + 1] == str(tmp_path / "out" / destination)
     assert "--batch-size" not in args and "--workers-per-gpu" not in args
     # Only an explicit pilot checkpoint pin constrains the running service.
@@ -505,7 +508,7 @@ def test_launcher_uses_explicit_corrector_not_training_tuning(tmp_path, monkeypa
     )
     args = json.loads(proc.stdout)
     assert args[args.index("--output") + 1] == str(
-        tmp_path / "source repo/verification/arabic-reference-pilot-v2/plan"
+        tmp_path / "source repo/verification/arabic-reference-pilot-v3/plan"
     )
     assert (
         "qasr="
@@ -726,3 +729,173 @@ def test_cli_defaults_to_served_alias_without_checkpoint_pin(plan, server, capsy
     assert result["served_model"] == "corrector"
     assert result["declared_checkpoint"] is None
     assert result["server_model"]["root"] == state["root"]
+
+
+@pytest.mark.parametrize("before,after", [("ام", "أم"), ("اتوقع", "أتوقع"), ("ادريس", "إدريس")])
+def test_declared_ideal_spelling_improvement_is_allowed_and_reviewed(before, after):
+    from data_processing.arabic_reference.review import validate_review
+
+    row = proposal_row()
+    row.update(text=before, binding="b", policy_sha256="p", audio_sha256="a")
+    value = proposal_value(row)
+    value.update(
+        proposed_verified_text=before,
+        proposed_ideal_text=after + ".",
+        changes=[
+            {
+                "kind": "ideal_orthography",
+                "before": before,
+                "after": after,
+                "reason": "Hamza spelling refinement; still needs review",
+            },
+            {
+                "kind": "formatting",
+                "before": after,
+                "after": after + ".",
+                "reason": "Sentence punctuation",
+            },
+        ],
+    )
+    assert parse_proposal(json.dumps(value), "stop", row) == value
+    # It must not be silently reclassified as ordinary punctuation/diacritics.
+    value["changes"][0]["kind"] = "formatting"
+    with pytest.raises(ValueError, match="spelling explanation"):
+        parse_proposal(json.dumps(value), "stop", row)
+    review = human_review(row)
+    review.update(verified_text=before, ideal_text=after + ".")
+    with pytest.raises(ValueError, match="spelling explanation"):
+        validate_review(review, row)
+    review["ideal_spelling_reason"] = (
+        "Reviewed the word and approved its conventional hamza spelling"
+    )
+    validate_review(review, row)
+
+
+@pytest.mark.parametrize(
+    "before,after",
+    [("لا تذهب", "تذهب"), ("2400", "2250"), ("علي", "على"), ("رحمه", "رحمة"), ("أم", "إم")],
+)
+def test_spelling_explanation_cannot_approve_other_content_changes(plan, before, after):
+    from data_processing.arabic_reference.review import validate_review
+
+    row = load_plan(plan)[1][0]
+    review = human_review(row)
+    review.update(verified_text=before, ideal_text=after, ideal_spelling_reason="Looks better")
+    with pytest.raises(ValueError, match="lexical review"):
+        validate_review(review, row)
+
+
+def invalid_reply(body):
+    value = proposal_value(payload=json.loads(body["messages"][1]["content"]))
+    value["proposed_ideal_text"] = "مرحبأ بكم."
+    return value
+
+
+def test_validation_feedback_repairs_once_and_preserves_every_response(plan, tmp_path, server):
+    url, state = server
+    state["reply"] = (
+        lambda body: invalid_reply(body)
+        if len(body["messages"]) == 2
+        else proposal_value(payload=json.loads(body["messages"][1]["content"]))
+    )
+    result = propose(plan, tmp_path / "repair", url=url, model="corrector", emit=lambda _: None)
+    assert result["counts"] == {"proposed": 6} and state["calls"] == 12
+    assert result["validation_retries"] == 6
+    assert result["usage"]["prompt_tokens"] == 1200
+    records = list(read_jsonl(tmp_path / "repair/proposals.jsonl"))
+    for r in records:
+        assert len(r["attempts"]) == 2
+        assert "Formatting changed" in r["attempts"][0]["validation_error"]
+        assert "Validation error:" in r["attempts"][0]["repair_feedback"]
+        assert r["raw_response"] == r["attempts"][1]["raw_response"]
+        assert r["verified_text"] is None and r["ideal_text"] is None
+    assert any(len(request["messages"]) == 4 for request in state["requests"])
+
+
+def test_persistent_validation_error_stops_after_one_repair(plan, tmp_path, server):
+    url, state = server
+    state["reply"] = invalid_reply
+    result = propose(plan, tmp_path / "bad", url=url, model="corrector", emit=lambda _: None)
+    assert result["counts"] == {"failed": 6} and state["calls"] == 12
+    assert len(result["failed_examples"]) == 6 and result["failure_counts"]
+    assert all(len(r["attempts"]) == 2 for r in read_jsonl(tmp_path / "bad/proposals.jsonl"))
+
+
+def test_smoke_controls_produce_drafts_without_becoming_gold(plan, tmp_path, server):
+    url, _ = server
+    result = propose(
+        plan, tmp_path / "smoke", url=url, model="corrector", smoke=True, emit=lambda _: None
+    )
+    assert result["smoke_checks"]["passed"]
+    assert len(result["smoke_checks"]["agreement_controls"]) == 6
+    assert result["verified"] == 0
+
+
+def test_valid_abstentions_are_not_retried_but_fail_agreement_control_gate(
+    plan, tmp_path, server, capsys
+):
+    from data_processing.arabic_reference.__main__ import main
+
+    url, state = server
+
+    def abstain(body):
+        value = proposal_value(payload=json.loads(body["messages"][1]["content"]))
+        value.update(
+            base_candidate=None, proposed_verified_text=None, proposed_ideal_text=None, changes=[]
+        )
+        return value
+
+    state["reply"] = abstain
+    result = main(
+        [
+            "propose",
+            "--plan",
+            str(plan),
+            "--output",
+            str(tmp_path / "smoke"),
+            "--url",
+            url,
+            "--smoke",
+        ]
+    )
+    assert result == 1
+    saved = json.loads((tmp_path / "smoke/summary.json").read_text())
+    assert saved["counts"] == {"unresolved": 6} and not saved["smoke_checks"]["passed"]
+    assert state["calls"] == 6 and saved["validation_retries"] == 0
+
+
+def test_smoke_controls_deterministic_and_missing_controls_explicit(plan):
+    metadata, rows = load_plan(plan)
+    _, controls = select_smoke(metadata, rows)
+    assert controls == select_smoke(metadata, list(reversed(rows)))[1]
+    for row in rows:
+        row["candidates"][0]["text"] = "different words"
+    selected, controls = select_smoke(metadata, rows)
+    assert controls == {}
+    result = check_smoke(selected, [], controls)
+    assert not result["passed"] and set(result["missing_control_datasets"]) == set(DATASETS)
+
+
+def test_ideal_spelling_does_not_replace_substrings_of_other_words():
+    row = proposal_row()
+    row["text"] = "ام في عام"
+    value = proposal_value(row)
+    value.update(
+        proposed_verified_text="ام في عام",
+        proposed_ideal_text="أم في عام.",
+        changes=[
+            {
+                "kind": "ideal_orthography",
+                "before": "ام",
+                "after": "أم",
+                "reason": "Hamza spelling",
+            },
+            {
+                "kind": "formatting",
+                "before": "أم في عام",
+                "after": "أم في عام.",
+                "reason": "Sentence punctuation",
+            },
+        ],
+    )
+    assert parse_proposal(json.dumps(value), "stop", row) == value

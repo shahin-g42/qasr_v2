@@ -235,6 +235,12 @@ def _run(cfg, datasets, gpu_ids, workers_per_gpu, batch_size, limit, output, mod
 
     if not modes or len(set(modes)) != len(modes) or set(modes) - {"auto", "arabic"}:
         raise ValueError("Modes must be unique: auto and/or arabic")
+    task_size = int(cfg.get("task_size", 16))
+    if task_size < 1:
+        raise ValueError("task_size must be positive")
+    # Workers batch within one task, so a smaller task would silently cap the
+    # requested inference batch (e.g. task_size=4 with batch_size=16).
+    task_size = max(task_size, batch_size)
     expected = official_rows(cfg["work_dir"], datasets)
     if limit:
         # Deterministic duration-stratified subset, including each set's longest clip.
@@ -259,7 +265,7 @@ def _run(cfg, datasets, gpu_ids, workers_per_gpu, batch_size, limit, output, mod
     identity = {"version": 1, "backend": backend, "catalog": CATALOG, "checkpoint": identities,
                 "selection": fingerprint(expected), "modes": modes, "precision": cfg.get("precision", "bf16"),
                 "max_new_tokens": cfg.get("max_new_tokens", 768), "batch_size": batch_size,
-                "task_size": int(cfg.get("task_size", 16)), "input_mode": "prepared",
+                "task_size": task_size, "input_mode": "prepared",
                 "runtime": {"python": sys.version.split()[0],
                             "torch": importlib.metadata.version("torch"),
                             "transformers": importlib.metadata.version("transformers"),
@@ -294,9 +300,6 @@ def _run(cfg, datasets, gpu_ids, workers_per_gpu, batch_size, limit, output, mod
         })
         return
     ctx = mp.get_context("spawn")
-    task_size = int(cfg.get("task_size", 16))
-    if task_size < 1:
-        raise ValueError("task_size must be positive")
     task_count = (len(needed) + task_size - 1) // task_size
     slots = min(len(gpu_ids) * workers_per_gpu, task_count)
     if slots < 1:
@@ -316,10 +319,14 @@ def _run(cfg, datasets, gpu_ids, workers_per_gpu, batch_size, limit, output, mod
     emitted = set()
     started = time.monotonic()
     attempt = {"workers_per_gpu": workers_per_gpu, "gpus": gpu_ids, "actual_workers": slots,
-               "batch_size": batch_size,
+               "batch_size": batch_size, "task_size": task_size,
                "resumed_predictions": len(done), "status": "running", "wall_seconds": 0}
     attempts.append(attempt)
     atomic_json(attempts_path, attempts)
+    print(json.dumps({"event": "benchmark_schedule", "requested_workers": len(gpu_ids) * workers_per_gpu,
+                      "actual_workers": slots, "workers_per_gpu": workers_on_gpus,
+                      "batch_size": batch_size, "task_size": task_size,
+                      "pending_samples": len(needed), "pending_tasks": task_count}), flush=True)
     task_ids = set()
     lock = threading.Lock()
 

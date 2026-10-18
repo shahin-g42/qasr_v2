@@ -169,23 +169,28 @@ def test_qasr_context_and_audio_integrity_fail_closed(recognizer, tmp_path):
 
 
 def test_real_qasr_scheduler_roundtrip(checkpoint, tmp_path, monkeypatch):
+    audio = samples(tmp_path)
     rows = [{**row, "ordinal": i, "relative_audio": f"clip-{i}.wav",
-             "duration": duration, "actual_duration": duration, "metadata": {}}
-            for i, (row, duration) in enumerate(zip(samples(tmp_path), (.1, .3), strict=True))]
+             "id": f"sada:{i:06d}", "duration": duration, "actual_duration": duration, "metadata": {}}
+            for i, (row, duration) in enumerate(zip(audio * 9, (.1, .3) * 9, strict=True))]
     monkeypatch.setattr(runner, "official_rows", lambda *args: rows)
     monkeypatch.setattr(runner, "prepared_rows", lambda *args: rows)
     output = tmp_path / "results"
     cfg = dict(backend="qasr", checkpoint=str(checkpoint), work_dir=str(tmp_path),
                output_dir=str(output), precision="fp32", max_new_tokens=2,
-               task_size=2, simultaneous_model_loads=1, startup_timeout_seconds=60)
-    runner.run(cfg, datasets=["sada"], gpus="cpu", workers_per_gpu=1, batch_size=2)
+               task_size=4, simultaneous_model_loads=1, startup_timeout_seconds=60)
+    runner.run(cfg, datasets=["sada"], gpus="cpu", workers_per_gpu=1, batch_size=16)
     result = json.loads((output / "scores.json").read_text())
     assert result["protocol"]["backend"] == "qasr"
-    assert result["performance"]["attempts"][0]["new_predictions"] == 4
+    assert result["protocol"]["task_size"] == 16
+    assert result["performance"]["attempts"][0]["new_predictions"] == 36
+    tasks = [json.loads(path.read_text()) for path in (output / "tasks").glob("*.json")]
+    assert sorted(len(task["predictions"]) for task in tasks) == [4, 32]
+    assert all(task["settings"]["batch_size"] == 16 for task in tasks)
     for mode in ("arabic", "auto"):
-        assert result["diagnostics"][mode]["utterances"] == 2
+        assert result["diagnostics"][mode]["utterances"] == 18
     # No model worker needs to start for a fully completed rerun.
-    runner.run(cfg, datasets=["sada"], gpus="cpu", workers_per_gpu=1, batch_size=2)
+    runner.run(cfg, datasets=["sada"], gpus="cpu", workers_per_gpu=1, batch_size=16)
     assert json.loads((output / "progress.json").read_text())["reused_completed_run"]
 
 
@@ -205,7 +210,8 @@ def test_qasr_report_uses_qasr_identity(tmp_path):
 
 
 @pytest.mark.parametrize("stage", ["doctor", "smoke", "run", "tune"])
-def test_qasr_launcher_selects_completed_stage02_and_shared_cache(tmp_path, stage):
+@pytest.mark.parametrize("custom_settings", [False, True])
+def test_qasr_launcher_selects_completed_stage02_and_shared_cache(tmp_path, stage, custom_settings):
     import os
     import shutil
     import subprocess
@@ -229,8 +235,13 @@ def test_qasr_launcher_selects_completed_stage02_and_shared_cache(tmp_path, stag
         "print(json.dumps({'args': sys.argv[1:], 'env': {key: os.environ[key] for key in keys}}))\n")
     executable.chmod(0o755)
     env = {k: v for k,v in os.environ.items() if not k.startswith(("QASR_BENCH", "GQASR_BENCH"))}
-    for key in ("GPU_IDS", "WORKERS_PER_GPU", "BATCH_SIZE", "GEMMA_SPEECH_ENV"):
+    for key in ("GPU_IDS", "WORKERS_PER_GPU", "BATCH_SIZE", "GEMMA_SPEECH_ENV", "SMOKE_PER_DATASET"):
         env.pop(key, None)
+    if custom_settings:
+        env.update(QASR_BENCH_CHECKPOINT=str(tmp_path / "output/v81/full_12node"),
+                   QASR_BENCH_WORK=str(tmp_path / "gemma_speech/gqasr/verification/arabic-stream-cache"),
+                   QASR_BENCH_OUTPUT=str(tmp_path / "verification/qasr-stage02-arabic"),
+                   WORKERS_PER_GPU="8", BATCH_SIZE="16")
     result = subprocess.run(["bash", str(scripts / "qasr_arabic_leaderboard.sh"), stage],
                             env=env, capture_output=True, text=True, check=True)
     record = next(json.loads(line) for line in result.stdout.splitlines() if line.startswith("{"))
@@ -239,6 +250,14 @@ def test_qasr_launcher_selects_completed_stage02_and_shared_cache(tmp_path, stag
     assert record["env"]["GQASR_BENCH_OUTPUT"].endswith("/verification/qasr-stage02-arabic")
     assert record["env"]["CUDA_VISIBLE_DEVICES"] == "0,1,2,3,4,5,6,7"
     args = record["args"]
-    assert args[args.index("--workers-per-gpu") + 1] == "4"
+    assert args[args.index("--workers-per-gpu") + 1] == ("8" if custom_settings else "4")
+    if custom_settings:
+        for field in ("CHECKPOINT", "WORK", "OUTPUT"):
+            assert record["env"][f"GQASR_BENCH_{field}"] == env[f"QASR_BENCH_{field}"]
     if stage in ("smoke", "run"):
         assert args[args.index("--modes") + 1] == "arabic,auto"
+        assert args[args.index("--batch-size") + 1] == ("16" if custom_settings else "1")
+    if stage == "smoke":
+        limit = int(args[args.index("--limit-per-dataset") + 1])
+        task_size = max(4, int(env.get("BATCH_SIZE", "1")))
+        assert (6 * limit + task_size - 1) // task_size >= 8 * int(env.get("WORKERS_PER_GPU", "4"))

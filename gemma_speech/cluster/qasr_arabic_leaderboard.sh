@@ -27,6 +27,9 @@ export GQASR_BENCH_CONFIG="$ROOT/gemma_speech/gqasr/configs/arabic_leaderboard_q
 export GQASR_BENCH_MODEL_NAME=QASR
 export WORKERS_PER_GPU="${WORKERS_PER_GPU:-4}"
 export BATCH_SIZE="${BATCH_SIZE:-1}"
+# Six sets x 256 clips / batch 16 = 96 tasks: enough to start all 64
+# replicas for the requested 8 workers/GPU, with the production memory share.
+export SMOKE_PER_DATASET="${SMOKE_PER_DATASET:-256}"
 echo "QASR checkpoint: $GQASR_BENCH_CHECKPOINT"
 echo "Shared prepared audio: $GQASR_BENCH_WORK"
 echo "QASR output: $GQASR_BENCH_OUTPUT"

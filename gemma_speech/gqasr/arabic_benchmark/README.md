@@ -48,6 +48,19 @@ check, not a measured peak: the long-clip smoke test is still required. Set
 `WORKERS_PER_GPU` explicitly to experiment with more replicas. `tune` compares
 batches 1, 2 and 4 at that selected replica count.
 
+To try 64 workers with up to 16 clips per inference batch, set
+`WORKERS_PER_GPU=8` and `BATCH_SIZE=16` before the stages above. The scheduler
+raises its task size to at least the batch size, so the YAML's four-clip task
+default does not cap this at batch four. The QASR smoke default is 256 clips per
+dataset (1,536 unique clips, 96 tasks at batch 16), including each set's longest
+clip; this starts all 64 replicas with the same memory share as the full run.
+`benchmark_schedule` prints the actual worker count, batch size and task size.
+This configuration still needs the cluster smoke test: CUDA OOM retries split
+batches without dropping clips, and `scores.json` records `oom_batch_splits`.
+A successful smoke with nonzero splits means batch 16 needed smaller retries.
+Keep `QASR_BENCH_WORK` pointed at the existing prepared cache; the results can
+be written separately, for example to `$PWD/verification/qasr-stage02-arabic`.
+
 Results go to `qasr-stage02-arabic/REPORT.md`, `scores.json`, and
 `predictions-{arabic,auto}.jsonl`; the smoke run uses a separate `-smoke` directory.
 Every model shard, processor/tokenizer asset, and QASR source file is fingerprinted.

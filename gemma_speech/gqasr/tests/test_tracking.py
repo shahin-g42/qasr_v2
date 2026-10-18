@@ -61,11 +61,12 @@ def test_scalars_preserve_metric_meaning():
     assert result["eval/arabic_normalized/language:ar/wer"] == 0.15
     assert result["augmentation/rank0_applied_fraction"] == 0.5
     assert result["lr/decoder"] == 1e-5
-    assert result["train/lr_decoder"] == 1e-5
+    assert not any(key.startswith("train/lr_") for key in result)
+    assert "train/loss" not in result  # do not relabel historical rank-zero losses
     assert all(isinstance(v, (float, int)) for v in result.values())
 
 
-def test_train_lr_curves_use_actual_scheduled_groups(tmp_path, sdk):
+def test_lr_curves_use_actual_scheduled_groups_without_train_duplicates(tmp_path, sdk):
     from pathlib import Path
     from gqasr.config import load_config
     from gqasr.train import schedule
@@ -82,11 +83,25 @@ def test_train_lr_curves_use_actual_scheduled_groups(tmp_path, sdk):
         tracker.log({"step": update + 1, "elapsed_seconds": update + 1, "learning_rates": rates})
         logged = sdk[0][0].logs[-1]
         for group, rate in rates.items():
-            assert logged[f"train/lr_{group}"] == logged[f"lr/{group}"] == rate
+            assert logged[f"lr/{group}"] == rate
+        assert not any(key.startswith("train/lr_") for key in logged)
         assert logged["trainer/step"] == update + 1
     assert (("*",), {"step_metric": "trainer/step"}) in sdk[0][0].definitions
     assert sdk[1][0]["project"] == "gqasr"
     tracker.finish()
+
+
+def test_global_loss_is_distinct_from_rank_zero_and_preserved_by_follower(tmp_path, sdk):
+    row = {**record(), "loss": 1.7, "loss_window_start_step": 2,
+           "loss_window_updates": 4, "loss_microbatches": 384}
+    (tmp_path / "config.json").write_text(json.dumps(cfg(tmp_path)))
+    (tmp_path / "metrics.jsonl").write_text(json.dumps(row) + "\n")
+    follow(tmp_path)
+    values = sdk[0][0].logs[0]
+    assert values["train/loss"] == 1.7
+    assert values["train/rank0_last_microbatch_loss"] == 2.3
+    assert values["lr/decoder"] == 1e-5
+    assert not any(key.startswith("train/lr_") for key in values)
 
 
 def test_rank_zero_only_and_disabled(tmp_path, sdk):

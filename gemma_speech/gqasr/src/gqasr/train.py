@@ -17,7 +17,7 @@ from .bootstrap import copy_assets
 from .config import load_config
 from .console import print_record
 from .data import Collator, ManifestIndex, StratifiedUpdateSampler, data_contract
-from .distributed import Runtime
+from .distributed import LossWindow, Runtime
 from .gradients import clip_gradients
 from .metrics import score_predictions
 from .modeling import GQASRForSpeechRecognition
@@ -248,6 +248,7 @@ def _train(cfg, rt, resume, tracker=None):
     model.train()
     optimizer.zero_grad(set_to_none=True)
     started = time.monotonic()
+    loss_window = LossWindow(rt, start_step=step)
     for microbatch, (batch, rows) in enumerate(loader):
         sync = (microbatch + 1) % cfg["accumulation_steps"] == 0
         context = wrapped.no_sync() if rt.world > 1 and not sync else nullcontext()
@@ -258,6 +259,7 @@ def _train(cfg, rt, resume, tracker=None):
             if not rt.all_finite(loss):
                 raise FloatingPointError("nonfinite GQASR loss")
             loss.backward()
+            loss_window.add(result["loss"])
         if not sync:
             continue
         gradient_norm = clip_gradients(model, cfg["grad_clip"], rt, step)
@@ -284,7 +286,10 @@ def _train(cfg, rt, resume, tracker=None):
                 (output / f"predictions-{step}.jsonl").write_text(
                     "".join(json.dumps(r, ensure_ascii=False) + "\n" for r in predictions)
                 )
-        if rt.main and (step == 1 or step % cfg["logging_steps"] == 0 or "validation" in record):
+        log_update = step == 1 or step % cfg["logging_steps"] == 0 or "validation" in record
+        if log_update:
+            record.update(loss_window.flush(step))
+        if rt.main and log_update:
             with (output / "metrics.jsonl").open("a") as f:
                 f.write(json.dumps(record) + "\n")
             print_record(record, cfg)

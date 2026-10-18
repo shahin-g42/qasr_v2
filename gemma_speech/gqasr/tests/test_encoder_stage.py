@@ -62,7 +62,8 @@ def test_batch80_recipe_and_real_sampler_keep_language_proportions():
     large = load_config(CONFIGS / "03_encoder12_b80_12node.yaml")
     changed = {key for key in small if small[key] != large[key]}
     assert changed == {"batch_size", "language_batch_counts", "output_dir", "run_name",
-                       "online_code_switching", "code_switch_probability"}
+                       "online_code_switching", "code_switch_probability", "workers"}
+    assert large["workers"] == 8 and small["workers"] == 4
     assert not large["online_code_switching"] and large["code_switch_probability"] == 0.0
     assert small["online_code_switching"] and small["code_switch_probability"] == 0.4
     assert large["batch_size"] == 80 and large["accumulation_steps"] == 1

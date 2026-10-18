@@ -44,6 +44,13 @@ def test_training_without_validation(monkeypatch, capsys):
     assert "before clipping" in output
 
 
+def test_global_loss_is_labeled_separately_from_rank_zero():
+    record = {**sample(), "loss": 1.6, "loss_window_updates": 4, "loss_microbatches": 384}
+    output = format_record(record)
+    assert "Training loss (all ranks, 4 updates, 384 microbatches): 1.60000" in output
+    assert "Training loss (rank 0, last microbatch): 1.79800" in output
+
+
 def test_raw_json_mode(monkeypatch, capsys):
     monkeypatch.setenv("GQASR_CONSOLE_FORMAT", "json")
     print_record(sample())

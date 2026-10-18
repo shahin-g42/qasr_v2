@@ -53,6 +53,46 @@ class Runtime:
             dist.all_reduce(finite, op=dist.ReduceOp.MIN)
         return bool(finite)
 
+    def sum(self, value):
+        result = value.clone()
+        if self.world > 1:
+            dist.all_reduce(result, op=dist.ReduceOp.SUM)
+        return result
+
     def close(self):
         if dist.is_initialized():
             dist.destroy_process_group()
+
+
+class LossWindow:
+    """Mean unscaled microbatch loss across ranks since the last log/resume.
+
+    Each microbatch's loss is already a mean over its supervised tokens. Equal
+    microbatch weighting matches the current DDP/accumulation objective; this
+    is not a token-weighted corpus loss. All values are detached diagnostics.
+    """
+
+    def __init__(self, runtime, start_step=0):
+        self.runtime = runtime
+        self.start_step = start_step
+        self.totals = torch.zeros(2, device=runtime.device, dtype=torch.float32)
+
+    def add(self, loss):
+        self.totals[0].add_(loss.detach().float())
+        self.totals[1].add_(1)
+
+    def flush(self, step):
+        # All ranks call this at the same logging boundaries, even though only
+        # rank zero writes the record. One two-scalar reduction per log window.
+        total, count = self.runtime.sum(self.totals).tolist()
+        if count <= 0 or step <= self.start_step:
+            raise ValueError("Loss window requires completed training updates")
+        record = {
+            "loss": total / count,
+            "loss_window_start_step": self.start_step + 1,
+            "loss_window_updates": step - self.start_step,
+            "loss_microbatches": int(count),
+        }
+        self.totals.zero_()
+        self.start_step = step
+        return record

@@ -23,6 +23,11 @@ def format_record(record, config=None):
         "",
         f"=== GQASR | update {progress} | elapsed {elapsed / 3600:.2f} h ===",
     ]
+    if "loss" in record:
+        lines.append(
+            f"Training loss (all ranks, {record['loss_window_updates']} updates, "
+            f"{record['loss_microbatches']:,} microbatches): {record['loss']:.5f}"
+        )
     if "rank0_last_microbatch_loss" in record:
         lines.append(f"Training loss (rank 0, last microbatch): {record['rank0_last_microbatch_loss']:.5f}")
     elif record.get("event") == "initial_validation":

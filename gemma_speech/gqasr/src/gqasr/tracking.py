@@ -19,14 +19,11 @@ def training_config(cfg):
 def scalars(record):
     """Upload numeric metrics only, never transcripts or per-example metadata."""
     result = {"trainer/step": record["step"]}
-    for key in ("rank0_last_microbatch_loss", "rank0_gradient_norm", "elapsed_seconds"):
+    for key in ("loss", "rank0_last_microbatch_loss", "rank0_gradient_norm", "elapsed_seconds"):
         if key in record:
             result["train/" + key] = record[key]
     for group, value in record.get("learning_rates", {}).items():
         result["lr/" + group] = value
-        # Keep the existing lr/* history while exposing all optimizer groups
-        # beside the loss/gradient curves in W&B's train section.
-        result["train/lr_" + group] = value
     for group, scores in record.get("validation", {}).items():
         for metric, value in scores.items():
             if isinstance(value, (int, float)) and math.isfinite(value):
@@ -81,6 +78,7 @@ class Tracker:
             "embedding_learning_rate", "acoustic_layers", "decoder_layers",
             "train_embeddings", "precision", "language_batch_counts",
             "train_acoustic_frontend", "training_data_seed", "eval_at_start",
+            "workers", "online_code_switching", "code_switch_probability",
         ) if k in self.cfg}
         config["resumed_training"] = bool(self.resume)
         self.run = wandb.init(

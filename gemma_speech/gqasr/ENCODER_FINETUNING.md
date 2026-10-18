@@ -18,6 +18,7 @@ do not pass `--resume` from the previous frozen-encoder run.
 | Bridge, decoder and tied embeddings | Trainable; 28 decoder layers |
 | Per GPU batch / accumulation | 80 / 1 |
 | Nodes / GPUs | 12 / 96 |
+| DataLoader workers | 8 per GPU process, 64 per node, 768 across 12 nodes |
 | Global batch | 7,680 anchor utterances per update |
 | Synthetic code-switch augmentation | Disabled in batch 80; waveform augmentation and SpecAugment remain enabled |
 | Updates | 31,446; sampling with replacement, not an exact epoch traversal |
@@ -124,10 +125,24 @@ Ensure W&B authentication is already configured; `WANDB_MODE=offline` is support
 Compare the step-zero validation with subsequent strict Arabic WER/CER and each
 language's curves. Initial validation has no training loss and is labeled as such.
 Learning rates, pre-clipping gradient norms and augmentation counts are logged.
-W&B's `train` section includes `train/lr_bridge`, `train/lr_acoustic`,
-`train/lr_decoder` and `train/lr_embedding`, plotted against `trainer/step`.
-These are the actual scheduled optimizer rates; the existing `lr/*` metrics
-remain available as well.
+W&B's `train/loss` averages the unscaled microbatch losses across all GPU ranks
+and all accumulated microbatches since the preceding log (or resume). Each
+microbatch loss is the label-smoothed mean over its supervised tokens; the
+logged mean uses equal microbatch weighting, matching the training objective.
+`metrics.jsonl` records the window's starting update, update count and total
+microbatch count. `train/rank0_last_microbatch_loss` remains a separate diagnostic.
+Historical records containing only the rank-zero loss cannot reconstruct this
+global mean, and the follower does not relabel them as `train/loss`.
+
+The LR curves appear only as `lr/bridge`, `lr/acoustic`, `lr/decoder` and
+`lr/embedding`, plotted against `trainer/step`. These are the actual scheduled
+optimizer rates. New records no longer duplicate them as `train/lr_*`; previously
+uploaded duplicate panels may remain in an existing W&B workspace and can be
+hidden there. This change does not delete existing W&B history.
+
+Worker counts and logging changes take effect when the training processes start;
+pulling code does not change an already-running job. Checkpoint resume permits
+worker-count changes with the same training settings and a fresh output directory.
 Review early checkpoints before committing to the whole budget; improvement is
 not guaranteed by unfreezing.
 

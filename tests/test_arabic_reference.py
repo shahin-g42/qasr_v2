@@ -435,3 +435,23 @@ def test_launcher_uses_explicit_corrector_not_training_tuning(tmp_path, monkeypa
     assert args[args.index("--concurrency") + 1] == "12"
     assert args[args.index("--output") + 1] == str(tmp_path / "out/smoke")
     assert "--batch-size" not in args and "--workers-per-gpu" not in args
+    # An isolated code checkout can reuse the original checkout's data and environment.
+    env.pop("ARABIC_REF_ROOT")
+    env["ARABIC_REF_SOURCE_REPO"] = str(tmp_path / "source repo")
+    proc = subprocess.run(
+        ["bash", str(root / "scripts/corpus/run_arabic_reference.sh"), "plan"],
+        cwd=tmp_path,
+        env=env,
+        text=True,
+        capture_output=True,
+        check=True,
+    )
+    args = json.loads(proc.stdout)
+    assert args[args.index("--output") + 1] == str(
+        tmp_path / "source repo/verification/arabic-reference-pilot-v1/plan"
+    )
+    assert (
+        "qasr="
+        + str(tmp_path / "source repo/verification/qasr-stage02-arabic/predictions-arabic.jsonl")
+        in args
+    )

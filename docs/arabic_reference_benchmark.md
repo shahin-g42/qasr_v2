@@ -35,13 +35,30 @@ The doctor records `/v1/models` metadata and rejects an advertised conflicting H
 
 ## First cluster action: plan, doctor, smoke
 
-From the repository root, with this implementation available:
+Use a separate cluster checkout when the main repository is also used by training jobs.
+Run this from the existing cluster repository root:
 
 ```bash
-export ARABIC_REF_ROOT="$PWD/verification/arabic-reference-pilot-v1"
-export QASR_RESULTS="$PWD/verification/qasr-stage02-arabic"
-export GQASR_RESULTS="$PWD/gemma_speech/gqasr/verification/arabic-final-streamed"
-export ARABIC_REF_AUDIO_ROOT="$PWD/gemma_speech/gqasr/verification/arabic-stream-cache/prepared/audio"
+export ARABIC_REF_SOURCE_REPO="$PWD"
+git fetch origin codex/arabic-reference-pilot
+git worktree add ../qasr-reference-pilot origin/codex/arabic-reference-pilot
+cd ../qasr-reference-pilot
+```
+
+The launcher now reads the virtual environment, saved predictions and prepared audio from
+`ARABIC_REF_SOURCE_REPO`, and writes results to its `verification/arabic-reference-pilot-v1`.
+It runs the new code from this isolated checkout. If the worktree already exists, reuse it
+and update it deliberately after the previous run; changing code invalidates proposal resume.
+
+The defaults match the supplied cluster paths. To override them explicitly, use the
+following variables (when running directly in the original repository, omit the worktree steps):
+
+```bash
+export ARABIC_REF_SOURCE_REPO="${ARABIC_REF_SOURCE_REPO:-$PWD}"
+export ARABIC_REF_ROOT="$ARABIC_REF_SOURCE_REPO/verification/arabic-reference-pilot-v1"
+export QASR_RESULTS="$ARABIC_REF_SOURCE_REPO/verification/qasr-stage02-arabic"
+export GQASR_RESULTS="$ARABIC_REF_SOURCE_REPO/gemma_speech/gqasr/verification/arabic-final-streamed"
+export ARABIC_REF_AUDIO_ROOT="$ARABIC_REF_SOURCE_REPO/gemma_speech/gqasr/verification/arabic-stream-cache/prepared/audio"
 export LLM_URL=http://localhost:8010
 export LLM_MODEL=Qwen/Qwen3.6-35B-A3B
 export LLM_MODEL_NAME=corrector

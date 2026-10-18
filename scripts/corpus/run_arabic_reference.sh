@@ -3,14 +3,15 @@
 set -euo pipefail
 cd "$(dirname "$0")/../.."
 REPO="$PWD"
+SOURCE_REPO="${ARABIC_REF_SOURCE_REPO:-$REPO}"
 export PYTHONPATH="$REPO/src:$REPO/gemma_speech/gqasr/src${PYTHONPATH:+:$PYTHONPATH}"
 export OMP_NUM_THREADS=1 MKL_NUM_THREADS=1 OPENBLAS_NUM_THREADS=1 PYTHONUNBUFFERED=1
-PY="${PYTHON:-$REPO/gemma_speech/.venv/bin/python}"
+PY="${PYTHON:-$SOURCE_REPO/gemma_speech/.venv/bin/python}"
 if [[ ! -x "$PY" ]]; then PY="${PYTHON:-python3}"; fi
-ROOT="${ARABIC_REF_ROOT:-$REPO/verification/arabic-reference-pilot-v1}"
-QASR_RESULTS="${QASR_RESULTS:-$REPO/verification/qasr-stage02-arabic}"
-GQASR_RESULTS="${GQASR_RESULTS:-$REPO/gemma_speech/gqasr/verification/arabic-final-streamed}"
-AUDIO_ROOT="${ARABIC_REF_AUDIO_ROOT:-$REPO/gemma_speech/gqasr/verification/arabic-stream-cache/prepared/audio}"
+ROOT="${ARABIC_REF_ROOT:-$SOURCE_REPO/verification/arabic-reference-pilot-v1}"
+QASR_RESULTS="${QASR_RESULTS:-$SOURCE_REPO/verification/qasr-stage02-arabic}"
+GQASR_RESULTS="${GQASR_RESULTS:-$SOURCE_REPO/gemma_speech/gqasr/verification/arabic-final-streamed}"
+AUDIO_ROOT="${ARABIC_REF_AUDIO_ROOT:-$SOURCE_REPO/gemma_speech/gqasr/verification/arabic-stream-cache/prepared/audio}"
 LLM_URL="${LLM_URL:-http://localhost:8010}"
 MODEL_NAME="${LLM_MODEL_NAME:-corrector}"
 CHECKPOINT="${LLM_MODEL:-Qwen/Qwen3.6-35B-A3B}"

@@ -55,6 +55,33 @@ def test_continuation_recipe_preserves_index_and_augmentation():
         assert 0 < cfg[key] < previous[key]
 
 
+def test_batch80_recipe_and_real_sampler_keep_language_proportions():
+    from collections import Counter
+
+    small = load_config(CONFIGS / "03_encoder12_b40_12node.yaml")
+    large = load_config(CONFIGS / "03_encoder12_b80_12node.yaml")
+    changed = {key for key in small if small[key] != large[key]}
+    assert changed == {"batch_size", "language_batch_counts", "output_dir", "run_name"}
+    assert large["batch_size"] == 80 and large["accumulation_steps"] == 1
+    assert large["batch_size"] * large["expected_world_size"] == 7680
+    assert large["max_steps"] == 31446
+    assert large["max_steps"] * 7680 == 241505280
+    assert data_contract(small) == data_contract(large)
+    quotas = {language: 2 * count for language, count in small["language_batch_counts"].items()}
+    assert large["language_batch_counts"] == quotas
+    counts = dict.fromkeys(quotas, 10000)
+    # Check every rank, two updates, including the seeds used by the GPU audit.
+    for rank in range(96):
+        batches = list(StratifiedUpdateSampler(counts, quotas, 80, 2, rank=rank, world=96,
+                       seed=large["training_data_seed"], augmentation_seeds=True))
+        assert len(batches) == 2
+        for batch in batches:
+            assert len(batch) == 80
+            assert Counter(language for language, _, _ in batch) == quotas
+        replay = [keys for _, _, keys in audit_batches(counts, large, rank, 1, 0, 2)]
+        assert replay == batches
+
+
 @pytest.mark.parametrize("layers", [4, 12])
 @pytest.mark.parametrize("bf16", [False, True])
 @pytest.mark.parametrize("checkpointing", [False, True])

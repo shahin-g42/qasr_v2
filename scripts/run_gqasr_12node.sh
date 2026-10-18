@@ -45,7 +45,7 @@ elif [[ "$STAGE" == full ]]; then
   CONFIG_NAME=02_full_b40_12node.yaml
 else
   DEFAULT_PORT=29613
-  CONFIG_NAME=03_encoder12_b40_12node.yaml
+  CONFIG_NAME=03_encoder12_b80_12node.yaml
 fi
 export MASTER_PORT="${MASTER_PORT:-$DEFAULT_PORT}"
 [[ "$MASTER_PORT" =~ ^[0-9]+$ ]] || { echo 'MASTER_PORT must be an integer' >&2; exit 2; }

@@ -46,12 +46,20 @@ def test_full_launch_and_resume():
 def test_encoder_continuation_launch():
     result = launch("0", "--stage", "encoder")
     assert result.returncode == 0, result.stderr
-    assert "03_encoder12_b40_12node.yaml" in result.stdout
+    assert "03_encoder12_b80_12node.yaml" in result.stdout
     assert "--master_port=29613" in result.stdout
     assert "--resume" not in result.stdout
     result = launch("11", "--stage", "encoder", "--preflight")
     assert result.returncode == 0, result.stderr
-    assert "03_encoder12_b40_12node.yaml" in result.stdout and "torchrun" not in result.stdout
+    assert "03_encoder12_b80_12node.yaml" in result.stdout and "torchrun" not in result.stdout
+
+
+def test_encoder_batch40_override():
+    config = ROOT / "gemma_speech/gqasr/configs/03_encoder12_b40_12node.yaml"
+    result = launch("0", "--stage", "encoder", GQASR_CONFIG=str(config))
+    assert result.returncode == 0, result.stderr
+    assert str(config) in result.stdout
+    assert "03_encoder12_b80_12node.yaml" not in result.stdout
 
 
 def test_preflight_does_not_launch_training():

@@ -14,7 +14,7 @@ exec > >(tee "$ROOT/logs/gqasr-${STAGE}-$(date -u +%Y%m%dT%H%M%SZ)-${NODE_RANK:-
 export TOKENIZERS_PARALLELISM=false
 BRIDGE="$ROOT/gqasr/configs/01_bridge_12node.yaml"
 FULL="$ROOT/gqasr/configs/02_full_b40_12node.yaml"
-ENCODER="$ROOT/gqasr/configs/03_encoder12_b40_12node.yaml"
+ENCODER="$ROOT/gqasr/configs/03_encoder12_b80_12node.yaml"
 echo "GQASR stage=$STAGE host=$(hostname) time=$(date -u +%Y-%m-%dT%H:%M:%SZ)"
 case "$STAGE" in
   backward-audit)

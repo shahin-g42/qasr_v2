@@ -3,9 +3,9 @@
 Run after the Arabic benchmark finishes. Pulling code during a benchmark changes
 its implementation fingerprint and causes its final provenance check to fail.
 
-`configs/03_encoder12_b40_12node.yaml` starts from
+`configs/03_encoder12_b80_12node.yaml` is the default encoder stage and starts from
 `outputs/full_b40_frozen/final`, the completed 31,446-update model. It writes a
-separate run to `outputs/encoder12_b40`, with `final/` and periodic checkpoints.
+separate run to `outputs/encoder12_b80`, with `final/` and periodic checkpoints.
 The first launch uses the saved weights with a **new optimizer and schedule**;
 do not pass `--resume` from the previous frozen-encoder run.
 
@@ -16,24 +16,42 @@ do not pass `--resume` from the previous frozen-encoder run.
 | Encoder | All 12 blocks, plus output projection |
 | Convolutional frontend | Frozen, kept in evaluation mode |
 | Bridge, decoder and tied embeddings | Trainable; 28 decoder layers |
-| Per GPU batch / accumulation | 40 / 1 |
+| Per GPU batch / accumulation | 80 / 1 |
 | Nodes / GPUs | 12 / 96 |
-| Global batch | 3,840 anchor utterances per update |
+| Global batch | 7,680 anchor utterances per update |
 | Updates | 31,446; sampling with replacement, not an exact epoch traversal |
 | Encoder / bridge LR | 1e-6 / 5e-6 |
 | Decoder / embeddings LR | 2e-6 / 1e-6 |
 | Schedule | 1,000-update linear warmup, cosine decay over remaining 30,446 updates to 10% |
 | Validation | Before the first update, then every 500 updates and at completion |
 | Saving | Every 500 updates, retaining the latest eight periodic checkpoints, plus final |
-| Tracking | W&B project `gqasr`, run `gqasr-encoder12-b40`; local `metrics.jsonl` |
+| Tracking | W&B project `gqasr`, run `gqasr-encoder12-b80`; local `metrics.jsonl` |
+
+Batch 80 keeps the requested **31,446 optimizer updates**, totaling 241,505,280
+sampled anchors, twice the batch-40 recipe's budget. Learning rates, warmup,
+decay and evaluation/save intervals remain the same in optimizer-update units.
+Larger batches do not guarantee a faster complete run when the update count is
+unchanged. If the goal is the same sampled-example budget as batch 40, use
+15,723 updates with a separately adjusted schedule instead.
+
+The unchanged `03_encoder12_b40_12node.yaml` remains available. To select it,
+set this on every node before launching or checking:
+
+```bash
+export GQASR_CONFIG="$PWD/gemma_speech/gqasr/configs/03_encoder12_b40_12node.yaml"
+```
+
+For the default batch-80 recipe, unset an earlier `GQASR_CONFIG` override, or set
+it explicitly to `03_encoder12_b80_12node.yaml` on every node.
 
 The exported encoder has **only 12 blocks**. This trains all of them, rather than
 the last 12 of a deeper encoder. `train_acoustic_frontend: false` prevents the
 previous all-blocks selection from also unfreezing its convolutional frontend.
 Earlier recipes retain their behavior when this new option is absent.
 
-The same indexed manifests, per-rank quotas (ar=20, en=12, hi=4, ml=2, zh=2),
-code-switch index and quarantined-audio exclusions are used. No rescan or re-export
+The same indexed manifests and language proportions, with per-rank quotas
+ar=40, en=24, hi=8, ml=4, zh=4, are used along with the existing
+code-switch index and quarantined-audio exclusions. No rescan or re-export
 is needed. Online dataset additions are not enabled in this recipe.
 Training uses seed 43 for new draws, while validation retains seed 42 and the
 same 460-utterance subset. This keeps the internal curves comparable. Chinese
@@ -52,13 +70,13 @@ From the repository root, after benchmarking completes:
 
 ```bash
 git pull origin main
+export GQASR_CONFIG="$PWD/gemma_speech/gqasr/configs/03_encoder12_b80_12node.yaml"
 bash gemma_speech/cluster/gqasr_stage.sh test -q
 bash scripts/run_gqasr_12node.sh 0 --stage encoder --preflight
 
 # On one free GPU: real saved weights, real augmented batches from eight sampler
 # ranks, forward/backward, standard clipping, AdamW and optimizer-state memory.
 # Updates are in memory only; this command never overwrites or saves model weights.
-GQASR_CONFIG="$PWD/gemma_speech/gqasr/configs/03_encoder12_b40_12node.yaml" \
 GQASR_CUDA_VISIBLE_DEVICES=0 \
   bash gemma_speech/cluster/gqasr_stage.sh backward-audit \
     --mode full --precision bf16 --optimizer-step --rank-count 8 --batches 2
@@ -68,6 +86,9 @@ Require `backward_audit_complete` with `passed: true`, finite norms and adequate
 GPU memory headroom. The start record lists the exact trainable block indices,
 frontend status and optimizer groups. This checks 16 representative batches; it
 does not establish every possible batch's memory fit or 96-rank NCCL behavior.
+The reported 30% peak came from the batch-40 encoder audit including AdamW.
+Repeat it at batch 80: padding to the longest audio/target in a batch and DDP
+buffers can make production peaks higher than this single-GPU sample.
 Do not disable clipping checks or mask a failure to start the full run.
 
 The local tests exercise a small 12-block model, real frontend features (including

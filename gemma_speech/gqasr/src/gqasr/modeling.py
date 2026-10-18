@@ -87,10 +87,11 @@ class GQASRAcousticStack(nn.Module):
         super().__init__()
         self.core = component
         self.train_last = 0
+        self.train_frontend = False
 
     def train(self, mode=True):
         super().train(mode)
-        if self.train_last == len(self.core.layers):
+        if self.train_frontend:
             self.core.train(mode)
         else:
             self.core.eval()
@@ -137,6 +138,7 @@ class GQASRForSpeechRecognition(nn.Module):
         train_embeddings=False,
         gradient_checkpointing=False,
         label_smoothing=0.0,
+        train_acoustic_frontend=None,
     ):
         audio, decoder = self.gqasr_acoustic.core, self.gqasr_decoder
         if not 0 <= acoustic_layers <= len(audio.layers) or not 0 <= decoder_layers <= len(
@@ -145,11 +147,20 @@ class GQASRForSpeechRecognition(nn.Module):
             raise ValueError("trainable layer count exceeds architecture")
         if not 0 <= label_smoothing < 1:
             raise ValueError("invalid label smoothing")
+        # Preserve old recipes when omitted; new continuation recipes explicitly
+        # keep the frontend frozen even when all encoder blocks are selected.
+        if train_acoustic_frontend is None:
+            train_acoustic_frontend = acoustic_layers == len(audio.layers)
+        if not isinstance(train_acoustic_frontend, bool):
+            raise ValueError("train_acoustic_frontend must be boolean")
+        if train_acoustic_frontend and acoustic_layers != len(audio.layers):
+            raise ValueError("training the acoustic frontend requires all acoustic layers")
         self.label_smoothing = label_smoothing
         audio.requires_grad_(False)
         decoder.requires_grad_(False)
         self.gqasr_acoustic.train_last = acoustic_layers
-        if acoustic_layers == len(audio.layers):
+        self.gqasr_acoustic.train_frontend = train_acoustic_frontend
+        if train_acoustic_frontend:
             audio.requires_grad_(True)
         elif acoustic_layers:
             for layer in audio.layers[-acoustic_layers:]:
@@ -162,8 +173,10 @@ class GQASRForSpeechRecognition(nn.Module):
         if train_embeddings:
             decoder.get_input_embeddings().requires_grad_(True)
             decoder.get_output_embeddings().requires_grad_(True)
-        for layer in audio.layers:
-            layer.gradient_checkpointing = bool(gradient_checkpointing and acoustic_layers)
+        for index, layer in enumerate(audio.layers):
+            layer.gradient_checkpointing = bool(
+                gradient_checkpointing and index >= len(audio.layers) - acoustic_layers
+            )
         if gradient_checkpointing and decoder_layers:
             decoder.gradient_checkpointing_enable(
                 gradient_checkpointing_kwargs={"use_reentrant": False}

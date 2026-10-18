@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 set -euo pipefail
 ROOT=$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)
-STAGE="${1:?Stages: doctor download export verify scan rescan-ml preflight augmentation-smoke test bridge full transcribe}"
+STAGE="${1:?Stages: doctor download export verify scan rescan-ml preflight augmentation-smoke backward-audit test bridge full encoder transcribe}"
 shift
 ENV_DIR="${GEMMA_SPEECH_ENV:-$ROOT/.venv}"
 source "$ENV_DIR/bin/activate"
@@ -14,6 +14,7 @@ exec > >(tee "$ROOT/logs/gqasr-${STAGE}-$(date -u +%Y%m%dT%H%M%SZ)-${NODE_RANK:-
 export TOKENIZERS_PARALLELISM=false
 BRIDGE="$ROOT/gqasr/configs/01_bridge_12node.yaml"
 FULL="$ROOT/gqasr/configs/02_full_b40_12node.yaml"
+ENCODER="$ROOT/gqasr/configs/03_encoder12_b40_12node.yaml"
 echo "GQASR stage=$STAGE host=$(hostname) time=$(date -u +%Y-%m-%dT%H:%M:%SZ)"
 case "$STAGE" in
   backward-audit)
@@ -89,9 +90,10 @@ PYCODE
     export HF_HUB_OFFLINE=1
     python -m pytest "$ROOT/gqasr/tests" "$@"
     ;;
-  bridge|full)
+  bridge|full|encoder)
     CONFIG="$BRIDGE"
     if [[ "$STAGE" == full ]]; then CONFIG="$FULL"; fi
+    if [[ "$STAGE" == encoder ]]; then CONFIG="$ENCODER"; fi
     CONFIG="${GQASR_CONFIG:-$CONFIG}"
     export HF_HUB_OFFLINE=1
     python - "$CONFIG" <<'PY'

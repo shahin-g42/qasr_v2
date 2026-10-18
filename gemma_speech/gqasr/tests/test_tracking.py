@@ -61,7 +61,32 @@ def test_scalars_preserve_metric_meaning():
     assert result["eval/arabic_normalized/language:ar/wer"] == 0.15
     assert result["augmentation/rank0_applied_fraction"] == 0.5
     assert result["lr/decoder"] == 1e-5
+    assert result["train/lr_decoder"] == 1e-5
     assert all(isinstance(v, (float, int)) for v in result.values())
+
+
+def test_train_lr_curves_use_actual_scheduled_groups(tmp_path, sdk):
+    from pathlib import Path
+    from gqasr.config import load_config
+    from gqasr.train import schedule
+
+    settings = load_config(Path(__file__).parents[1] / "configs/03_encoder12_b40_12node.yaml")
+    settings["output_dir"] = str(tmp_path)
+    tracker = Tracker(settings)
+    for update in (0, 999, 15000, 31445):
+        factor = schedule(update, settings)
+        rates = {group: settings[key] * factor for group, key in (
+            ("bridge", "learning_rate"), ("acoustic", "acoustic_learning_rate"),
+            ("decoder", "decoder_learning_rate"), ("embedding", "embedding_learning_rate"),
+        )}
+        tracker.log({"step": update + 1, "elapsed_seconds": update + 1, "learning_rates": rates})
+        logged = sdk[0][0].logs[-1]
+        for group, rate in rates.items():
+            assert logged[f"train/lr_{group}"] == logged[f"lr/{group}"] == rate
+        assert logged["trainer/step"] == update + 1
+    assert (("*",), {"step_metric": "trainer/step"}) in sdk[0][0].definitions
+    assert sdk[1][0]["project"] == "gqasr"
+    tracker.finish()
 
 
 def test_rank_zero_only_and_disabled(tmp_path, sdk):

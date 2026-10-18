@@ -42,6 +42,13 @@ def load_config(path):
         raise ValueError("workers must be nonnegative and language quotas positive")
     if not 0 <= cfg["min_lr_ratio"] <= 1 or min(cfg["warmup_steps"], cfg["decay_steps"]) < 0:
         raise ValueError("invalid learning-rate schedule")
+    for key in ("train_acoustic_frontend", "eval_at_start"):
+        if key in cfg and not isinstance(cfg[key], bool):
+            raise ValueError(f"{key} must be boolean")
+    if "training_data_seed" in cfg and (
+        type(cfg["training_data_seed"]) is not int or cfg["training_data_seed"] < 0
+    ):
+        raise ValueError("training_data_seed must be a nonnegative integer")
     cfg.setdefault("code_switch_probability", 0.4)
     if not 0 <= cfg["code_switch_probability"] <= 1:
         raise ValueError("code_switch_probability must be in [0, 1]")

@@ -21,6 +21,7 @@ from .distributed import Runtime
 from .gradients import clip_gradients
 from .metrics import score_predictions
 from .modeling import GQASRForSpeechRecognition
+from .optimization import build_optimizer, training_scope
 from .processing import GQASRProcessor
 from .tracking import Tracker, training_config
 
@@ -150,27 +151,10 @@ def _train(cfg, rt, resume, tracker=None):
         cfg["train_embeddings"],
         cfg["gradient_checkpointing"],
         cfg["label_smoothing"],
+        train_acoustic_frontend=cfg.get("train_acoustic_frontend"),
     )
     model.to(rt.device)
-    parameters = {"bridge": [], "acoustic": [], "decoder": [], "embedding": []}
-    for name, parameter in model.named_parameters():
-        if parameter.requires_grad:
-            group = (
-                "bridge"
-                if name.startswith("gqasr_bridge.")
-                else "acoustic"
-                if name.startswith("gqasr_acoustic.")
-                else "embedding"
-                if "embed_tokens" in name or "lm_head" in name
-                else "decoder"
-            )
-            parameters[group].append(parameter)
-    groups = []
-    for group, params in parameters.items():
-        if params:
-            lr = cfg["learning_rate"] if group == "bridge" else cfg[group + "_learning_rate"]
-            groups.append({"params": params, "lr": lr, "base_lr": lr, "name": group})
-    optimizer = torch.optim.AdamW(groups, weight_decay=cfg["weight_decay"])
+    optimizer = build_optimizer(model, cfg)
     step = 0
     if resume:
         saved = torch.load(
@@ -187,8 +171,9 @@ def _train(cfg, rt, resume, tracker=None):
             raise ValueError(
                 "resume requires identical config/index; only output_dir/workers/logging settings may change"
             )
+        group_names = [group["name"] for group in optimizer.param_groups]
         optimizer.load_state_dict(saved["optimizer"])
-        for group, name in zip(optimizer.param_groups, (g for g, p in parameters.items() if p), strict=True):
+        for group, name in zip(optimizer.param_groups, group_names, strict=True):
             group["name"] = name
         step = saved["step"]
         torch.set_rng_state(saved["rng"][rt.rank]["cpu"])
@@ -201,6 +186,7 @@ def _train(cfg, rt, resume, tracker=None):
         print(
             json.dumps(
                 {
+                    **training_scope(model, optimizer),
                     "world_size": rt.world,
                     "global_batch": cfg["batch_size"] * cfg["accumulation_steps"] * rt.world,
                     "parameters": sum(p.numel() for p in model.parameters()),
@@ -212,6 +198,21 @@ def _train(cfg, rt, resume, tracker=None):
             flush=True,
         )
     rt.barrier()
+    if cfg.get("eval_at_start", False) and not resume:
+        if rt.main:
+            print("[GQASR] Initial validation before any optimizer update", flush=True)
+        scores, predictions = evaluate(model, validation, Collator(processor, cfg), cfg, rt)
+        if rt.main:
+            record = {"event": "initial_validation", "step": 0, "elapsed_seconds": 0.0,
+                      "validation": scores}
+            (output / "predictions-0.jsonl").write_text(
+                "".join(json.dumps(r, ensure_ascii=False) + "\n" for r in predictions)
+            )
+            with (output / "metrics.jsonl").open("a") as stream:
+                stream.write(json.dumps(record) + "\n")
+            print_record(record, cfg)
+            if tracker is not None:
+                tracker.log(record)
     wrapped = (
         DistributedDataParallel(
             model,
@@ -228,7 +229,7 @@ def _train(cfg, rt, resume, tracker=None):
         cfg["max_steps"],
         rt.rank,
         rt.world,
-        cfg["data_seed"],
+        cfg.get("training_data_seed", cfg["data_seed"]),
         step,
         augmentation_seeds=True,
     )
@@ -242,7 +243,7 @@ def _train(cfg, rt, resume, tracker=None):
         multiprocessing_context="spawn" if cfg["workers"] else None,
         pin_memory=rt.device.type == "cuda",
         persistent_workers=cfg["workers"] > 0,
-        generator=torch.Generator().manual_seed(cfg["data_seed"]),
+        generator=torch.Generator().manual_seed(cfg.get("training_data_seed", cfg["data_seed"])),
     )
     model.train()
     optimizer.zero_grad(set_to_none=True)

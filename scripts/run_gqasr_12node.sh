@@ -3,7 +3,7 @@
 # Uses gemma_speech/.venv; does not activate the original QASR conda environment.
 set -euo pipefail
 usage() {
-  echo "Usage: $0 NODE_RANK [MASTER_ADDR] [--stage bridge|full] [--preflight] [--resume CHECKPOINT]" >&2
+  echo "Usage: $0 NODE_RANK [MASTER_ADDR] [--stage bridge|full|encoder] [--preflight] [--resume CHECKPOINT]" >&2
 }
 [[ $# -ge 1 && "$1" =~ ^[0-9]+$ ]] || { usage; exit 2; }
 export NODE_RANK=$((10#$1))
@@ -28,7 +28,7 @@ while [[ $# -gt 0 ]]; do
     *) echo "Unknown argument: $1" >&2; usage; exit 2 ;;
   esac
 done
-[[ "$STAGE" == bridge || "$STAGE" == full ]] || { echo 'Stage must be bridge or full' >&2; exit 2; }
+[[ "$STAGE" == bridge || "$STAGE" == full || "$STAGE" == encoder ]] || { echo 'Stage must be bridge, full or encoder' >&2; exit 2; }
 export NNODES="${NNODES:-12}"
 export NPROC_PER_NODE="${NPROC_PER_NODE:-8}"
 [[ "$NNODES" == 12 && "$NPROC_PER_NODE" == 8 ]] || {
@@ -40,9 +40,12 @@ export NPROC_PER_NODE="${NPROC_PER_NODE:-8}"
 if [[ "$STAGE" == bridge ]]; then
   DEFAULT_PORT=29611
   CONFIG_NAME=01_bridge_12node.yaml
-else
+elif [[ "$STAGE" == full ]]; then
   DEFAULT_PORT=29612
   CONFIG_NAME=02_full_b40_12node.yaml
+else
+  DEFAULT_PORT=29613
+  CONFIG_NAME=03_encoder12_b40_12node.yaml
 fi
 export MASTER_PORT="${MASTER_PORT:-$DEFAULT_PORT}"
 [[ "$MASTER_PORT" =~ ^[0-9]+$ ]] || { echo 'MASTER_PORT must be an integer' >&2; exit 2; }

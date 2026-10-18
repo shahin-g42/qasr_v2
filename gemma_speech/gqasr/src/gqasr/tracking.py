@@ -24,6 +24,9 @@ def scalars(record):
             result["train/" + key] = record[key]
     for group, value in record.get("learning_rates", {}).items():
         result["lr/" + group] = value
+        # Keep the existing lr/* history while exposing all optimizer groups
+        # beside the loss/gradient curves in W&B's train section.
+        result["train/lr_" + group] = value
     for group, scores in record.get("validation", {}).items():
         for metric, value in scores.items():
             if isinstance(value, (int, float)) and math.isfinite(value):
@@ -74,9 +77,10 @@ class Tracker:
         # Deliberately send a small whitelist, not paths/manifests or credentials.
         config = {k: self.cfg[k] for k in (
             "batch_size", "accumulation_steps", "expected_world_size", "max_steps",
-            "warmup_steps", "decay_steps", "learning_rate", "decoder_learning_rate",
+            "warmup_steps", "decay_steps", "learning_rate", "acoustic_learning_rate", "decoder_learning_rate",
             "embedding_learning_rate", "acoustic_layers", "decoder_layers",
             "train_embeddings", "precision", "language_batch_counts",
+            "train_acoustic_frontend", "training_data_seed", "eval_at_start",
         ) if k in self.cfg}
         config["resumed_training"] = bool(self.resume)
         self.run = wandb.init(

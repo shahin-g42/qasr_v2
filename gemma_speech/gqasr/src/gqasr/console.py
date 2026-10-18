@@ -22,8 +22,11 @@ def format_record(record, config=None):
     lines = [
         "",
         f"=== GQASR | update {progress} | elapsed {elapsed / 3600:.2f} h ===",
-        f"Training loss (rank 0, last microbatch): {record['rank0_last_microbatch_loss']:.5f}",
     ]
+    if "rank0_last_microbatch_loss" in record:
+        lines.append(f"Training loss (rank 0, last microbatch): {record['rank0_last_microbatch_loss']:.5f}")
+    elif record.get("event") == "initial_validation":
+        lines.append("Initial validation: loaded checkpoint, before any optimizer update.")
     upcoming = []
     if total and step < total:
         for key, label in (("eval_steps", "validation"), ("save_steps", "checkpoint")):

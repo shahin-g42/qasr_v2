@@ -21,6 +21,9 @@ from .common import (
     write_rows,
 )
 
+CASABLANCA_REPOSITORY = "UBC-NLP/Casablanca"
+CASABLANCA_REVISION = "8951b1b88e28c1107142ced57967b8d16350951d"
+
 
 def fetch_references(work_dir):
     destination = Path(work_dir) / "references"
@@ -93,12 +96,12 @@ def resolve_audio(row, root, files, overrides):
     exact = Path(root) / name
     if exact.is_file():
         return {"path": str(exact.resolve())}
-    for suffix in (Path(name).suffix, ".wav", ".mp3", ".flac", ".ogg", ".m4a", ".sph"):
-        candidates = files.get(Path(name).with_suffix(suffix).name, [])
-        if len(candidates) > 1:
-            raise ValueError(f"Ambiguous audio basename {name}; provide an audio_map")
-        if candidates:
-            return {"path": str(Path(candidates[0]).resolve())}
+    candidates = {path for suffix in (Path(name).suffix, ".wav", ".mp3", ".flac", ".ogg", ".m4a", ".sph")
+                  for path in files.get(Path(name).with_suffix(suffix).name, [])}
+    if len(candidates) > 1:
+        raise ValueError(f"Ambiguous audio basename {name}; provide an audio_map")
+    if candidates:
+        return {"path": str(Path(next(iter(candidates))).resolve())}
     # Published SADA/MGB-2 segments encode boundaries. Support original recordings too.
     stem = Path(name).stem
     match = re.fullmatch(r"(.+)-seg_(\d+)_(\d+)-(\d+)_(\d+)", stem)
@@ -111,13 +114,13 @@ def resolve_audio(row, root, files, overrides):
         recording, start, end = match.groups()
         offset, duration = int(start) / 100, (int(end) - int(start)) / 100
     if offset is not None:
-        for suffix in (".wav", ".flac", ".sph"):
-            candidates = files.get(recording + suffix, [])
-            if len(candidates) > 1:
-                raise ValueError(f"Ambiguous original recording {recording}")
-            if candidates:
-                return {"path": str(Path(candidates[0]).resolve()), "offset_seconds": offset,
-                        "duration_seconds": duration}
+        candidates = {path for suffix in (".wav", ".flac", ".sph")
+                      for path in files.get(recording + suffix, [])}
+        if len(candidates) > 1:
+            raise ValueError(f"Ambiguous original recording {recording}")
+        if candidates:
+            return {"path": str(Path(next(iter(candidates))).resolve()), "offset_seconds": offset,
+                    "duration_seconds": duration}
     raise FileNotFoundError(f"{row['id']}: missing {name} under {root}; supply clips or audio_map")
 
 
@@ -297,14 +300,13 @@ def download_casablanca(cfg, workers=8):
     import pyarrow.parquet as pq
     from huggingface_hub import snapshot_download
 
-    revision = "8951b1b88e28c1107142ced57967b8d16350951d"
     root = Path(cfg["datasets"]["casablanca"]["root"])
     root.mkdir(parents=True, exist_ok=True)
     official = official_rows(cfg["work_dir"], ["casablanca"])
     expected = {Path(r["relative_audio"]).stem: r["relative_audio"] for r in official}
     if len(expected) != len(official):
         raise ValueError("Casablanca reference manifest has duplicate audio IDs")
-    snapshot = snapshot_download("UBC-NLP/Casablanca", repo_type="dataset", revision=revision,
+    snapshot = snapshot_download(CASABLANCA_REPOSITORY, repo_type="dataset", revision=CASABLANCA_REVISION,
                                  allow_patterns=["*/test-*.parquet"], max_workers=workers)
     def extract(path):
         found, meta = [], []
@@ -332,8 +334,8 @@ def download_casablanca(cfg, workers=8):
             seen.update(found)
             metadata.extend(meta)
             print(json.dumps({"event": "casablanca_extract", "done": len(seen), "total": len(expected)}), flush=True)
-    if seen != expected:
-        raise ValueError(f"Casablanca snapshot is missing {len(expected - seen)} official test IDs")
+    if seen != expected.keys():
+        raise ValueError(f"Casablanca snapshot is missing {len(expected.keys() - seen)} official test IDs")
     write_rows(root / "metadata.jsonl", metadata)
-    atomic_json(root / "download-provenance.json", {"repository": "UBC-NLP/Casablanca", "revision": revision,
+    atomic_json(root / "download-provenance.json", {"repository": CASABLANCA_REPOSITORY, "revision": CASABLANCA_REVISION,
                                                    "split": "test", "matched": len(seen)})

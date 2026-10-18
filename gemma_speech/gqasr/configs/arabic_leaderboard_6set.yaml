@@ -6,6 +6,8 @@ precision: bf16
 max_new_tokens: 768
 task_size: 4
 simultaneous_model_loads: 4
+startup_timeout_seconds: 1800
+progress_timeout_seconds: 1800
 duration_tolerance_seconds: 0.25
 
 # Put benchmark caches and results on node-local NVMe when available. Dataset

@@ -30,6 +30,12 @@ def checkpoint_identity(path):
     return {str(p.relative_to(path)): sha256(p) for p in required if p.is_file() or p in required[:3]}
 
 
+def implementation_identity():
+    package = Path(__file__).parent
+    files = [*package.glob("*.py"), package.parent / "modeling.py", package.parent / "processing.py"]
+    return {str(p.relative_to(package.parent)): sha256(p) for p in sorted(files)}
+
+
 def validate_predictions(expected, found, mode):
     reference = {r["id"]: r for r in expected}
     if len(reference) != len(expected):
@@ -118,7 +124,13 @@ def report(output, expected, identity, elapsed, attempts):
         values["elm/macro"]["wer"] is not None and values["elm/macro"]["cer"] is not None
         for values in scores.values()
     )
-    comparison["comparable_to_leaderboard"] = comparable
+    comparison["complete_pinned_suite_scored"] = comparable
+    comparison["comparable_to_leaderboard"] = False
+    comparison["unresolved_requirements"] = [
+        "MASC noisy manifest duration differs from the current leaderboard listing",
+        "Training overlap has not been audited",
+        "Model-specific decoding policies differ between submissions",
+    ]
     if comparable:
         comparison["gqasr"] = {mode: {"average_wer": 100 * values["elm/macro"]["wer"],
                                       "average_cer": 100 * values["elm/macro"]["cer"]}
@@ -223,7 +235,7 @@ def _run(cfg, datasets, gpu_ids, workers_per_gpu, batch_size, limit, output, mod
                             "torch": importlib.metadata.version("torch"),
                             "transformers": importlib.metadata.version("transformers"),
                             "rapidfuzz": importlib.metadata.version("rapidfuzz")},
-                "implementation": {p.name: sha256(p) for p in Path(__file__).parent.glob("*.py")}}
+                "implementation": implementation_identity()}
     run_id = fingerprint(identity)
     path = output / "run.json"
     if path.exists() and json.loads(path.read_text()) != identity:
@@ -246,6 +258,11 @@ def _run(cfg, datasets, gpu_ids, workers_per_gpu, batch_size, limit, output, mod
     attempts = json.loads(attempts_path.read_text()) if attempts_path.exists() else []
     if not needed:
         report(output, expected, identity, 0, attempts)
+        atomic_json(output / "progress.json", {
+            "event": "benchmark_complete", "ready_workers": 0, "workers": 0,
+            "completed": len(done), "total": len(expected) * len(modes), "percent": 100.0,
+            "reused_completed_run": True,
+        })
         return
     ctx = mp.get_context("spawn")
     task_size = int(cfg.get("task_size", 16))
@@ -328,6 +345,7 @@ def _run(cfg, datasets, gpu_ids, workers_per_gpu, batch_size, limit, output, mod
     ready, finished, ready_info = set(), set(), []
     success = False
     last = 0
+    last_completion = None
     try:
         for slot in range(slots):
             gpu = gpu_ids[slot % len(gpu_ids)]
@@ -355,8 +373,10 @@ def _run(cfg, datasets, gpu_ids, workers_per_gpu, batch_size, limit, output, mod
                     ready_info.append(event)
                     if len(ready) == slots:
                         inference_started = time.monotonic()
+                        last_completion = inference_started
                         begin.set()
                 elif event["event"] == "task_complete":
+                    last_completion = time.monotonic()
                     finished.add(event["task_id"])
                     result = json.loads((output / "tasks" / f"{event['task_id']}.json").read_text())
                     for row in result["predictions"]:
@@ -376,6 +396,9 @@ def _run(cfg, datasets, gpu_ids, workers_per_gpu, batch_size, limit, output, mod
                 last = now
             if not begin.is_set() and now - started > cfg.get("startup_timeout_seconds", 1800):
                 raise TimeoutError("Model startup timeout; inspect worker logs")
+            if last_completion is not None and now - last_completion > cfg.get("progress_timeout_seconds", 1800):
+                raise TimeoutError("No inference task completed within progress_timeout_seconds; "
+                                   "inspect worker logs and rerun to resume completed tasks")
             with lock:
                 all_finished = finished == task_ids
             if producer_done.is_set() and all_finished:
@@ -403,7 +426,14 @@ def _run(cfg, datasets, gpu_ids, workers_per_gpu, batch_size, limit, output, mod
         atomic_json(attempts_path, attempts)
     if checkpoint_identity(cfg["checkpoint"]) != identities:
         raise ValueError("Checkpoint changed during benchmarking; results cannot be published")
+    if implementation_identity() != identity["implementation"]:
+        raise ValueError("Model or benchmark code changed during the run; use a new output directory")
     report(output, expected, identity, attempt["wall_seconds"], attempts)
+    final_progress = {"event": "benchmark_complete", "ready_workers": len(ready), "workers": slots,
+                      "completed": len(done), "total": len(expected) * len(modes), "percent": 100.0,
+                      "elapsed_seconds": round(attempt["wall_seconds"], 1)}
+    atomic_json(output / "progress.json", final_progress)
+    print(json.dumps(final_progress), flush=True)
 
 
 def tune(cfg, gpus="0,1,2,3,4,5,6,7", output=None, limit=64):
@@ -417,11 +447,11 @@ def tune(cfg, gpus="0,1,2,3,4,5,6,7", output=None, limit=64):
         try:
             run(cfg, gpus=gpus, workers_per_gpu=11, batch_size=batch,
                 limit_per_dataset=limit, output=destination, modes=["arabic"])
-            attempts = json.loads((destination / "attempts.json").read_text())
-            a = attempts[-1]
             scores = json.loads((destination / "scores.json").read_text())
             splits = scores["performance"]["oom_batch_splits"]
-            throughput = a.get("new_predictions", 0) / max(a.get("processing_seconds", 0), 1e-9)
+            # Compare the complete same-sized subset even if a candidate was resumed.
+            throughput = (scores["diagnostics"]["arabic"]["utterances"]
+                          / max(scores["performance"]["total_attempt_wall_seconds"], 1e-9))
             candidates.append({"workers_per_gpu": 11, "batch_size": batch,
                                "samples_per_second": throughput, "oom_batch_splits": splits,
                                "status": "complete", "path": str(destination)})

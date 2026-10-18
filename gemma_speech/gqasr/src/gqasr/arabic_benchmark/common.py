@@ -95,4 +95,7 @@ def load_config(path):
         raise ValueError("simultaneous_model_loads must be positive")
     if int(cfg.get("task_size", 0)) < 1:
         raise ValueError("task_size must be positive")
+    for field in ("startup_timeout_seconds", "progress_timeout_seconds"):
+        if float(cfg.get(field, 1800)) <= 0:
+            raise ValueError(f"{field} must be positive")
     return cfg

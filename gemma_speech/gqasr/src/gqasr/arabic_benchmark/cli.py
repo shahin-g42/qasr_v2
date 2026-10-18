@@ -41,9 +41,11 @@ def doctor():
         raise RuntimeError(f"Expected {expected} allocated GPUs, PyTorch sees {visible}: {result}")
     for index in range(visible):
         props = torch.cuda.get_device_properties(index)
+        with torch.cuda.device(index):
+            bf16 = torch.cuda.is_bf16_supported()
         result["devices"].append({"index": index, "name": props.name,
                                   "memory_gib": round(props.total_memory / 2**30, 2),
-                                  "bf16": torch.cuda.is_bf16_supported()})
+                                  "bf16": bf16})
     if not all(device["bf16"] for device in result["devices"]):
         raise RuntimeError(f"BF16 is required for the configured H100 benchmark: {result}")
     import importlib.util
@@ -61,6 +63,10 @@ def main():
     parser = argparse.ArgumentParser(description="Parallel GQASR Arabic leaderboard benchmark")
     sub = parser.add_subparsers(dest="command", required=True)
     sub.add_parser("doctor", help="check the single env, allocated GPUs and CPU affinity")
+    p = sub.add_parser("source-smoke", help="stream small public test samples and verify audio locally; no GPU")
+    p.add_argument("--output", required=True)
+    p.add_argument("--per-dialect", type=int, default=2)
+    p.add_argument("--workers", type=int, default=2)
     p = sub.add_parser("references", help="download and verify the pinned official test manifests")
     p.add_argument("--config", required=True)
     p = sub.add_parser("download-casablanca", help="download only the pinned Casablanca test audio")
@@ -92,6 +98,10 @@ def main():
     args = parser.parse_args()
     if args.command == "doctor":
         doctor()
+        return
+    if args.command == "source-smoke":
+        from .source_smoke import source_smoke
+        source_smoke(args.output, args.per_dialect, args.workers)
         return
     cfg = load_config(args.config)
     if args.command == "references":

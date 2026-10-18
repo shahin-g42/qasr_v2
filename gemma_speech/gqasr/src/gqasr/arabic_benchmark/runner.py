@@ -80,6 +80,12 @@ def report(output, expected, identity, elapsed, attempts):
              "Training overlap has not been audited: these results do not establish zero-shot generalization.",
              "The current Space lists MASC noisy-test as 14.9 h; the pinned official manifest/paper totals 8.92 h. "
              "This run follows the checksum-pinned repository manifest and flags that version difference.", ""]
+    streamed_sources = sorted({(r.get("source", {}).get("repository"), r.get("source", {}).get("revision"))
+                               for r in expected if r.get("source", {}).get("repository")})
+    if streamed_sources:
+        lines += ["Test audio was read from pinned remote sources, including public mirrors. "
+                  "Official clip IDs/segment boundaries and durations are checked; byte equivalence "
+                  "to separately obtained original-provider files has not been independently audited.", ""]
     if not full_suite:
         lines += ["**PARTIAL / SMOKE RUN — no complete leaderboard average or rank.**", ""]
     for mode in identity["modes"]:
@@ -131,6 +137,9 @@ def report(output, expected, identity, elapsed, attempts):
         "Training overlap has not been audited",
         "Model-specific decoding policies differ between submissions",
     ]
+    if streamed_sources:
+        comparison["streamed_audio_sources"] = [dict(repository=repo, revision=rev) for repo, rev in streamed_sources]
+        comparison["unresolved_requirements"].append("Remote mirror audio byte equivalence to original-provider files is unaudited")
     if comparable:
         comparison["gqasr"] = {mode: {"average_wer": 100 * values["elm/macro"]["wer"],
                                       "average_cer": 100 * values["elm/macro"]["cer"]}

@@ -1,0 +1,43 @@
+{
+  "sada": {
+    "kind": "wav_segments",
+    "repository": "khaledalganem/sada2022",
+    "revision": "f45d9ad8e60aa3613229322e0712eb5874ff94f6",
+    "pattern": "batch_*/*.wav",
+    "provider": "SADA recording mirror; select exact official segment boundaries"
+  },
+  "commonvoice": {
+    "kind": "tar",
+    "repository": "fsicoli/common_voice_18_0",
+    "revision": "dc5cf90b1303b395f9dedb333be61cffac3fe06b",
+    "pattern": "audio/ar/test/*.tar",
+    "provider": "Common Voice 18 mirror; requires accepted Hugging Face access terms"
+  },
+  "masc": {
+    "kind": "parquet",
+    "repository": "MohamedRashad/MASC-Arabic",
+    "revision": "cb7f1f0618bda0433c3dba55bda5d6e8283335ca",
+    "pattern": "data/test-*.parquet",
+    "id_column": "audio.path",
+    "metadata_repository": "pain/MASC",
+    "metadata_revision": "99bfbcb394b70e43d6f4ff21a9f61496808b3574",
+    "metadata_path": "transcript/test/test.csv",
+    "provider": "MASC mirror; UUID filenames mapped through original video/start/type metadata"
+  },
+  "mgb2": {
+    "kind": "parquet",
+    "repository": "MohamedRashad/mgb2-arabic",
+    "revision": "6d94091d63809eb2c0794a8c4bc1d8b40dcdea25",
+    "pattern": "data/test-*.parquet",
+    "id_column": "segment_id",
+    "provider": "MGB-2 mirror; select exact official segment IDs"
+  },
+  "casablanca": {
+    "kind": "parquet",
+    "repository": "UBC-NLP/Casablanca",
+    "revision": "8951b1b88e28c1107142ced57967b8d16350951d",
+    "pattern": "*/test-*.parquet",
+    "id_column": "seg_id",
+    "provider": "Casablanca publisher test split"
+  }
+}

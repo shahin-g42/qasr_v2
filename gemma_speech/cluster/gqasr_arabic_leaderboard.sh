@@ -2,10 +2,15 @@
 set -euo pipefail
 
 ROOT=$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)
-STAGE="${1:?Stages: test source-smoke doctor references download-casablanca preflight prepare smoke tune run}"
+STAGE="${1:?Stages: test source-smoke stream-check stream-smoke stream-prepare doctor references download-casablanca preflight prepare smoke tune run}"
 shift
 ENV_DIR="${GEMMA_SPEECH_ENV:-$ROOT/.venv}"
-CONFIG="${GQASR_BENCH_CONFIG:-$ROOT/gqasr/configs/arabic_leaderboard_6set.yaml}"
+case "${GQASR_BENCH_INPUT:-local}" in
+  local) DEFAULT_CONFIG="$ROOT/gqasr/configs/arabic_leaderboard_6set.yaml" ;;
+  stream) DEFAULT_CONFIG="$ROOT/gqasr/configs/arabic_leaderboard_streaming.yaml" ;;
+  *) echo "GQASR_BENCH_INPUT must be local or stream" >&2; exit 2 ;;
+esac
+CONFIG="${GQASR_BENCH_CONFIG:-$DEFAULT_CONFIG}"
 source "$ENV_DIR/bin/activate"
 # Dedicated full-node benchmark: keep doctor and worker selection consistent even
 # when activation inherits an earlier single-GPU training/debug session.
@@ -23,7 +28,8 @@ echo "GQASR Arabic benchmark stage=$STAGE host=$(hostname) time=$(date -u +%Y-%m
 case "$STAGE" in
   test)
     export HF_HUB_OFFLINE=1
-    "$ENV_DIR/bin/python" -m pytest "$ROOT/gqasr/tests/test_arabic_benchmark.py" "$@"
+    "$ENV_DIR/bin/python" -m pytest "$ROOT/gqasr/tests/test_arabic_benchmark.py" \
+      "$ROOT/gqasr/tests/test_arabic_benchmark_streaming.py" "$@"
     ;;
   source-smoke)
     export HF_HUB_OFFLINE=0
@@ -32,6 +38,11 @@ case "$STAGE" in
   doctor)
     export HF_HUB_OFFLINE=1
     "$BENCH" doctor "$@"
+    ;;
+  stream-check|stream-smoke|stream-prepare)
+    export HF_HUB_OFFLINE=0
+    "$BENCH" "$STAGE" --work-dir "${GQASR_BENCH_WORK:?Set GQASR_BENCH_WORK for the prepared test cache}" \
+      --workers "${STREAM_WORKERS:-16}" "$@"
     ;;
   references)
     export HF_HUB_OFFLINE=0

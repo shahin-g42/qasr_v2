@@ -8,7 +8,53 @@ The source manifests and scoring recipe are pinned to the upstream evaluation re
 
 The live Space currently lists MASC noisy-test as 14.9 hours. The checksum-pinned test manifest in the official code repository sums to 8.925 hours, matching the paper's 8.9-hour description. The benchmark deliberately uses the available pinned manifest, verifies its hash, and prints this discrepancy in every report. Treat the MASC noisy score as version-specific; resolve the upstream manifest change before claiming an exact current leaderboard reproduction. The full pinned six-manifest run is still useful for consistent internal model comparisons.
 
-The pinned suite has 46,757 utterances and about 60.0 hours based on manifest durations. Casablanca test audio is fetched from the pinned `UBC-NLP/Casablanca` dataset revision; its dataset card specifies CC-BY-NC-ND 4.0. Obtain the other five audio sets through their official providers or your existing licensed copies. The benchmark downloads only official reference manifests and Casablanca's test split; it does not fetch SADA, Common Voice, MASC, or MGB-2 audio.
+The pinned suite has 46,757 utterances and about 60.0 hours based on manifest durations. Choose remote test streaming below, or use existing local audio with the original local-data stages. Casablanca test audio comes from the pinned `UBC-NLP/Casablanca` dataset revision; its dataset card specifies CC-BY-NC-ND 4.0.
+
+## Remote test streaming (no manually downloaded dataset folders)
+
+The `stream-*` stages read test audio remotely and keep only prepared 16 kHz mono benchmark clips, approximately 14 GB for all six sets. They do not download training splits, save full archives, or extract source datasets. Small compressed clips are decoded through temporary files and immediately removed. Streaming still transfers audio over the network, and Parquet readers may fetch complete pages/row groups. This is streamed **preparation**, followed by local-cache inference: 88 model replicas share the cache instead of making 88 independent network streams. It is not zero-disk live inference.
+
+Pinned source revisions are in `src/gqasr/arabic_benchmark/stream_sources.json`:
+
+| Dataset | Remote access and exact sample matching |
+|---|---|
+| SADA | `khaledalganem/sada2022`: range-read original WAV recordings, seeking to the official start/end samples |
+| Common Voice 18 Arabic | `fsicoli/common_voice_18_0`: stream the Arabic test tar; match official clip basenames; Hugging Face access approval required |
+| MASC clean/noisy | `MohamedRashad/MASC-Arabic`: test Parquet audio, mapped through pinned `pain/MASC` CSV video/start/type metadata; verify text and duration |
+| MGB-2 | `MohamedRashad/mgb2-arabic`: test Parquet audio matched by exact `segment_id` |
+| Casablanca | `UBC-NLP/Casablanca`: publisher test Parquet audio matched by exact `seg_id` |
+
+These include public mirrors, not just original publishers. Preparation preserves the official ELM references and checks identity, duration, and complete coverage. It does not independently prove byte equivalence to a separately obtained original-provider copy; reports retain source revisions and disclose this limit. No fuzzy transcript matching or shuffled-row alignment is used. MASC's duplicate official clip is retained as two evaluation rows; identical video/start/end/text aliases in the source mapping resolve to one deterministic audio alias.
+
+For Common Voice, review/accept the access conditions on [the dataset page](https://huggingface.co/datasets/fsicoli/common_voice_18_0), then authenticate on the cluster with `gemma_speech/.venv/bin/hf auth login` (or use an already configured `HF_TOKEN`). The scripts do not accept terms on your behalf. A denied source fails explicitly; it is never silently dropped from the six-set average.
+
+From the repository root:
+
+```bash
+export GQASR_BENCH_INPUT=stream
+export GQASR_BENCH_WORK="$PWD/gemma_speech/gqasr/verification/arabic-stream-cache"
+export GQASR_BENCH_CHECKPOINT="$PWD/gemma_speech/gqasr/outputs/full_b40_frozen/final"
+export GQASR_BENCH_OUTPUT="$PWD/gemma_speech/gqasr/verification/arabic-final-streamed"
+# GQASR_BENCH_DATA is not required. WORK may instead be a node-local NVMe path.
+# Unset an old custom config override when switching to the provided stream config.
+unset GQASR_BENCH_CONFIG
+
+bash gemma_speech/cluster/gqasr_arabic_leaderboard.sh stream-check &&
+bash gemma_speech/cluster/gqasr_arabic_leaderboard.sh stream-smoke &&
+bash gemma_speech/cluster/gqasr_arabic_leaderboard.sh doctor &&
+bash gemma_speech/cluster/gqasr_arabic_leaderboard.sh stream-prepare &&
+bash gemma_speech/cluster/gqasr_arabic_leaderboard.sh preflight &&
+bash gemma_speech/cluster/gqasr_arabic_leaderboard.sh smoke &&
+bash gemma_speech/cluster/gqasr_arabic_leaderboard.sh run
+```
+
+`stream-check` validates remote access and ID metadata without fetching audio columns. Common Voice tar member coverage and actual audio contents are checked during preparation. `stream-smoke` decodes two official clips per dataset (override `--per-dataset`); its partial cache and report live under `WORK/stream-smoke` and cannot masquerade as a full prepared dataset. These three remote stages require only `GQASR_BENCH_WORK`, no GPU or checkpoint.
+
+`STREAM_WORKERS=16` bounds concurrent network readers and decoders independently of GPU workers; increase it if network capacity permits. Streaming uses threads for network I/O, libsndfile/SciPy decoding, and Parquet reads, with one BLAS thread per process. Preparation prints progress, verifies durations and hashes, and publishes full manifests only after exact coverage succeeds. Rerunning it reuses valid clips and repairs damaged cache entries. A partially read tar must be streamed again to reach uncached members; a completely validated cached archive is not reread. Authentication, socket timeouts, or read failures stop the stage and retain valid per-clip caches for a rerun. No remote dataset Python scripts are executed.
+
+To test the five public sets while waiting for Common Voice access, explicitly pass `--datasets sada,masc_clean,masc_noisy,mgb2,casablanca` to `stream-check`, `stream-smoke`, and `stream-prepare` (and to inference stages if evaluating just those sets). This produces a declared partial benchmark, not the six-set leaderboard average.
+
+## Existing local audio
 
 | Test set | Rows | Hours in pinned manifest | Local data root |
 |---|---:|---:|---|

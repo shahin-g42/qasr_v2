@@ -67,6 +67,13 @@ def main():
     p.add_argument("--output", required=True)
     p.add_argument("--per-dialect", type=int, default=2)
     p.add_argument("--workers", type=int, default=2)
+    for command in ("stream-check", "stream-smoke", "stream-prepare"):
+        p = sub.add_parser(command, help="read pinned remote test sources without full dataset downloads")
+        p.add_argument("--work-dir", required=True)
+        p.add_argument("--datasets", type=dataset_list, default=list(DATASETS))
+        p.add_argument("--workers", type=int, default=16)
+        if command == "stream-smoke":
+            p.add_argument("--per-dataset", type=int, default=2)
     p = sub.add_parser("references", help="download and verify the pinned official test manifests")
     p.add_argument("--config", required=True)
     p = sub.add_parser("download-casablanca", help="download only the pinned Casablanca test audio")
@@ -103,6 +110,21 @@ def main():
         from .source_smoke import source_smoke
         source_smoke(args.output, args.per_dialect, args.workers)
         return
+    if args.command.startswith("stream-"):
+        from .remote import check_sources, stream_prepare
+        if args.workers < 1:
+            parser.error("--workers must be positive")
+        if args.command == "stream-check":
+            result = check_sources(args.work_dir, args.datasets, args.workers)
+        else:
+            limit = args.per_dataset if args.command == "stream-smoke" else 0
+            if args.command == "stream-smoke" and limit < 1:
+                parser.error("--per-dataset must be positive")
+            result = stream_prepare(args.work_dir, args.datasets, args.workers, limit)
+        print(json.dumps(result, indent=2, ensure_ascii=False), flush=True)
+        if result.get("ready") is False:
+            raise SystemExit(2)
+        return
     cfg = load_config(args.config)
     if args.command == "references":
         from .data import fetch_references
@@ -114,12 +136,21 @@ def main():
         download_casablanca(cfg, workers=args.workers)
         return
     if args.command == "preflight":
-        from .data import check_data, fetch_references
+        from .common import sha256
+        from .data import check_data, fetch_references, prepared_rows
         from .runner import checkpoint_identity
 
         fetch_references(cfg["work_dir"])
         weights = checkpoint_identity(cfg["checkpoint"])
-        result = check_data(cfg, args.datasets)
+        if cfg.get("audio_input") == "stream":
+            rows = prepared_rows(cfg, args.datasets)
+            for row in rows:
+                if sha256(row["audio"]) != row["audio_sha256"]:
+                    raise ValueError(f"Prepared audio changed: {row['id']}; rerun stream-prepare")
+            result = {"ready": True, "prepared_audio_checked": len(rows),
+                      "input": "streamed test audio cache"}
+        else:
+            result = check_data(cfg, args.datasets)
         result["checkpoint"] = cfg["checkpoint"]
         result["checkpoint_files"] = len(weights)
         result["benchmark_datasets"] = list(args.datasets)
@@ -128,6 +159,8 @@ def main():
             raise SystemExit(2)
         return
     if args.command == "prepare":
+        if cfg.get("audio_input") == "stream":
+            parser.error("Use stream-prepare for remote audio sources")
         from .data import fetch_references, prepare
         fetch_references(cfg["work_dir"])
         prepare(cfg, args.datasets, workers=args.workers)

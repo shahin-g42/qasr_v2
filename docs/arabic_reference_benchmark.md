@@ -21,9 +21,9 @@ The existing benchmark has already informed development; final model-quality cla
 
 Reuse the corrector from `bash scripts/corpus/run_yodas3.sh run`:
 
-- Model default: `Qwen/Qwen3.6-35B-A3B`.
+- Client model: the served alias `corrector`; it accepts the checkpoint currently behind that alias. The cluster server reported `Qwen/Qwen3.8-27B-FP8`.
 - Served alias: `corrector`, endpoint `http://localhost:8010/v1`.
-- Existing serving script: `scripts/corpus/serve_yodas3_corrector.sh`.
+- Existing serving script: `scripts/corpus/serve_yodas3_corrector.sh`. When starting a new server, `LLM_MODEL` selects its weights (the serving script defaults to `Qwen/Qwen3.6-35B-A3B`). It does not constrain client requests to an existing server.
 - Existing default serving configuration: TP=8, context 16,384, vLLM image `v0.26.0-x86_64-cu129`.
 - One 8×H100 node. Use up to 90 concurrent text requests for the full pilot (`REF_CONCURRENCY=90`). The reusable launcher default remains 16. The small smoke has only 6–8 requests and cannot measure 90-worker throughput.
 - The 96 CPU cores do not require 96 correction workers: the corrector owns the GPUs, and these workers perform lightweight HTTP/I/O tasks. BLAS thread counts are one.
@@ -31,7 +31,7 @@ Reuse the corrector from `bash scripts/corpus/run_yodas3.sh run`:
 The selected corrector is used as a **text-only proposer**. It does not hear audio. Saved QASR/GQASR predictions are reused; this stage launches no ASR model and downloads no audio or model weights itself.
 Use the existing unified `gemma_speech/.venv` for the driver. It already supplies NumPy, pytest and RapidFuzz. Do not install the root project's training pins into it.
 
-The doctor records `/v1/models` metadata and rejects an advertised conflicting Hub checkpoint. When the server exposes only its alias or a local path, identity is explicitly recorded as declaration-only. `LLM_REVISION` should identify the actual serving checkpoint revision when known; it is not an instruction to change the running server. An unrecorded revision is allowed for this internal pilot but must be resolved before public reproducibility claims.
+The doctor checks that `/v1/models` exposes `corrector` and records the advertised root/context for provenance. No checkpoint is pinned by default. Set `ARABIC_REF_CHECKPOINT` (CLI `--checkpoint`) only to opt into an expected-checkpoint check; a conflicting advertised Hub checkpoint then fails. Alias-only responses are recorded as checkpoint-unverified. A reported root is server metadata, not independent proof of the loaded weights. Run resume compares the recorded identity, so an advertised model change requires a new run directory. `LLM_REVISION` should identify the actual serving checkpoint revision when known; it is not an instruction to change the running server. An unrecorded revision is allowed for this internal pilot but must be resolved before public reproducibility claims.
 
 ## Where verified_text comes from
 
@@ -81,7 +81,6 @@ export QASR_RESULTS="$ARABIC_REF_SOURCE_REPO/verification/qasr-stage02-arabic"
 export GQASR_RESULTS="$ARABIC_REF_SOURCE_REPO/gemma_speech/gqasr/verification/arabic-final-streamed"
 export ARABIC_REF_AUDIO_ROOT="$ARABIC_REF_SOURCE_REPO/gemma_speech/gqasr/verification/arabic-stream-cache/prepared/audio"
 export LLM_URL=http://localhost:8010
-export LLM_MODEL=Qwen/Qwen3.6-35B-A3B
 export LLM_MODEL_NAME=corrector
 export REF_CONCURRENCY=90
 
@@ -91,7 +90,7 @@ bash scripts/corpus/run_arabic_reference.sh doctor &&
 bash scripts/corpus/run_arabic_reference.sh smoke
 ```
 
-Reuse an existing healthy corrector. If the available node has none, inspect and start the existing Yodas3 serving recipe:
+Reuse an existing healthy corrector. `LLM_MODEL_NAME=corrector` controls request routing; `LLM_MODEL` is used only by `llm-start`/`llm-print` to select weights for a new server. If the available node has no corrector, set `LLM_MODEL` to the checkpoint you intend to serve, then inspect and start the existing Yodas3 serving recipe:
 
 ```bash
 bash scripts/corpus/run_arabic_reference.sh llm-print

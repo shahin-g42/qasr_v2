@@ -216,7 +216,7 @@ def test_unresolved_proposal_and_safe_formatting():
 
 @pytest.fixture
 def server():
-    state = {"calls": 0, "fail": False}
+    state = {"calls": 0, "fail": False, "root": "example/corrector"}
 
     class Handler(BaseHTTPRequestHandler):
         protocol_version = "HTTP/1.1"
@@ -234,13 +234,14 @@ def server():
         def do_GET(self):
             assert self.path == "/v1/models"
             self.send(
-                {"data": [{"id": "corrector", "root": "example/corrector", "max_model_len": 16384}]}
+                {"data": [{"id": "corrector", "root": state["root"], "max_model_len": 16384}]}
             )
 
         def do_POST(self):
             assert self.path == "/v1/chat/completions"
             body = json.loads(self.rfile.read(int(self.headers["Content-Length"])))
             assert body["temperature"] == 0 and not body["chat_template_kwargs"]["enable_thinking"]
+            assert body["model"] == "corrector"
             state["calls"] += 1
             self.send(
                 {
@@ -437,7 +438,8 @@ def test_verified_six_dataset_macro_uses_same_subset(plan, tmp_path):
     assert result["verified_clips"] == result["selected_clips"] == 6
 
 
-def test_launcher_uses_explicit_corrector_not_training_tuning(tmp_path, monkeypatch):
+@pytest.mark.parametrize("stage", ["doctor", "smoke", "run"])
+def test_launcher_uses_explicit_corrector_not_training_tuning(tmp_path, monkeypatch, stage):
     import os
     import subprocess
     import sys
@@ -458,8 +460,9 @@ def test_launcher_uses_explicit_corrector_not_training_tuning(tmp_path, monkeypa
         "LLM_MODEL_NAME": "corrector",
         "REF_CONCURRENCY": "12",
     }
+    env.pop("ARABIC_REF_CHECKPOINT", None)
     proc = subprocess.run(
-        ["bash", str(root / "scripts/corpus/run_arabic_reference.sh"), "smoke"],
+        ["bash", str(root / "scripts/corpus/run_arabic_reference.sh"), stage],
         cwd=tmp_path,
         env=env,
         text=True,
@@ -467,11 +470,28 @@ def test_launcher_uses_explicit_corrector_not_training_tuning(tmp_path, monkeypa
         check=True,
     )
     args = json.loads(proc.stdout)
-    assert "--smoke" in args
-    assert args[args.index("--checkpoint") + 1] == "example/corrector"
-    assert args[args.index("--concurrency") + 1] == "12"
-    assert args[args.index("--output") + 1] == str(tmp_path / "out/smoke")
+    assert ("--smoke" in args) == (stage == "smoke")
+    assert "--checkpoint" not in args
+    assert args[args.index("--model") + 1] == "corrector"
+    if stage != "doctor":
+        assert args[args.index("--concurrency") + 1] == "12"
+        destination = "smoke" if stage == "smoke" else "proposals"
+        assert args[args.index("--output") + 1] == str(tmp_path / "out" / destination)
     assert "--batch-size" not in args and "--workers-per-gpu" not in args
+    # Only an explicit pilot checkpoint pin constrains the running service.
+    env["ARABIC_REF_CHECKPOINT"] = "example/pinned-model"
+    proc = subprocess.run(
+        ["bash", str(root / "scripts/corpus/run_arabic_reference.sh"), "doctor"],
+        cwd=tmp_path,
+        env=env,
+        text=True,
+        capture_output=True,
+        check=True,
+    )
+    args = json.loads(proc.stdout)
+    assert args[args.index("--checkpoint") + 1] == "example/pinned-model"
+    assert args[args.index("--model") + 1] == "corrector"
+    env.pop("ARABIC_REF_CHECKPOINT")
     # An isolated code checkout can reuse the original checkout's data and environment.
     env.pop("ARABIC_REF_ROOT")
     env["ARABIC_REF_SOURCE_REPO"] = str(tmp_path / "source repo")
@@ -665,3 +685,44 @@ def test_duplicate_ideal_conflict_rejected_at_import_and_scoring(inputs, tmp_pat
     write_jsonl(reviewed, output)
     with pytest.raises(ValueError, match="Conflicting verified/ideal"):
         score(root, reviewed, tmp_path / "bad-score.json")
+
+
+def test_alias_routes_to_advertised_checkpoint_and_resume_detects_changes(plan, tmp_path, server):
+    url, state = server
+    state["root"] = "Qwen/Qwen3.8-27B-FP8"
+    result = doctor(url, "corrector")
+    assert result["declared_checkpoint"] is None
+    assert result["server_model"]["root"] == state["root"]
+    assert result["identity_check"] == "reported_by_server"
+    kwargs = {"url": url, "model": "corrector", "emit": lambda _: None}
+    output = tmp_path / "alias-run"
+    assert propose(plan, output, **kwargs)["counts"] == {"proposed": 6}
+    assert propose(plan, output, **kwargs)["resumed"] == 6
+    assert json.loads((output / "run.json").read_text())["server"] == result
+    state["root"] = "example/different-checkpoint"
+    with pytest.raises(ValueError, match="changed"):
+        propose(plan, output, **kwargs)
+    assert state["calls"] == 6
+    with pytest.raises(ValueError, match="Expected served model"):
+        doctor(url, "missing-alias")
+
+
+@pytest.mark.parametrize("reported_root", [None, "corrector"])
+def test_alias_only_server_is_not_claimed_checkpoint_verified(server, reported_root):
+    url, state = server
+    state["root"] = reported_root
+    result = doctor(url, "corrector")
+    assert result["identity_check"] == "alias_only; checkpoint unverified"
+    assert result["server_model"]["root"] == reported_root
+
+
+def test_cli_defaults_to_served_alias_without_checkpoint_pin(plan, server, capsys):
+    from data_processing.arabic_reference.__main__ import main
+
+    url, state = server
+    state["root"] = "Qwen/Qwen3.8-27B-FP8"
+    assert main(["doctor", "--plan", str(plan), "--url", url]) == 0
+    result = json.loads(capsys.readouterr().out)
+    assert result["served_model"] == "corrector"
+    assert result["declared_checkpoint"] is None
+    assert result["server_model"]["root"] == state["root"]

@@ -38,7 +38,7 @@ def client_for(url, timeout=180):
     return JsonClient(url, timeout=timeout, retries=2)
 
 
-def doctor(url, model, checkpoint, timeout=180):
+def doctor(url, model, checkpoint=None, timeout=180):
     data = client_for(url, timeout).request("GET", "/models")
     matches = [entry for entry in data.get("data", []) if entry.get("id") == model]
     if len(matches) != 1:
@@ -47,16 +47,33 @@ def doctor(url, model, checkpoint, timeout=180):
         )
     found = matches[0]
     actual = found.get("root")
-    # Absolute cache paths cannot be compared to Hub names. Preserve both for audit.
-    if actual and "/" in actual and not actual.startswith("/") and actual != checkpoint:
+    # Routing uses the served alias. A checkpoint restriction is opt-in;
+    # always retain the advertised root so resume can detect a model change.
+    if (
+        checkpoint
+        and actual
+        and "/" in actual
+        and not actual.startswith("/")
+        and actual != checkpoint
+    ):
         raise ValueError(f"Server advertises {actual}, expected {checkpoint}")
+    if checkpoint:
+        identity_check = (
+            "matched"
+            if actual == checkpoint
+            else "declaration_only; record serving revision before release"
+        )
+    else:
+        identity_check = (
+            "reported_by_server"
+            if actual and actual != model
+            else "alias_only; checkpoint unverified"
+        )
     return {
         "served_model": model,
         "declared_checkpoint": checkpoint,
         "server_model": {k: found.get(k) for k in ("id", "root", "max_model_len")},
-        "identity_check": "matched"
-        if actual == checkpoint
-        else "declaration_only; record serving revision before release",
+        "identity_check": identity_check,
         "audio_capability": "not_used; proposals are text-only",
     }
 
@@ -87,7 +104,7 @@ def propose(
     *,
     url,
     model,
-    checkpoint,
+    checkpoint=None,
     revision="unrecorded",
     concurrency=16,
     max_tokens=2048,

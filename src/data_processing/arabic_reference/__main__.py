@@ -26,7 +26,10 @@ def main(argv=None):
         p = commands.add_parser(command)
         p.add_argument("--url", default="http://localhost:8010/v1")
         p.add_argument("--model", default="corrector")
-        p.add_argument("--checkpoint", default="Qwen/Qwen3.6-35B-A3B")
+        p.add_argument(
+            "--checkpoint",
+            help="Optional expected checkpoint; default records server metadata and routes by --model alias",
+        )
         p.add_argument("--timeout", type=float, default=180)
         p.add_argument("--plan", type=Path, required=True)
         if command == "doctor":

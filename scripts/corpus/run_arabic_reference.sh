@@ -14,7 +14,8 @@ GQASR_RESULTS="${GQASR_RESULTS:-$SOURCE_REPO/gemma_speech/gqasr/verification/ara
 AUDIO_ROOT="${ARABIC_REF_AUDIO_ROOT:-$SOURCE_REPO/gemma_speech/gqasr/verification/arabic-stream-cache/prepared/audio}"
 LLM_URL="${LLM_URL:-http://localhost:8010}"
 MODEL_NAME="${LLM_MODEL_NAME:-corrector}"
-CHECKPOINT="${LLM_MODEL:-Qwen/Qwen3.6-35B-A3B}"
+CHECKPOINT_ARGS=()
+if [[ -n "${ARABIC_REF_CHECKPOINT:-}" ]]; then CHECKPOINT_ARGS=(--checkpoint "$ARABIC_REF_CHECKPOINT"); fi
 COMMAND="${1:?Expected plan|doctor|smoke|run|status|review-pack|import-reviews|score|test|llm-print|llm-start}"
 shift
 CLI=("$PY" -m data_processing.arabic_reference)
@@ -24,14 +25,14 @@ case "$COMMAND" in
       --prediction "gqasr=$GQASR_RESULTS/predictions-arabic.jsonl" --output "$ROOT/plan" "$@" ;;
   doctor)
     exec "${CLI[@]}" doctor --plan "$ROOT/plan" --audio-root "$AUDIO_ROOT" \
-      --url "$LLM_URL" --model "$MODEL_NAME" --checkpoint "$CHECKPOINT" "$@" ;;
+      --url "$LLM_URL" --model "$MODEL_NAME" ${CHECKPOINT_ARGS[@]+"${CHECKPOINT_ARGS[@]}"} "$@" ;;
   smoke|run)
     EXTRA=(); DEST="$ROOT/proposals"
     if [[ "$COMMAND" == smoke ]]; then EXTRA=(--smoke); DEST="$ROOT/smoke"; fi
     exec "${CLI[@]}" propose --plan "$ROOT/plan" --output "$DEST" \
-      --url "$LLM_URL" --model "$MODEL_NAME" --checkpoint "$CHECKPOINT" \
+      --url "$LLM_URL" --model "$MODEL_NAME" ${CHECKPOINT_ARGS[@]+"${CHECKPOINT_ARGS[@]}"} \
       --revision "${LLM_REVISION:-unrecorded}" --concurrency "${REF_CONCURRENCY:-16}" \
-      --max-tokens "${REF_MAX_TOKENS:-2048}" "${EXTRA[@]}" "$@" ;;
+      --max-tokens "${REF_MAX_TOKENS:-2048}" ${EXTRA[@]+"${EXTRA[@]}"} "$@" ;;
   review-pack)
     exec "${CLI[@]}" review-pack --plan "$ROOT/plan" --proposals "$ROOT/proposals" \
       --audio-root "$AUDIO_ROOT" --output "$ROOT/listening" "$@" ;;
@@ -42,10 +43,9 @@ case "$COMMAND" in
       --output "$ROOT/scores-v1.json" "$@" ;;
   status)
     EXTRA=(); if [[ -f "$ROOT/proposals/run.json" ]]; then EXTRA=(--proposals "$ROOT/proposals"); fi
-    exec "${CLI[@]}" status --plan "$ROOT/plan" "${EXTRA[@]}" "$@" ;;
+    exec "${CLI[@]}" status --plan "$ROOT/plan" ${EXTRA[@]+"${EXTRA[@]}"} "$@" ;;
   test) exec "$PY" -m pytest tests/test_arabic_reference.py "$@" ;;
   llm-print|llm-start)
-    export LLM_MODEL="$CHECKPOINT"
     exec bash scripts/corpus/serve_yodas3_corrector.sh "${COMMAND#llm-}" "$@" ;;
   *) echo "Unknown stage: $COMMAND" >&2; exit 1 ;;
 esac

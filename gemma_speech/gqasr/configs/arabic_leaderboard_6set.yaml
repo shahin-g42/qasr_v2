@@ -1,0 +1,26 @@
+format_version: 1
+work_dir: ${GQASR_BENCH_WORK}
+checkpoint: ${GQASR_BENCH_CHECKPOINT}
+output_dir: ${GQASR_BENCH_OUTPUT}
+precision: bf16
+max_new_tokens: 768
+task_size: 4
+simultaneous_model_loads: 4
+duration_tolerance_seconds: 0.25
+
+# Put benchmark caches and results on node-local NVMe when available. Dataset
+# roots can remain on the cluster's read-only/shared dataset filesystem.
+datasets:
+  sada:
+    root: ${GQASR_BENCH_DATA}/sada
+  commonvoice:
+    root: ${GQASR_BENCH_DATA}/commonvoice18
+  masc_clean:
+    root: ${GQASR_BENCH_DATA}/masc/test-clean
+  masc_noisy:
+    root: ${GQASR_BENCH_DATA}/masc/test-noisy
+  mgb2:
+    root: ${GQASR_BENCH_DATA}/mgb2
+  casablanca:
+    root: ${GQASR_BENCH_WORK}/casablanca-test-audio
+    metadata: ${GQASR_BENCH_WORK}/casablanca-test-audio/metadata.jsonl

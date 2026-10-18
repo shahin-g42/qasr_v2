@@ -1,0 +1,44 @@
+{
+  "repository": "Natural-Language-Processing-Elm/open_universal_arabic_asr_leaderboard",
+  "revision": "8fce8595b49057c98bafc2ba41b69c331cb5176e",
+  "eval_sha256": "5c1ec33739e750c7102f106e23675b1ab9c761f94c151e73faf077c035c39bb2",
+  "space_revision": "667db1e1e40c38f1c5667f7dca1a90eac113231d",
+  "datasets": {
+    "casablanca": {
+      "file": "casablanca_test.json",
+      "sha256": "a70f6aaf61846a8403aa7af9ed3d3a6e223fd9adc81e88f8d5e92b19a93ebf52",
+      "rows": 6726,
+      "hours": 7.703392057926472
+    },
+    "commonvoice": {
+      "file": "commonvoice_test.json",
+      "sha256": "3517c59aa4e307eb45102a76487d123d6972158573a20b0b148192311d0d81f3",
+      "rows": 10471,
+      "hours": 12.56493857142857
+    },
+    "masc_clean": {
+      "file": "masc_test_clean.json",
+      "sha256": "cf23e7d8527513e045ab744ed2313b6f09d47642f666da7ca38d1e9c23fbf755",
+      "rows": 8612,
+      "hours": 10.494355555555556
+    },
+    "masc_noisy": {
+      "file": "masc_test_noisy.json",
+      "sha256": "40c779673d8ae31851e8b24e6636ef7c881d48d8a73547698edb1786efb36b5c",
+      "rows": 9394,
+      "hours": 8.924847222222223
+    },
+    "mgb2": {
+      "file": "mgb2_test.json",
+      "sha256": "a696ef6c1c70f75cb45e7bff4a2c17f2e527a98bc47de7a05456d07378e112e5",
+      "rows": 5365,
+      "hours": 9.579930555555556
+    },
+    "sada": {
+      "file": "sada_test.json",
+      "sha256": "3b30cead8383b50d5b67ce650248e9f9cf988243c4e3dee09d60eba13d2e4088",
+      "rows": 6189,
+      "hours": 10.74936301592909
+    }
+  }
+}

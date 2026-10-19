@@ -18,10 +18,10 @@ export PUBLIC_MODELS="${PUBLIC_MODELS:-qwen3-asr-0.6b qwen3-asr-1.7b cohere-arab
 export PUBLIC_MODEL_CACHE="${PUBLIC_MODEL_CACHE:-$ARABIC_REF_ROOT/public-models}"
 export PUBLIC_BENCH_ROOT="${PUBLIC_BENCH_ROOT:-$ARABIC_REF_ROOT/public-benchmarks-v1}"
 export PUBLIC_PREPARED_WORK="${PUBLIC_PREPARED_WORK:-$ARABIC_REF_SOURCE_REPO/gemma_speech/gqasr/verification/arabic-stream-cache}"
-# Independent replicas, one per H100 by default; ordinary WORKERS_PER_GPU does not override this.
+# Independent replicas, eight per H100 by default; ordinary WORKERS_PER_GPU does not override this.
 export PUBLIC_GPUS="${PUBLIC_GPUS:-0,1,2,3,4,5,6,7}"
-export PUBLIC_WORKERS_PER_GPU="${PUBLIC_WORKERS_PER_GPU:-1}"
-export PUBLIC_BATCH_SIZE="${PUBLIC_BATCH_SIZE:-16}"
+export PUBLIC_WORKERS_PER_GPU="${PUBLIC_WORKERS_PER_GPU:-8}"
+export PUBLIC_BATCH_SIZE="${PUBLIC_BATCH_SIZE:-32}"
 BOARD_DEFAULT="v4.7-public-001"
 if [[ "$STAGE" == rescore ]]; then BOARD_DEFAULT="v4.7-existing-001"; fi
 export ARABIC_REF_BOARD_RELEASE_ID="${ARABIC_REF_BOARD_RELEASE_ID:-$BOARD_DEFAULT}"

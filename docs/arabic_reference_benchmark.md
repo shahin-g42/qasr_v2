@@ -847,8 +847,8 @@ export ARABIC_REF_ROOT=/lustrefs/shared/shahin.konadath/workspace/train/stt/v2/q
 export HF_DATASET_REPO=audarai/asr_ideal_bench
 export HF_SPACE_REPO=shahink/asr_ideal_leaderboard
 export PUBLIC_GPUS=0,1,2,3,4,5,6,7
-export PUBLIC_WORKERS_PER_GPU=1
-export PUBLIC_BATCH_SIZE=16
+export PUBLIC_WORKERS_PER_GPU=8
+export PUBLIC_BATCH_SIZE=32
 export PUBLIC_MODELS="qwen3-asr-0.6b qwen3-asr-1.7b cohere-arabic cohere-multilingual whisper-large-v3"
 export ARABIC_REF_BOARD_RELEASE_ID=v4.7-public-001
 export ARABIC_REF_SPACE_BUNDLE="$ARABIC_REF_ROOT/leaderboard-$ARABIC_REF_BOARD_RELEASE_ID"
@@ -864,9 +864,13 @@ revisions, and runs each model sequentially across the eight GPUs. Each model fi
 gets a 192-clip duration-stratified smoke run including the longest clip from every
 dataset, then the full run. Successful tasks resume after interruption. Independent
 `PUBLIC_*` settings avoid inheriting the earlier QASR `WORKERS_PER_GPU=8` setting.
-One replica per H100 and batches of 16 are the starting configuration; this is GPU
+Eight replicas per H100 and batches of 32 per worker are the default configuration; this is GPU
 inference, so the earlier 90 annotation workers are not reused here. OOM batches split
 without dropping clips. Runtime/model/code changes require a fresh `PUBLIC_BENCH_ROOT`.
+Explicit `PUBLIC_WORKERS_PER_GPU` and `PUBLIC_BATCH_SIZE` exports override these
+defaults, so update any older exports before launching. If inference already started
+with another batch size, use a new `PUBLIC_BENCH_ROOT`; keep `PUBLIC_MODEL_CACHE` to
+reuse the downloaded checkpoints.
 
 After all selected full runs complete, the script exports checksummed `submissions.json`,
 scores all models against both original and enhanced references, rebuilds the static

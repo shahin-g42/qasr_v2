@@ -70,6 +70,7 @@ def main(argv=None):
             p.add_argument("--proposals", type=Path)
             p.add_argument("--datasets", nargs="+")
         else:
+            p.add_argument("--title", default="Arabic ASR Benchmark", help="Space display title")
             p.add_argument(
                 "--prediction",
                 action="append",
@@ -163,6 +164,7 @@ def main(argv=None):
                 reviewed=args.reviewed,
                 predictions=inputs,
                 release_id=args.release_id,
+                title=args.title,
             )
         elif args.command == "publish":
             from .release import publish_bundle

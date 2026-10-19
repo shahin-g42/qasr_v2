@@ -5,7 +5,7 @@ This is an evaluation-only initiative. Original benchmark references and trainin
 
 ## Proceed through full enhancement, private datasets and leaderboard
 
-The configured destinations for this initiative are **private** `shahink/asr_bench` repositories: one dataset and one Space. Hugging Face supports the same owner/name under these separate repository types. This pipeline creates only private repositories, verifies their visibility before uploading, and refuses an existing public destination. No public release is required for this workflow.
+The dataset destination is **private** `shahink/asr_bench`. Set `HF_SPACE_REPO=owner/space-name` independently to choose the private leaderboard Space; it can use the same name or a different one. `HF_SPACE_TITLE` sets its displayed title (default: `Arabic ASR Benchmark`), including the Hub card and page heading. This pipeline creates only private repositories, verifies their visibility before uploading, and refuses an existing public destination. No public release is required for this workflow.
 
 The local source results contain 46,757 matched QASR/GQASR test clips. The full-suite stage uses every original evaluation row, including duplicates, with a `full` cohort; the outcome-selected diagnostic cohort remains separate. The pilot selector stays available. Use a fresh root for full-suite processing and changed code/model settings:
 
@@ -16,7 +16,8 @@ export LLM_MODEL_NAME=corrector
 export REF_CONCURRENCY=90
 export REF_MAX_TOKENS=4096
 export HF_DATASET_REPO=shahink/asr_bench
-export HF_SPACE_REPO=shahink/asr_bench
+export HF_SPACE_REPO=shahink/asr_bench  # Or any other owner/space-name you control
+export HF_SPACE_TITLE="Arabic ASR Benchmark"
 
 bash scripts/corpus/run_arabic_reference.sh test -q &&
 bash scripts/corpus/run_arabic_reference.sh plan-full &&
@@ -38,6 +39,8 @@ bash scripts/corpus/run_arabic_reference.sh leaderboard
 The dataset bundle (`dataset-release/`) contains one explicitly typed Parquet file per source dataset, an `all` configuration and six source configurations, all assigned to `test`. Its principal columns are `text`, `asr_text` (QASR), `gqasr_text`, `verified_text_draft`, `ideal_text_draft`, `verified_text`, `ideal_text`, `proposal_status` and `review_status`. Final values remain null until review import; drafts are never substituted for them. Source locators, prediction hashes, policy, edit audits and coverage accompany each release. This is an **annotation-overlay dataset**: audio bytes are not copied. Reuse the pinned source identifiers and existing preparation pipeline to obtain recordings. Prepared cache paths, raw replies, reviewer IDs and host logs are not uploaded.
 
 The leaderboard bundle (`leaderboard-release/`) is a static HTML Space with no server dependency. Original-reference results are available immediately. Reviewed tracks appear only after listening attestations are imported. Original, verified and ideal references each have normalized and strict WER/CER on the exact same reviewed subset. Diagnostics and full/pilot cohorts are shown separately; incomplete six-dataset macros stay unavailable. The page discloses candidate-assisted reference development and the lack of independent audit. These are private research comparisons, not official ELM ranks. Future independent review/fresh-holdout work is unchanged.
+
+Set `HF_SPACE_TITLE` before building `leaderboard`, or pass `leaderboard --title "My Arabic ASR Board"`. Set `HF_SPACE_REPO` before `publish-leaderboard`; changing it selects a destination, not a rename of an existing Space. Changing the title of an already-built bundle requires a new `ARABIC_REF_SPACE_BUNDLE` directory and release ID.
 
 The bundles are immutable and include an allowlist of file hashes in `release.json`. Start with an offline upload preview:
 

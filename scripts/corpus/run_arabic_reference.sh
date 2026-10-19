@@ -53,6 +53,7 @@ case "$COMMAND" in
     else
       exec "${CLI[@]}" leaderboard --plan "$ROOT/plan" \
         --output "${ARABIC_REF_SPACE_BUNDLE:-$ROOT/leaderboard-release}" \
+        --title "${HF_SPACE_TITLE:-Arabic ASR Benchmark}" \
         --release-id "${ARABIC_REF_RELEASE_ID:-v4-board-001}" ${EXTRA[@]+"${EXTRA[@]}"} "$@"
     fi ;;
   publish-dataset)

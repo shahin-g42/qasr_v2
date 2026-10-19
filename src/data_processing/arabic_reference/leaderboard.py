@@ -2,9 +2,11 @@
 
 from __future__ import annotations
 
+import html
 import json
 import re
 import tempfile
+import unicodedata
 from collections import Counter, defaultdict
 from pathlib import Path
 
@@ -96,11 +98,25 @@ def calculate_panel(rows, tracks, additions):
 
 
 def build_leaderboard(
-    plan_root, output, *, reviewed=None, predictions=(), release_id="v4-board-001"
+    plan_root,
+    output,
+    *,
+    reviewed=None,
+    predictions=(),
+    release_id="v4-board-001",
+    title="Arabic ASR Benchmark",
 ):
     from gqasr.arabic_benchmark import scoring
 
     valid_release_id(release_id)
+    if (
+        not isinstance(title, str)
+        or not title.strip()
+        or len(title) > 120
+        or any(unicodedata.category(c) in {"Cc", "Zl", "Zp"} for c in title)
+    ):
+        raise ValueError("Space title must be a nonempty single line of at most 120 characters")
+    title = title.strip()
     plan, rows = load_plan(plan_root)
     eligible = validated_reviews(rows, reviewed)[1] if reviewed else []
     additions, sources = additional_predictions(rows, predictions)
@@ -138,6 +154,7 @@ def build_leaderboard(
             )
     payload = {
         "schema_version": 1,
+        "title": title,
         "release_id": release_id,
         "manifest_digest": plan["manifest_digest"],
         "policy_sha256": plan["policy_sha256"],
@@ -174,9 +191,11 @@ def build_leaderboard(
             json.dumps(payload, ensure_ascii=False).replace("<", "\\u003c").replace("&", "\\u0026")
         )
         template = Path(__file__).with_name("leaderboard.html").read_text()
-        (stage / "index.html").write_text(template.replace("__DATA_JSON__", encoded))
-        (stage / "README.md").write_text("""---
-title: Arabic ASR Benchmark
+        values = {"SPACE_TITLE": html.escape(title), "DATA_JSON": encoded}
+        rendered = re.sub(r"__(SPACE_TITLE|DATA_JSON)__", lambda m: values[m[1]], template)
+        (stage / "index.html").write_text(rendered)
+        (stage / "README.md").write_text(f"""---
+title: {json.dumps(title, ensure_ascii=True)}
 emoji: 🎙️
 colorFrom: blue
 colorTo: green
@@ -184,7 +203,7 @@ sdk: static
 app_file: index.html
 pinned: false
 ---
-# Arabic ASR Benchmark
+<h1>{html.escape(title)}</h1>
 
 Private research comparison generated from checksum-bound source predictions and frozen annotation plans. The static page embeds its data and requires no external service. Normalized and strict WER/CER are separated by reference track and cohort. Reviewed comparisons use the identical attested subset for every model and reference track; LLM drafts are never treated as verified references. A missing six-dataset macro remains unavailable.
 
@@ -195,6 +214,7 @@ Private research comparison generated from checksum-bound source predictions and
             output,
             {
                 "repo_type": "space",
+                "title": title,
                 "release_id": release_id,
                 "manifest_digest": plan["manifest_digest"],
                 "selected_clips": len(rows),

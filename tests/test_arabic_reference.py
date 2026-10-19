@@ -1798,3 +1798,70 @@ def test_leaderboard_additional_submission_requires_exact_frozen_membership(
         assert payload["panels"][0]["full_suite"] is True
         assert {s["model"] for s in payload["panels"][0]["scores"]} == {"one", "two", "new-model"}
         assert payload["prediction_sources"][-1]["predictions_sha256"] == sha256(path)
+
+
+def test_space_title_roundtrips_cli_metadata_and_html_safely(plan, tmp_path):
+    pytest.importorskip("rapidfuzz")
+    import html
+
+    import yaml
+
+    from data_processing.arabic_reference.__main__ import main
+    from data_processing.arabic_reference.release import validate_bundle
+
+    title = 'لوحة: "ASR" & </script><img src=x> __DATA_JSON__ __SPACE_TITLE__'
+    output = tmp_path / "named-space"
+    main(["leaderboard", "--plan", str(plan), "--output", str(output), "--title", title])
+    card = (output / "README.md").read_text()
+    assert yaml.safe_load(card.split("---", 2)[1])["title"] == title
+    page = (output / "index.html").read_text()
+    assert f"<title>{html.escape(title)}</title>" in page
+    assert f"<h1>{html.escape(title)}</h1>" in page
+    assert "<img src=x>" not in page and "<img src=x>" not in card.split("---", 2)[2]
+    assert json.loads((output / "leaderboard.json").read_text())["title"] == title
+    assert validate_bundle(output)["title"] == title
+
+
+@pytest.mark.parametrize("title", ["", "   ", "A\nB", "A\tB", "A\u2028B", "A" * 121])
+def test_space_title_rejects_invalid_metadata(plan, tmp_path, title):
+    pytest.importorskip("rapidfuzz")
+    from data_processing.arabic_reference.leaderboard import build_leaderboard
+
+    output = tmp_path / "space"
+    with pytest.raises(ValueError, match="Space title"):
+        build_leaderboard(plan, output, title=title)
+    assert not output.exists()
+
+
+def test_launcher_keeps_space_repo_title_and_dataset_independent(tmp_path):
+    import os
+    import subprocess
+    import sys
+    from pathlib import Path
+
+    root = Path(__file__).resolve().parents[1]
+    binary = tmp_path / "python"
+    binary.write_text(f"#!{sys.executable}\nimport json,sys\nprint(json.dumps(sys.argv[1:]))\n")
+    binary.chmod(0o755)
+    env = {
+        **os.environ,
+        "PYTHON": str(binary),
+        "ARABIC_REF_ROOT": str(tmp_path / "out"),
+        "HF_DATASET_REPO": "test/data",
+        "HF_SPACE_REPO": "test/custom-board",
+        "HF_SPACE_TITLE": "لوحة ASR: My Board",
+    }
+    for stage, flag, expected in [
+        ("leaderboard", "--title", env["HF_SPACE_TITLE"]),
+        ("publish-leaderboard", "--repo-id", env["HF_SPACE_REPO"]),
+        ("publish-dataset", "--repo-id", env["HF_DATASET_REPO"]),
+    ]:
+        proc = subprocess.run(
+            ["bash", str(root / "scripts/corpus/run_arabic_reference.sh"), stage],
+            env=env,
+            text=True,
+            capture_output=True,
+            check=True,
+        )
+        args = json.loads(proc.stdout)
+        assert args[args.index(flag) + 1] == expected

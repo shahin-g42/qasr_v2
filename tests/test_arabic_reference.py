@@ -1811,6 +1811,7 @@ def test_leaderboard_additional_submission_requires_exact_frozen_membership(
         assert payload["panels"][0]["full_suite"] is True
         assert {s["model"] for s in payload["panels"][0]["scores"]} == {"one", "two", "new-model"}
         assert payload["prediction_sources"][-1]["predictions_sha256"] == sha256(path)
+        assert all("new-model" in row["predictions"] for row in payload["examples"])
 
 
 def test_space_title_roundtrips_cli_metadata_and_html_safely(plan, tmp_path):
@@ -3147,3 +3148,342 @@ def test_annotation_archive_import_is_validated_and_atomic(plan, tmp_path, mutat
         )
     assert not (destination.parent / "release-on-cluster.sh").exists()
     assert not (destination.parent / "escaped.txt").exists()
+
+
+@pytest.fixture
+def board_annotations(inputs, tmp_path):
+    """Frozen fixture with one deliberately speculative transcript to exclude."""
+    import pyarrow as pa
+    import pyarrow.parquet as pq
+
+    from data_processing.arabic_reference.release import export_dataset, finish_bundle
+
+    plan = tmp_path / "board-plan"
+    prepare(inputs, plan, full_suite=True)
+    stage = tmp_path / "board-annotations-stage"
+    manifest = export_dataset(plan, stage)
+    for ds in DATASETS:
+        path = stage / "data" / ds / "test.parquet"
+        table = pq.read_table(path)
+        rows = table.to_pylist()
+        for i, row in enumerate(rows):
+            row["proposal_status"] = "proposed"
+            row["ideal_text_draft"] = "مرحبا بكم جميعا" if i == 1 else "مَرْحَبًا بِكُمْ."
+        if ds == "sada":
+            rows[0]["proposal_status"] = "speculative_draft"
+            rows[0]["speculative"] = True
+            rows[0]["ideal_text_draft"] = "نص تخميني مستبعد"
+        pq.write_table(pa.Table.from_pylist(rows, schema=table.schema), path)
+    (stage / "release.json").unlink()
+    output = tmp_path / "board-annotations"
+    finish_bundle(
+        stage,
+        output,
+        {k: v for k, v in manifest.items() if k not in ("files", "bundle_sha256", "output")},
+    )
+    return plan, output
+
+
+def test_enhanced_board_scores_exact_matched_subset_and_keeps_original_default(
+    board_annotations, tmp_path
+):
+    from collections import Counter
+
+    from gqasr.arabic_benchmark.scoring import counts
+
+    from data_processing.arabic_reference.leaderboard import build_leaderboard
+    from data_processing.arabic_reference.leaderboard_inputs import annotation_drafts
+    from data_processing.arabic_reference.release import validate_bundle
+
+    plan, annotations = board_annotations
+    output = tmp_path / "board"
+    build_leaderboard(
+        plan, output, annotations=annotations, dataset_repo="team/audio", dataset_revision="a" * 40
+    )
+    payload = json.loads((output / "leaderboard.json").read_text())
+    original = next(p for p in payload["panels"] if p["id"] == "original-full")
+    enhanced = next(p for p in payload["panels"] if p["id"] == "enhanced-full")
+    assert original["scored_clips"] == 18 and original["full_suite"]
+    assert enhanced["scored_clips"] == 17 and not enhanced["full_suite"]
+    assert enhanced["reference_status"] == "candidate_assisted_unverified"
+    assert payload["annotation_source"]["exclusions"] == {"speculative": 1}
+    assert payload["verified_clips"] == 0
+    assert payload["dataset_release"]["revision"] == "a" * 40
+    assert {s["track"] for s in enhanced["scores"]} == {
+        "original_elm",
+        "original_strict",
+        "draft_elm",
+        "draft_strict",
+    }
+    frozen, rows = load_plan(plan)
+    drafts = annotation_drafts(annotations, frozen, rows)[0]
+    for track, field, normalized in [
+        ("original_elm", "text", True),
+        ("draft_elm", "ideal_text_draft", True),
+        ("draft_strict", "ideal_text_draft", False),
+    ]:
+        expected_macro = []
+        for ds in DATASETS:
+            c = Counter()
+            for row in drafts:
+                if row["dataset"] == ds:
+                    c.update(
+                        counts(row[field], row["candidates"][0]["text"], normalized=normalized)
+                    )
+            actual = next(
+                s
+                for s in enhanced["scores"]
+                if (s["model"], s["track"], s["dataset"]) == ("one", track, ds)
+            )
+            assert (
+                actual["utterances"] == c["utterances"]
+                and actual["word_errors"] == c["word_errors"]
+            )
+            assert actual["wer"] == c["word_errors"] / c["words"]
+            expected_macro.append(actual["wer"])
+        macro = next(
+            s
+            for s in enhanced["scores"]
+            if (s["model"], s["track"], s["dataset"]) == ("one", track, "macro")
+        )
+        assert macro["wer"] == pytest.approx(sum(expected_macro) / 6) and macro["utterances"] == 17
+    assert not any(e["ideal_draft"] == "نص تخميني مستبعد" for e in payload["examples"])
+    assert all(e["id"] in {r["id"] for r in drafts} for e in payload["examples"])
+    manifest = validate_bundle(output)
+    assert {"leaderboard.css", "leaderboard.js", "scores.csv"} <= manifest["files"].keys()
+    assert (
+        len((output / "scores.csv").read_text().splitlines())
+        == sum(len(p["scores"]) for p in payload["panels"]) + 1
+    )
+
+
+@pytest.mark.parametrize("mutation", ["text", "candidate", "membership", "binding"])
+def test_leaderboard_rejects_validly_frozen_but_unrelated_annotation_contents(
+    board_annotations, tmp_path, mutation
+):
+    import pyarrow as pa
+    import pyarrow.parquet as pq
+
+    from data_processing.arabic_reference.leaderboard import build_leaderboard
+    from data_processing.arabic_reference.release import finish_bundle
+
+    plan, source = board_annotations
+    manifest = json.loads((source / "release.json").read_text())
+    path = source / "data/sada/test.parquet"
+    table = pq.read_table(path)
+    rows = table.to_pylist()
+    if mutation == "text":
+        rows[0]["text"] = "different reference"
+    if mutation == "candidate":
+        rows[0]["candidate_texts_json"] = "{}"
+    if mutation == "membership":
+        rows.pop()
+    if mutation == "binding":
+        rows[0]["binding"] = "0" * 64
+    pq.write_table(pa.Table.from_pylist(rows, schema=table.schema), path)
+    (source / "release.json").unlink()
+    different = tmp_path / "different-annotations"
+    finish_bundle(
+        source,
+        different,
+        {k: v for k, v in manifest.items() if k not in ("files", "bundle_sha256")},
+    )
+    with pytest.raises(ValueError, match="Annotation"):
+        build_leaderboard(plan, tmp_path / "board", annotations=different)
+
+
+def test_macro_with_empty_reference_denominator_remains_unavailable():
+    from data_processing.arabic_reference.leaderboard import calculate_panel
+
+    rows = [
+        {
+            "dataset": ds,
+            "id": ds,
+            "text": "" if ds == "sada" else "مرحبا",
+            "candidates": [{"name": "model", "text": "مرحبا"}],
+        }
+        for ds in DATASETS
+    ]
+    scores = calculate_panel(rows, ["original_elm"], {})
+    macro = next(s for s in scores if s["dataset"] == "macro")
+    assert macro["wer"] is None and macro["cer"] is None
+
+
+@pytest.mark.parametrize("mutation", [None, "source", "revision", "private", "coverage", "digest"])
+def test_leaderboard_publication_checks_dataset_revision_and_annotation_binding(
+    quality_audio_release, mutation
+):
+    from types import SimpleNamespace
+
+    from data_processing.arabic_reference.cluster_leaderboard import verify_dataset_binding
+    from data_processing.arabic_reference.core import write_json
+
+    annotations, audio = quality_audio_release
+    release = json.loads((audio / "release.json").read_text())
+    if mutation == "source":
+        release["annotations_bundle_sha256"] = "0" * 64
+    if mutation == "coverage":
+        release["datasets"] = ["sada"]
+    release["bundle_sha256"] = digest({k: v for k, v in release.items() if k != "bundle_sha256"})
+    if mutation == "digest":
+        release["bundle_sha256"] = "0" * 64
+    write_json(audio / "release.json", release)
+
+    class Hub:
+        def repo_info(self, repo_id, **kwargs):
+            assert repo_id == "team/audio" and kwargs == {
+                "repo_type": "dataset",
+                "revision": "a" * 40,
+            }
+            return SimpleNamespace(
+                private=mutation != "private", sha="b" * 40 if mutation == "revision" else "a" * 40
+            )
+
+    def download(repo_id, filename, **kwargs):
+        assert repo_id == "team/audio" and kwargs == {"repo_type": "dataset", "revision": "a" * 40}
+        return audio / filename
+
+    if mutation:
+        with pytest.raises(ValueError):
+            verify_dataset_binding("team/audio", "a" * 40, annotations, Hub(), download=download)
+    else:
+        result = verify_dataset_binding(
+            "team/audio", "a" * 40, annotations, Hub(), download=download
+        )
+        assert (
+            result["status"] == "passed"
+            and result["dataset_bundle_sha256"] == release["bundle_sha256"]
+        )
+
+
+def test_leaderboard_cluster_build_uses_configurable_space_and_dataset_without_network(
+    board_annotations, tmp_path
+):
+    import os
+    import subprocess
+    import sys
+    from pathlib import Path
+
+    plan, annotations = board_annotations
+    repo = Path(__file__).parents[1]
+    output = tmp_path / "cluster-board"
+    env = {
+        **os.environ,
+        "PYTHON": sys.executable,
+        "ARABIC_REF_ROOT": str(tmp_path),
+        "ARABIC_REF_PLAN": str(plan),
+        "ARABIC_REF_ANNOTATIONS_BUNDLE": str(annotations),
+        "ARABIC_REF_SPACE_BUNDLE": str(output),
+        "ARABIC_REF_BOARD_RELEASE_ID": "custom-board",
+        "HF_SPACE_REPO": "my-team/my-board",
+        "HF_SPACE_TITLE": "لوحة عربية · ASR",
+        "HF_DATASET_REPO": "my-team/audio",
+        "HF_DATASET_REVISION": "a" * 40,
+        "ARABIC_REF_DATASET_RECEIPT": str(tmp_path / "absent-receipt.json"),
+    }
+    result = subprocess.run(
+        ["bash", str(repo / "scripts/corpus/publish_arabic_leaderboard.sh"), "build"],
+        env=env,
+        capture_output=True,
+        text=True,
+        timeout=60,
+    )
+    assert result.returncode == 0, result.stderr
+    assert "my-team/my-board" in result.stdout
+    data = json.loads((output / "leaderboard.json").read_text())
+    assert (
+        data["title"] == env["HF_SPACE_TITLE"]
+        and data["dataset_release"]["repo_id"] == "my-team/audio"
+    )
+    assert data["release_id"] == "custom-board"
+
+
+@pytest.mark.parametrize("destination", ["new", "existing", "public"])
+def test_cluster_leaderboard_publication_and_receipt_roundtrip(
+    quality_audio_release, plan, tmp_path, monkeypatch, destination
+):
+    import hashlib
+    from types import SimpleNamespace
+
+    import huggingface_hub
+
+    from data_processing.arabic_reference.cluster_leaderboard import main
+
+    annotations, audio = quality_audio_release
+    output = tmp_path / "space-bundle"
+    for key, value in {
+        "ARABIC_REF_ROOT": str(tmp_path),
+        "ARABIC_REF_SPACE_BUNDLE": str(output),
+        "ARABIC_REF_ANNOTATIONS_BUNDLE": str(annotations),
+        "ARABIC_REF_ANNOTATIONS_ARCHIVE": str(tmp_path / "unused.tar.gz"),
+        "ARABIC_REF_PLAN": str(plan),
+        "ARABIC_REF_BOARD_RELEASE_ID": "board-test",
+        "ARABIC_REF_DATASET_RECEIPT": str(tmp_path / "missing.json"),
+        "HF_SPACE_REPO": "test/private-board",
+        "HF_DATASET_REPO": "test/audio",
+        "HF_DATASET_REVISION": "a" * 40,
+        "HF_SPACE_TITLE": "Test Arabic Leaderboard",
+    }.items():
+        monkeypatch.setenv(key, value)
+
+    class Hub(PrivateHubStub):
+        def __init__(self):
+            super().__init__(exists=destination != "new", private=destination != "public")
+            self.uploaded = {}
+
+        def whoami(self):
+            return {"name": "test"}
+
+        def repo_info(self, repo_id, repo_type, **kwargs):
+            if repo_type == "dataset":
+                assert repo_id == "test/audio" and kwargs["revision"] == "a" * 40
+                return SimpleNamespace(private=True, sha="a" * 40)
+            assert repo_type == "space" and repo_id == "test/private-board"
+            base = super().repo_info(repo_id, repo_type)
+            base.sdk = "static"
+            if kwargs.get("files_metadata"):
+                assert kwargs["revision"] == "b" * 40
+                base.sha = "b" * 40
+                base.siblings = [
+                    SimpleNamespace(
+                        rfilename=name,
+                        size=len(body),
+                        lfs=None,
+                        blob_id=hashlib.sha1(f"blob {len(body)}\0".encode() + body).hexdigest(),
+                    )
+                    for name, body in self.uploaded.items()
+                ]
+            return base
+
+        def create_commit(self, repo_id, **kwargs):
+            assert kwargs["repo_type"] == "space"
+            self.calls.append(("create_commit", repo_id, kwargs))
+            self.uploaded = {op.path_in_repo: op.path_or_fileobj for op in kwargs["operations"]}
+            return SimpleNamespace(
+                oid="b" * 40,
+                commit_url="https://huggingface.co/spaces/test/private-board/commit/" + "b" * 40,
+            )
+
+    hub = Hub()
+    monkeypatch.setattr(huggingface_hub, "HfApi", lambda: hub)
+
+    def download(repo_id, filename, **kwargs):
+        assert repo_id == "test/audio" and kwargs == {"repo_type": "dataset", "revision": "a" * 40}
+        return audio / filename
+
+    monkeypatch.setattr(huggingface_hub, "hf_hub_download", download)
+    if destination == "public":
+        with pytest.raises(ValueError, match="public"):
+            main(["all"])
+        assert hub.calls == []
+    else:
+        main(["all"])
+        receipt = json.loads((tmp_path / "publication-board-test.json").read_text())
+        assert receipt["executed"] and receipt["remote_verification"]["status"] == "passed"
+        assert receipt["dataset_verification"]["revision"] == "a" * 40
+        assert receipt["remote_verification"]["files_verified"] == 7
+        if destination == "new":
+            assert hub.calls[0][2]["space_sdk"] == "static" and hub.calls[0][2]["private"]
+        committed = len(hub.calls)
+        main(["verify"])
+        assert len(hub.calls) == committed

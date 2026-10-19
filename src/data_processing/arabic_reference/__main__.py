@@ -91,6 +91,13 @@ def main(argv=None):
         else:
             p.add_argument("--title", default="Arabic ASR Benchmark", help="Space display title")
             p.add_argument(
+                "--annotations",
+                type=Path,
+                help="Frozen annotation bundle for exploratory enhanced-draft comparisons",
+            )
+            p.add_argument("--dataset-repo", help="Published audio dataset OWNER/NAME")
+            p.add_argument("--dataset-revision", help="Immutable published dataset commit")
+            p.add_argument(
                 "--prediction",
                 action="append",
                 default=[],
@@ -205,6 +212,9 @@ def main(argv=None):
                 predictions=inputs,
                 release_id=args.release_id,
                 title=args.title,
+                annotations=args.annotations,
+                dataset_repo=args.dataset_repo,
+                dataset_revision=args.dataset_revision,
             )
         elif args.command == "package-audio":
             from .audio_release import package_audio

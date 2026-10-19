@@ -97,7 +97,9 @@ def verify_published_bundle(root, repo_id, revision, api):
     """Verify every published file at the exact commit using Hub content metadata."""
     root = Path(root)
     manifest = validate_bundle(root)
-    info = api.repo_info(repo_id, repo_type="dataset", revision=revision, files_metadata=True)
+    info = api.repo_info(
+        repo_id, repo_type=manifest["repo_type"], revision=revision, files_metadata=True
+    )
     if not info.private or info.sha != revision:
         raise ValueError("Published repository privacy or revision differs")
     remote = {f.rfilename: f for f in info.siblings}

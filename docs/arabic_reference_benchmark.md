@@ -747,3 +747,55 @@ to the directory directly containing `release.json`. Missing data now produces a
 actionable transfer/path message instead of a FileNotFoundError traceback. There is no
 need to repeat correction or inference. This import preserves the twelve recovered
 transcripts and six labelled speculative drafts exactly.
+
+### Private leaderboard for the published audio release
+
+The v4.6 static Space provides original and enhanced comparison tracks, WER/CER ranking,
+six dataset charts, paired deltas, eighteen reproducibly sampled transcript examples,
+metric downloads, and pinned release provenance. It loads no external fonts/scripts,
+needs no inference server or GPU, and does not expose a Hugging Face token to the browser.
+
+On the cluster, from the `codex/arabic-reference-pilot` checkout:
+
+```bash
+git pull --ff-only origin codex/arabic-reference-pilot
+export HF_SPACE_REPO="shahink/asr_ideal_leaderboard"  # independently configurable
+export HF_SPACE_TITLE="Arabic ASR Benchmark"
+export HF_DATASET_REPO="audarai/asr_ideal_bench"
+bash scripts/corpus/publish_arabic_leaderboard.sh all
+```
+
+The script reads the exact dataset commit from
+`$ARABIC_REF_ROOT/publication-v4.5-audio-001.json`. Override
+`ARABIC_REF_DATASET_RECEIPT` if it is elsewhere. If there is no receipt, set
+`HF_DATASET_REVISION` explicitly to the published 40-character commit SHA.
+An explicit revision must match the receipt if both are supplied. The current audio
+release is `421d9a6beb31a5adb3a56ddf70967ef18b2efb36` in `audarai/asr_ideal_bench`.
+
+`all` checks the published dataset's immutable metadata against the local annotation
+bundle, computes scores, creates or updates the **private static Space**, and verifies
+all uploaded files at the resulting Space commit. It downloads only the small dataset
+release/provenance files; it neither downloads nor reuploads the audio. The existing
+`plan/` and `dataset-release-v4.4/` are sufficient. No LLM correction is repeated.
+
+Stages: `build` is an offline preview; `check` validates the dataset binding on the Hub;
+`publish` uploads an existing Space bundle; `verify` retries the remote audit without a
+new commit. Default output is `$ARABIC_REF_ROOT/leaderboard-v4.6-board-001`; the receipt is
+`$ARABIC_REF_ROOT/publication-v4.6-board-001.json`. For subsequent changed releases, set
+`ARABIC_REF_BOARD_RELEASE_ID` to a new version, which also selects a new output directory.
+`ARABIC_REF_SPACE_BUNDLE`, `ARABIC_REF_PLAN`, and `ARABIC_REF_ANNOTATIONS_BUNDLE` can be
+set independently. Space repo/title configuration never renames the dataset.
+
+The **original** ranking includes all 46,757 source clips. The **enhanced** comparison
+uses the 46,751 completed non-speculative `ideal_text_draft` rows and recalculates
+original-reference scores on exactly those rows. The six speculative SADA drafts remain
+in the dataset but are excluded from this comparison. Both QASR and GQASR informed draft
+curation: draft scores measure candidate-assisted agreement, not independently verified
+accuracy. No final `ideal_text`/`verified_text` is manufactured. Existing listening-attested
+tracks remain supported by the general `leaderboard --reviewed` command.
+
+Charts and table selections update together. Original and enhanced scores are never
+subtracted across different panels. Missing denominators and incomplete six-dataset
+macros remain null, not zero. CSV rates are fractions; the UI displays percentages and
+paired deltas in percentage points. New model submissions use the general leaderboard
+CLI's `--prediction NAME=PATH`, with exact frozen IDs, references and audio identity checks.

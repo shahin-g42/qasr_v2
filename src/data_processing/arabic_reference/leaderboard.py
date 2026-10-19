@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import csv
 import html
 import json
 import re
@@ -11,6 +12,7 @@ from collections import Counter, defaultdict
 from pathlib import Path
 
 from .core import DATASETS, load_plan, read_jsonl, sha256, validate_source, write_json
+from .leaderboard_inputs import annotation_drafts, dataset_pin, transcript_examples
 from .release import finish_bundle, valid_release_id
 from .review import validated_reviews
 
@@ -21,6 +23,10 @@ TRACKS = {
     "verified_strict": ("Audio-reviewed wording · strict", "verified_text", False),
     "ideal_elm": ("Audio-reviewed ideal · normalized", "ideal_text", True),
     "ideal_strict": ("Audio-reviewed ideal · strict", "ideal_text", False),
+}
+DRAFT_TRACKS = {
+    "draft_elm": ("Enhanced draft · normalized", "ideal_text_draft", True),
+    "draft_strict": ("Enhanced draft · strict", "ideal_text_draft", False),
 }
 
 
@@ -72,7 +78,7 @@ def calculate_panel(rows, tracks, additions):
     for row in rows:
         for candidate in [*row["candidates"], *additions.get(row["id"], [])]:
             for track in tracks:
-                _, field, normalized = TRACKS[track]
+                _, field, normalized = (TRACKS | DRAFT_TRACKS)[track]
                 groups[(candidate["name"], track, row["dataset"])].update(
                     counts(row[field], candidate["text"], normalized=normalized)
                 )
@@ -90,8 +96,12 @@ def calculate_panel(rows, tracks, additions):
                 "dataset": "macro",
                 "datasets": len(subset),
                 "utterances": sum(r["utterances"] for r in subset),
-                "wer": sum(r["wer"] for r in subset) / 6 if complete else None,
-                "cer": sum(r["cer"] for r in subset) / 6 if complete else None,
+                **{
+                    metric: sum(r[metric] for r in subset) / 6
+                    if complete and all(r[metric] is not None for r in subset)
+                    else None
+                    for metric in ("wer", "cer")
+                },
             }
         )
     return result
@@ -105,6 +115,9 @@ def build_leaderboard(
     predictions=(),
     release_id="v4-board-001",
     title="Arabic ASR Benchmark",
+    annotations=None,
+    dataset_repo=None,
+    dataset_revision=None,
 ):
     from gqasr.arabic_benchmark import scoring
 
@@ -118,6 +131,10 @@ def build_leaderboard(
         raise ValueError("Space title must be a nonempty single line of at most 120 characters")
     title = title.strip()
     plan, rows = load_plan(plan_root)
+    pin = dataset_pin(dataset_repo, dataset_revision)
+    drafts, annotation_rows, annotation_source = (
+        annotation_drafts(annotations, plan, rows) if annotations else ([], [], None)
+    )
     eligible = validated_reviews(rows, reviewed)[1] if reviewed else []
     additions, sources = additional_predictions(rows, predictions)
     cohorts = sorted({c for r in rows for c in r["cohorts"]})
@@ -152,8 +169,26 @@ def build_leaderboard(
                     "scores": calculate_panel(verified, tuple(TRACKS), additions),
                 }
             )
+        proposed = [r for r in drafts if cohort in r["cohorts"]]
+        if proposed:
+            panels.append(
+                {
+                    "id": f"enhanced-{cohort}",
+                    "label": f"Enhanced drafts · matched {cohort} cohort",
+                    "cohort": cohort,
+                    "reference_status": "candidate_assisted_unverified",
+                    "selected_clips": len(selected),
+                    "scored_clips": len(proposed),
+                    "excluded_clips": len(selected) - len(proposed),
+                    "full_suite": cohort == "full"
+                    and len(proposed) == sum(plan["input_counts"].values()),
+                    "scores": calculate_panel(
+                        proposed, ("original_elm", "original_strict", *DRAFT_TRACKS), additions
+                    ),
+                }
+            )
     payload = {
-        "schema_version": 1,
+        "schema_version": 2,
         "title": title,
         "release_id": release_id,
         "manifest_digest": plan["manifest_digest"],
@@ -163,7 +198,22 @@ def build_leaderboard(
         "verified_clips": len(eligible),
         "duration_hours": sum(r["actual_duration"] for r in rows) / 3600,
         "datasets": list(DATASETS),
-        "tracks": {k: v[0] for k, v in TRACKS.items()},
+        "tracks": {k: v[0] for k, v in (TRACKS | (DRAFT_TRACKS if annotations else {})).items()},
+        "dataset_release": pin,
+        "annotation_source": annotation_source,
+        "models": sorted(
+            {c["name"] for r in rows for c in [*r["candidates"], *additions.get(r["id"], [])]}
+        ),
+        "dataset_summary": [
+            {
+                "dataset": ds,
+                "clips": sum(r["dataset"] == ds for r in rows),
+                "hours": sum(r["actual_duration"] for r in rows if r["dataset"] == ds) / 3600,
+            }
+            for ds in DATASETS
+        ],
+        "examples": transcript_examples(rows, drafts, annotation_rows, additions),
+        "example_sampling": "Three SHA256-ranked IDs per dataset, independent of scores; non-speculative completed drafts when available. Illustrations, not an accuracy audit.",
         "panels": panels,
         "prediction_sources": [
             {k: s[k] for k in ("name", "predictions_sha256")} for s in plan["sources"]
@@ -171,10 +221,12 @@ def build_leaderboard(
         + sources,
         "reviewed_manifest_sha256": sha256(reviewed) if reviewed else None,
         "scorer_sha256": sha256(scoring.__file__),
+        "builder_sha256": sha256(__file__),
         "independently_audited": False,
         "limitations": [
             "Private research comparison, not an official Open Universal Arabic ASR leaderboard rank.",
             "QASR/GQASR outputs informed reference curation; this is not a model-independent test-set audit.",
+            "Enhanced draft scores measure agreement with candidate-assisted ideal_text_draft, not verified transcription accuracy. Speculative drafts are excluded; paired original scores use exactly the same clips.",
             "Original and reviewed scores are paired only within the same panel; do not compare different subsets as improvement.",
             "Diagnostic cohorts are outcome-selected. Incomplete six-dataset macros are absent, not zero.",
             "Strict WER/CER measures whole-transcript agreement, not isolated punctuation or diacritic quality.",
@@ -187,6 +239,32 @@ def build_leaderboard(
         stage = Path(temporary) / "bundle"
         stage.mkdir()
         write_json(stage / "leaderboard.json", payload)
+        with (stage / "scores.csv").open("w", newline="") as handle:
+            fields = [
+                "panel",
+                "reference_status",
+                "model",
+                "track",
+                "dataset",
+                "utterances",
+                "wer",
+                "cer",
+                "word_errors",
+                "words",
+                "character_errors",
+                "characters",
+            ]
+            writer = csv.DictWriter(handle, fieldnames=fields, extrasaction="ignore")
+            writer.writeheader()
+            for panel in panels:
+                for score in panel["scores"]:
+                    writer.writerow(
+                        {
+                            "panel": panel["id"],
+                            "reference_status": panel["reference_status"],
+                            **score,
+                        }
+                    )
         encoded = (
             json.dumps(payload, ensure_ascii=False).replace("<", "\\u003c").replace("&", "\\u0026")
         )
@@ -194,20 +272,30 @@ def build_leaderboard(
         values = {"SPACE_TITLE": html.escape(title), "DATA_JSON": encoded}
         rendered = re.sub(r"__(SPACE_TITLE|DATA_JSON)__", lambda m: values[m[1]], template)
         (stage / "index.html").write_text(rendered)
+        for filename in ("leaderboard.css", "leaderboard.js"):
+            (stage / filename).write_bytes(Path(__file__).with_name(filename).read_bytes())
         (stage / "README.md").write_text(f"""---
 title: {json.dumps(title, ensure_ascii=True)}
 emoji: 🎙️
-colorFrom: blue
-colorTo: green
+colorFrom: green
+colorTo: gray
 sdk: static
 app_file: index.html
 pinned: false
 ---
 <h1>{html.escape(title)}</h1>
 
-Private research comparison generated from checksum-bound source predictions and frozen annotation plans. The static page embeds its data and requires no external service. Normalized and strict WER/CER are separated by reference track and cohort. Reviewed comparisons use the identical attested subset for every model and reference track; LLM drafts are never treated as verified references. A missing six-dataset macro remains unavailable.
+Arabic speech recognition, measured with context. Explore model rankings, six dataset comparisons, paired reference tracks, and Arabic transcript examples in an accessible, responsive static dashboard. No inference server, external scripts, font requests, or tokens are needed by the page.
 
-`leaderboard.json` contains metric counts, coverage and source/scorer digests. `release.json` enumerates exactly the files allowed for upload. This is not an independently audited public ranking or an official ELM rank. See the limitations displayed in the page.
+The default ranking uses **original source references**. The optional **enhanced comparison** evaluates `ideal_text_draft` alongside originals on the identical eligible clips, excluding every speculative or incomplete draft. These references were informed by QASR/GQASR outputs; their scores are exploratory agreement measurements, not independent evidence of model accuracy. Final reviewed tracks appear only after listening attestations are imported.
+
+The six-dataset macro gives each dataset equal weight. Within each dataset, WER/CER are total edit distance divided by total reference length; CER includes spaces. Normalized scoring uses the pinned ELM protocol. Strict scoring preserves spelling, punctuation and diacritics and is not an isolated formatting-quality measure. Missing denominators or dataset coverage produce unavailable values, never zeros.
+
+Dataset: {pin["url"] if pin else "No published dataset revision supplied."}
+
+The page records the immutable dataset revision, annotation bundle, prediction sources, reference policy and scorer hashes. Transcript examples are selected by stable ID hashes rather than favorable scores. Full-set ranking retains the original dataset membership, including any duplicate audio; enhanced coverage and exclusions are explicit.
+
+`leaderboard.json` contains metric counts, coverage, examples and provenance. `scores.csv` exports every panel (rates are fractions; multiply by 100 for percentages). `release.json` enumerates exactly the files allowed for upload. Private visibility is enforced by the publisher. This is not an independently audited public ranking or an official ELM rank.
 """)
         return finish_bundle(
             stage,
@@ -219,5 +307,9 @@ Private research comparison generated from checksum-bound source predictions and
                 "manifest_digest": plan["manifest_digest"],
                 "selected_clips": len(rows),
                 "verified_clips": len(eligible),
+                "dataset_release": pin,
+                "annotations_bundle_sha256": annotation_source["bundle_sha256"]
+                if annotation_source
+                else None,
             },
         )

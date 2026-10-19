@@ -2765,7 +2765,7 @@ def test_audio_bundle_preserves_float_samples_texts_and_hf_configurations(inputs
         assert rate == 16000 and np.array_equal(decoded, wave)
         assert hashlib.sha256(row["audio"]["bytes"]).hexdigest() == row["audio_bytes_sha256"]
         assert row["text"] == "مرحبا بكم" and row["ideal_text"] is None
-        assert row["release_id"] == "v4.4-audio-001"
+        assert row["release_id"] == "v4.5-audio-001"
         assert not row["audio_reviewed"] and not row["speculative"]
         assert "/" not in row["audio"]["path"]
     # Exercise the same local README configs and Audio metadata the Hub loader uses.
@@ -2779,9 +2779,9 @@ def test_audio_bundle_preserves_float_samples_texts_and_hf_configurations(inputs
     provenance = json.loads((output / "provenance.json").read_text())
     assert provenance["audio_encoding"]["exact_float32_samples"] is True
     assert (
-        package_audio(annotations, tmp_path / "audio", output, workers=1, emit=lambda _: None)[
-            "bundle_sha256"
-        ]
+        package_audio(
+            annotations, tmp_path / "audio", output, workers=1, shard_mib=1, emit=lambda _: None
+        )["bundle_sha256"]
         == result["bundle_sha256"]
     )
     with pytest.raises(ValueError, match="different inputs/version"):
@@ -2872,3 +2872,206 @@ def test_large_audio_upload_uses_verified_disk_snapshot(tmp_path):
         bundle, "test/bench", execute=True, expected_head="existing-head", api=InspectHub()
     )
     assert result["executed"] is True and snapshots and not snapshots[0].exists()
+
+
+@pytest.fixture
+def quality_audio_release(plan, tmp_path):
+    pytest.importorskip("datasets")
+    from data_processing.arabic_reference.audio_release import package_audio
+    from data_processing.arabic_reference.release import export_dataset
+
+    annotations, output = tmp_path / "annotations", tmp_path / "audio-release"
+    export_dataset(plan, annotations)
+    package_audio(annotations, tmp_path / "audio", output, workers=1, emit=lambda _: None)
+    return annotations, output
+
+
+def test_audio_card_uses_exact_shards_and_reports_real_quality(quality_audio_release):
+    import pyarrow.parquet as pq
+    import yaml
+
+    from data_processing.arabic_reference.release import publish_bundle
+
+    _, output = quality_audio_release
+    quality = json.loads((output / "quality_report.json").read_text())
+    assert quality["status"] == "passed" and quality["decoded_audio_rows"] == 6
+    assert quality["all_annotation_columns_preserved"] is True
+    assert quality["transcript_accuracy_certified"] is False
+    assert quality["audio_reviewed_transcripts"] == 0
+    card = (output / "README.md").read_text()
+    meta = yaml.safe_load(card.split("---", 2)[1])
+    paths = meta["configs"][0]["data_files"][0]["path"]
+    assert len(paths) == 6 and all("*" not in p for p in paths)
+    for path in paths:
+        assert (output / path).is_file()
+        assert pq.ParquetFile(output / path).schema_arrow.names[0] == "audio"
+    assert "**0 audio-reviewed transcripts**" in card
+    assert "أ / إ / آ / ؤ / ئ" in card and "ﷺ" in card
+    assert publish_bundle(output, "shahink/asr_bench")["executed"] is False
+    with pytest.raises(ValueError, match="destination differs"):
+        publish_bundle(output, "someone/different")
+
+
+@pytest.mark.parametrize("mutation", ["text", "audio_bytes", "samples", "duration", "missing"])
+def test_written_shard_audit_catches_post_encoding_damage(quality_audio_release, mutation):
+    import pyarrow as pa
+    import pyarrow.parquet as pq
+
+    from data_processing.arabic_reference.release_quality import audit_audio_shards
+
+    annotations, output = quality_audio_release
+    provenance = json.loads((output / "provenance.json").read_text())
+    paths = provenance["data_files"]
+    ds = next(iter(paths))
+    path = output / paths[ds][0]
+    table = pq.read_table(path)
+    rows = table.to_pylist()
+    if mutation == "text":
+        rows[0]["text"] = "Changed original"
+    if mutation == "audio_bytes":
+        rows[0]["audio"]["bytes"] = b"corrupt"
+    if mutation == "samples":
+        rows[0]["audio_samples_sha256"] = "0" * 64
+    if mutation == "duration":
+        rows[0]["duration_seconds"] = 1000
+    if mutation == "missing":
+        rows = []
+    pq.write_table(pa.Table.from_pylist(rows, schema=table.schema), path)
+    with pytest.raises(ValueError):
+        audit_audio_shards(
+            output, annotations, paths, provenance["release_id"], emit=lambda _: None
+        )
+
+
+def test_configurable_audio_dataset_title_repo_and_selection(plan, tmp_path):
+    import yaml
+
+    from data_processing.arabic_reference.audio_release import package_audio
+    from data_processing.arabic_reference.release import export_dataset
+
+    annotations, output = tmp_path / "annotations", tmp_path / "custom"
+    export_dataset(plan, annotations)
+    package_audio(
+        annotations,
+        tmp_path / "audio",
+        output,
+        datasets=["sada"],
+        title="My Arabic Speech Collection",
+        repo_id="team/custom-audio",
+        workers=1,
+        emit=lambda _: None,
+    )
+    card = (output / "README.md").read_text()
+    meta = yaml.safe_load(card.split("---", 2)[1])
+    assert meta["pretty_name"] == "My Arabic Speech Collection"
+    assert [c["config_name"] for c in meta["configs"]] == ["all", "sada"]
+    assert '"team/custom-audio"' in card and '"shahink/asr_bench"' not in card
+    provenance = json.loads((output / "provenance.json").read_text())
+    assert provenance["selection_scope"] == "dataset_subset"
+    assert set(provenance["counts"]) == {"sada"}
+    assert provenance["quality"]["rows"] == 1
+    with pytest.raises(ValueError, match="different inputs/version"):
+        package_audio(annotations, tmp_path / "audio", output, datasets=["sada"], title="Changed")
+
+
+@pytest.mark.parametrize(
+    "mutation", [None, "private", "revision", "missing", "size", "lfs_hash", "git_hash"]
+)
+def test_remote_release_verification_checks_every_pinned_file(plan, tmp_path, mutation):
+    import hashlib
+    from types import SimpleNamespace
+
+    from data_processing.arabic_reference.cluster_release import verify_published_bundle
+    from data_processing.arabic_reference.release import export_dataset
+
+    bundle = tmp_path / "annotations"
+    export_dataset(plan, bundle)
+    siblings = []
+    for path in sorted(p for p in bundle.rglob("*") if p.is_file()):
+        body = path.read_bytes()
+        lfs = (
+            SimpleNamespace(sha256=hashlib.sha256(body).hexdigest())
+            if path.suffix == ".parquet"
+            else None
+        )
+        siblings.append(
+            SimpleNamespace(
+                rfilename=path.relative_to(bundle).as_posix(),
+                size=len(body),
+                lfs=lfs,
+                blob_id=hashlib.sha1(f"blob {len(body)}\0".encode() + body).hexdigest(),
+            )
+        )
+    info = SimpleNamespace(private=True, sha="published-commit", siblings=siblings)
+    if mutation == "private":
+        info.private = False
+    if mutation == "revision":
+        info.sha = "different"
+    if mutation == "missing":
+        info.siblings = siblings[:-1]
+    if mutation == "size":
+        siblings[0].size += 1
+    if mutation == "lfs_hash":
+        next(s for s in siblings if s.lfs).lfs.sha256 = "wrong"
+    if mutation == "git_hash":
+        next(s for s in siblings if not s.lfs).blob_id = "wrong"
+
+    class Hub:
+        def repo_info(self, repo_id, **kwargs):
+            assert kwargs == {
+                "repo_type": "dataset",
+                "revision": "published-commit",
+                "files_metadata": True,
+            }
+            return info
+
+    if mutation:
+        with pytest.raises(ValueError):
+            verify_published_bundle(bundle, "team/audio", "published-commit", Hub())
+    else:
+        result = verify_published_bundle(bundle, "team/audio", "published-commit", Hub())
+        assert result["status"] == "passed" and result["files_verified"] == len(siblings)
+
+
+def test_cluster_command_packages_selected_datasets_with_configured_name(plan, tmp_path):
+    import os
+    import subprocess
+    import sys
+    from pathlib import Path
+
+    pytest.importorskip("datasets")
+    from data_processing.arabic_reference.release import export_dataset, validate_bundle
+
+    annotations, output = tmp_path / "annotations", tmp_path / "packaged"
+    export_dataset(plan, annotations)
+    repo = Path(__file__).parents[1]
+    env = {
+        **os.environ,
+        "PYTHON": sys.executable,
+        "ARABIC_REF_ROOT": str(tmp_path),
+        "ARABIC_REF_ANNOTATIONS_BUNDLE": str(annotations),
+        "ARABIC_REF_AUDIO_ROOT": str(tmp_path / "audio"),
+        "ARABIC_REF_DATASET_BUNDLE": str(output),
+        "ARABIC_REF_RELEASE_ID": "configured-release",
+        "HF_OWNER": "test-team",
+        "HF_DATASET_NAME": "custom-speech",
+        "HF_DATASET_TITLE": "Arabic Speech · Test Edition",
+        "REF_DATASETS": "sada commonvoice",
+        "REF_AUDIO_WORKERS": "2",
+    }
+    env.pop("HF_DATASET_REPO", None)
+    result = subprocess.run(
+        ["bash", str(repo / "scripts/corpus/publish_arabic_dataset.sh"), "package"],
+        cwd=repo,
+        env=env,
+        capture_output=True,
+        text=True,
+        timeout=60,
+    )
+    assert result.returncode == 0, result.stderr
+    manifest = validate_bundle(output)
+    assert manifest["datasets"] == ["sada", "commonvoice"]
+    assert manifest["quality_status"] == "passed"
+    assert manifest["package_config"]["dataset_repo"] == "test-team/custom-speech"
+    assert manifest["package_config"]["dataset_title"] == env["HF_DATASET_TITLE"]
+    assert not list(tmp_path.glob("publication-*.json"))

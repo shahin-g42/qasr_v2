@@ -670,3 +670,61 @@ publisher snapshots large shards to disk to keep upload memory bounded. Failed p
 does not publish a partial bundle. A completed matching bundle can be reused; interrupted
 packaging must restart. The final upload is private and returns a Hub commit SHA.
 For an existing destination, inspect it and use its current `--expected-head SHA`.
+
+
+## v4.5 release quality and configurable cluster publication
+
+Use `scripts/corpus/publish_arabic_dataset.sh` for the reviewed release workflow.
+It reuses the existing frozen `dataset-release-v4.4` annotation bundle. No transcript
+regeneration, model server or GPU is needed. The new output version is `v4.5-audio-001`.
+
+```bash
+# Run in the updated codex/arabic-reference-pilot checkout, with the cluster venv active.
+export HF_DATASET_REPO="shahink/asr_bench"     # account-or-organization/dataset-name
+export HF_DATASET_TITLE="Arabic ASR Bench · Enhanced References"
+export REF_DATASETS="sada commonvoice masc_clean masc_noisy mgb2 casablanca"
+export ARABIC_REF_RELEASE_ID="v4.5-audio-001"
+export REF_AUDIO_WORKERS=90
+hf auth login
+bash scripts/corpus/publish_arabic_dataset.sh all
+```
+
+Alternatively set `HF_OWNER` and `HF_DATASET_NAME`; an explicit `HF_DATASET_REPO`
+overrides them. `REF_DATASETS` selects named configurations while preserving canonical
+source identities. The title and repository are reflected in the README and loading example.
+Changing these settings for an existing output requires a new release ID/output directory.
+
+The script supports `check`, `package`, `publish`, `verify` and `all`. `check` is offline
+and checks the annotation bundle and paths; `package` performs the exhaustive local
+encoding and read-back audit without uploading. `all` requires a valid Hub login before
+packaging, publishes privately, then checks the size and content identity of every remote
+file at the returned commit. `verify` retries that last step without republishing.
+A receipt is saved as `publication-<release-id>.json`; it preserves the successful upload
+commit even if subsequent remote verification fails.
+
+Configurable paths:
+
+- `ARABIC_REF_SOURCE_REPO`: benchmark checkout containing the prepared cache.
+- `ARABIC_REF_ROOT`: release workspace under that checkout's verification directory.
+- `ARABIC_REF_ANNOTATIONS_BUNDLE`: copied frozen annotation bundle.
+- `ARABIC_REF_AUDIO_ROOT`: prepared `audio/` directory containing dataset subdirectories.
+- `ARABIC_REF_DATASET_BUNDLE`: new audio release destination.
+- `REF_AUDIO_SHARD_MIB`: approximate uncompressed shard limit, default 256 MiB.
+- `PYTHON`: interpreter from the active cluster environment, default `python3`.
+
+The first dataset column is Hugging Face Audio. Every persisted row is read back after
+writing; every annotation column is compared with its frozen source and every WAV is
+decoded to check float32 sample hashes, finite values, duration, rate and channel count.
+Schemas, coverage, identities and speculative/final-reference separation are checked.
+`quality_report.json` records the results, source revisions, hours, duplicate groups,
+editorial flags and signal observations. Silence or peaks above one are disclosed without
+silently changing the benchmark. Packaging success is not a claim of perfect transcripts.
+
+The README is generated from actual counts, source revisions and audit results. It describes
+contextual Arabic spelling, punctuation, marks, dialect preservation, the ﷺ convention,
+column semantics, known limitations and reproducible loading. Configurations enumerate
+exact shard paths rather than a broad wildcard, so obsolete remote shards cannot be read
+as part of the new dataset. Publication rejects audio bundles missing the complete audit
+or configured for a different repository. The publisher snapshots verified files and
+commits against the observed private Hub head; remote integrity verification uses LFS
+SHA-256 or Git blob identities without downloading the entire corpus again.

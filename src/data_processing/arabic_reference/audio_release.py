@@ -12,6 +12,9 @@ from pathlib import Path
 
 from .core import write_json
 from .release import dataset_card, finish_bundle, valid_release_id, validate_bundle
+from .release_quality import audit_audio_shards
+
+AUDIO_PACKAGE_VERSION = "arabic-audio-release-v2"
 
 
 def encode_audio(row, audio_root):
@@ -45,6 +48,10 @@ def encode_audio(row, audio_root):
         **row,
         "audio": {"bytes": encoded, "path": f"{dataset}-{ordinal}.wav"},
         "audio_bytes_sha256": hashlib.sha256(encoded).hexdigest(),
+        "audio_num_samples": len(wave),
+        "audio_samples_sha256": hashlib.sha256(
+            wave.astype("<f4", copy=False).tobytes()
+        ).hexdigest(),
     }
 
 
@@ -53,7 +60,10 @@ def package_audio(
     audio_root,
     output,
     *,
-    release_id="v4.4-audio-001",
+    release_id="v4.5-audio-001",
+    repo_id="shahink/asr_bench",
+    title="Arabic ASR Bench · Enhanced References",
+    datasets=None,
     workers=16,
     shard_mib=256,
     emit=print,
@@ -63,6 +73,10 @@ def package_audio(
     from datasets import Audio, Features, Value
 
     valid_release_id(release_id)
+    if not re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9._-]*/[A-Za-z0-9][A-Za-z0-9._-]*", repo_id):
+        raise ValueError("Use an explicit owner/repository dataset ID")
+    if not title.strip() or len(title) > 120 or any(ord(c) < 32 for c in title):
+        raise ValueError("Use a single-line dataset title of 1–120 characters")
     if not 1 <= workers <= 90 or not 1 <= shard_mib <= 1024:
         raise ValueError("Use 1–90 audio workers and 1–1024 MiB shards")
     annotations, audio_root, output = (
@@ -78,29 +92,52 @@ def package_audio(
     provenance = json.loads((annotations / "provenance.json").read_text())
     if provenance["audio_included"]:
         raise ValueError("This input already contains audio")
+    selected = list(source["datasets"] if datasets is None else datasets)
+    if (
+        not selected
+        or len(set(selected)) != len(selected)
+        or set(selected) - set(source["datasets"])
+    ):
+        raise ValueError("Choose distinct dataset names present in the annotation bundle")
+    selected = [ds for ds in source["datasets"] if ds in selected]
+    package_config = {
+        "version": AUDIO_PACKAGE_VERSION,
+        "dataset_repo": repo_id,
+        "dataset_title": title,
+        "datasets": selected,
+        "shard_mib": shard_mib,
+    }
     if output.exists():
         previous = validate_bundle(output)
         if (
             previous.get("annotations_bundle_sha256") != source["bundle_sha256"]
             or previous["release_id"] != release_id
+            or previous.get("package_config") != package_config
         ):
             raise ValueError("Audio release already exists with different inputs/version")
         return {"output": str(output), **previous}
     output.parent.mkdir(parents=True, exist_ok=True)
-    total = sum(c["rows"] for c in source["counts"].values())
+    total = sum(source["counts"][ds]["rows"] for ds in selected)
+    data_files = {ds: [] for ds in selected}
     seen, completed, wav_bytes, seconds = set(), 0, 0, 0.0
     with tempfile.TemporaryDirectory(prefix=".reference-audio-", dir=output.parent) as temporary:
         stage = Path(temporary) / "bundle"
         stage.mkdir()
         with ThreadPoolExecutor(max_workers=workers) as pool:
-            for ds in source["datasets"]:
+            for ds in selected:
                 relative = f"data/{ds}/test.parquet"
                 if relative not in source["files"]:
                     raise ValueError(f"Missing annotation table: {ds}")
                 parquet = pq.ParquetFile(annotations / relative)
-                features = Features.from_arrow_schema(parquet.schema_arrow)
-                features["audio"] = Audio(sampling_rate=16000)
+                features = Features(
+                    {
+                        "audio": Audio(sampling_rate=16000),
+                        **Features.from_arrow_schema(parquet.schema_arrow),
+                    }
+                )
                 features["audio_bytes_sha256"] = Value("string")
+                features["audio_num_samples"] = Value("int64")
+                features["audio_samples_sha256"] = Value("string")
                 schema = features.arrow_schema
                 shard_rows, size, shard_number, count = [], 0, 0, 0
 
@@ -111,6 +148,7 @@ def package_audio(
                     pq.write_table(
                         pa.Table.from_pylist(shard_rows, schema=schema), path, compression="zstd"
                     )
+                    data_files[ds].append(path.relative_to(stage).as_posix())
                     shard_number += 1
                     shard_rows, size = [], 0
 
@@ -153,9 +191,22 @@ def package_audio(
                     raise ValueError(f"Annotation row count mismatch: {ds}")
         if completed != total:
             raise ValueError("Audio release coverage mismatch")
+        quality = audit_audio_shards(stage, annotations, data_files, release_id, emit=emit)
+        write_json(stage / "quality_report.json", quality)
         provenance.update(
             {
                 "release_id": release_id,
+                "dataset_repo": repo_id,
+                "dataset_title": title,
+                "package_config": package_config,
+                "data_files": data_files,
+                "quality": quality,
+                "source_selection_scope": provenance["selection_scope"],
+                "selection_scope": provenance["selection_scope"]
+                if selected == source["datasets"]
+                else "dataset_subset",
+                "selected_datasets": selected,
+                "counts": {ds: source["counts"][ds] for ds in selected},
                 "audio_included": True,
                 "annotations_bundle_sha256": source["bundle_sha256"],
                 "annotations_release_id": source["release_id"],
@@ -171,12 +222,16 @@ def package_audio(
                 },
             }
         )
+        if provenance.get("speculative_drafts"):
+            provenance["speculative_drafts"]["records_in_release"] = quality["statuses"].get(
+                "speculative_draft", 0
+            )
         provenance["limitations"] = [
             s for s in provenance["limitations"] if not s.startswith("No audio bytes")
         ]
         write_json(stage / "provenance.json", provenance)
         (stage / "policy.json").write_bytes((annotations / "policy.json").read_bytes())
-        (stage / "README.md").write_text(dataset_card(source["datasets"], provenance))
+        (stage / "README.md").write_text(dataset_card(selected, provenance))
         # Recheck the frozen annotation input before making the output visible.
         validate_bundle(annotations)
         return finish_bundle(
@@ -186,8 +241,10 @@ def package_audio(
                 "repo_type": "dataset",
                 "release_id": release_id,
                 "manifest_digest": source["manifest_digest"],
-                "counts": source["counts"],
-                "datasets": source["datasets"],
+                "counts": {ds: source["counts"][ds] for ds in selected},
+                "datasets": selected,
+                "package_config": package_config,
+                "quality_status": quality["status"],
                 "audio_included": True,
                 "annotations_bundle_sha256": source["bundle_sha256"],
             },

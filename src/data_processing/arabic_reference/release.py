@@ -9,6 +9,7 @@ from collections import Counter
 from pathlib import Path
 
 from .core import DATASETS, digest, load_plan, sha256, write_json
+from .dataset_card import dataset_card
 from .prompts import proposal_checks
 from .review import validated_reviews
 from .runtime import load_record
@@ -338,71 +339,6 @@ def export_dataset(
         )
 
 
-def dataset_card(datasets, provenance):
-    audio = provenance.get("audio_included", False)
-    filename = "test-*.parquet" if audio else "test.parquet"
-    audio_description = (
-        "This release embeds playable 16 kHz mono float32 WAV audio in Parquet shards. "
-        "Every waveform was checked against the prepared-cache hash and decoded back to identical samples. "
-        "`audio_sha256` identifies the original NumPy cache file; `audio_bytes_sha256` identifies the embedded WAV. "
-        "The encoding preserves the benchmark waveform without amplitude clipping or integer quantization."
-        if audio
-        else "This release contains annotation overlays and source locators, without audio bytes."
-    )
-    configs = []
-    for ds in datasets:
-        configs.append(
-            f"  - config_name: {ds}\n    data_files:\n      - split: test\n        path: data/{ds}/{filename}"
-        )
-    all_paths = "\n".join(f"          - data/{ds}/{filename}" for ds in datasets)
-    header = "---\nlanguage:\n  - ar\ntask_categories:\n  - automatic-speech-recognition\ntags:\n  - arabic\n  - evaluation-only\n  - annotation-drafts\nconfigs:\n"
-    header += (
-        f"  - config_name: all\n    default: true\n    data_files:\n      - split: test\n        path:\n{all_paths}\n"
-        + "\n".join(configs)
-        + "\n---\n"
-    )
-    counts = provenance["counts"]
-    table = "\n".join(
-        f"| {ds} | {c['rows']} | {c['proposals'].get('proposed', 0)} | {c['proposals'].get('speculative_draft', 0)} | {c['reviews'].get('verified', 0)} |"
-        for ds, c in counts.items()
-    )
-    sources = "\n".join(
-        f"- `{s['name']}` prediction SHA256: `{s['predictions_sha256']}`"
-        for s in provenance["prediction_sources"]
-    )
-    return (
-        header
-        + f"""# Arabic ASR reference annotations — {provenance["release_id"]}
-
-Private research dataset. Scope: **{provenance["selection_scope"]}**. {audio_description} Original source terms and attribution remain applicable. See each row's pinned `source_locator_json` and `provenance.json`; this package does not grant a new blanket license to the underlying sources.
-
-| Dataset | Rows | LLM drafts | Speculative drafts | Audio-reviewed |
-|---|---:|---:|---:|---:|
-{table}
-
-`text` is the immutable original reference. `asr_text` is the saved QASR prediction; `gqasr_text` is the GQASR prediction. `candidate_texts_json` retains every named candidate. `verified_text_draft` and `ideal_text_draft` are unverified suggestions. `correction_method` distinguishes `llm_after_initial_cleanup` from `llm_contextual` editing. Every completed row in the full correction route receives LLM contextual review, including initially agreeing rows. The exact supplied blessing صلى الله عليه وسلم is rendered as ﷺ under the explicit editorial convention; a missing blessing is never inserted. Final `verified_text` and `ideal_text` remain null until an attested listening review is imported. Failed, pending and unresolved rows remain visible. Never substitute a draft or original reference for a missing final value.
-
-Optional user-requested guesses are marked `speculative=true`, `proposal_status="speculative_draft"` and `correction_method="assistant_speculative_adjudication"`. Their full wording is in the draft columns, with qualitative confidence, a rationale and uncertain spans in `speculation_confidence`, `speculative_reason` and `speculative_spans_json`. These guesses may invent speech and are not eligible for verified-reference scoring. `proposal_record_sha256` retains the unresolved source record; `speculative_draft_sha256` identifies the overlay. The original proposal run is unchanged.
-
-The corrector sees anonymous candidate labels in varying order. Its fluency, agreement and edit explanations are not proof of speech. `checks_json` records independently computed text differences; model labels do not establish whether edits preserve meaning. `changes_json`, `uncertainties_json` and `issue_notes_json` retain the unverified editorial evidence. Raw server replies, local cache paths, reviewer identities and host logs are excluded from this distribution.
-
-The `test` split is evaluation-only. Do not feed it into training. Pilot and diagnostic membership is in `cohorts`; diagnostics are outcome-selected and must not be reported as an unbiased full-suite score. Duplicate source rows remain identifiable by `audio_sha256`.
-
-```python
-from datasets import load_dataset
-# Authenticate with your own permitted Hugging Face account; pin the returned commit SHA.
-ds = load_dataset("shahink/asr_bench", "all", split="test", revision="<release commit>")
-```
-
-The exact plan is bound by `{provenance["manifest_digest"]}`. The annotation policy is included in `policy.json`. The corrector identity and review coverage are in `provenance.json`. Single-review attestations are not independent audit. Reference development has used QASR/GQASR outputs, so results need that disclosure and a fresh holdout for general model-quality claims.
-
-{sources}
-
-The release is immutable locally. Publication uploads only the files enumerated in `release.json` to a private repository; use the Hub commit SHA as the distributed version.
-"""
-    )
-
-
 def publish_bundle(root, repo_id, *, execute=False, expected_head=None, api=None):
     """Private-only publication. Dry-run is offline; an explicit execution performs upload."""
     from huggingface_hub import CommitOperationAdd, HfApi
@@ -412,6 +348,20 @@ def publish_bundle(root, repo_id, *, execute=False, expected_head=None, api=None
         raise ValueError("Use an explicit namespace/repository Hugging Face ID")
     root = Path(root)
     manifest = validate_bundle(root)
+    if manifest.get("audio_included"):
+        quality = json.loads((root / "quality_report.json").read_text())
+        if (
+            manifest.get("quality_status") != "passed"
+            or quality.get("status") != "passed"
+            or quality.get("release_id") != manifest["release_id"]
+            or quality.get("decoded_audio_rows")
+            != sum(c["rows"] for c in manifest["counts"].values())
+            or not quality.get("all_annotation_columns_preserved")
+        ):
+            raise ValueError("Audio release has not passed the complete written-shard audit")
+        configured_repo = manifest.get("package_config", {}).get("dataset_repo")
+        if configured_repo and configured_repo != repo_id:
+            raise ValueError("Publish destination differs from the configured dataset card")
     files = sorted([*manifest["files"], "release.json"])
     result = {
         "repo_id": repo_id,

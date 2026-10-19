@@ -100,7 +100,10 @@ def main(argv=None):
     p.add_argument("--annotations", type=Path, required=True)
     p.add_argument("--audio-root", type=Path, required=True)
     p.add_argument("--output", type=Path, required=True)
-    p.add_argument("--release-id", default="v4.4-audio-001")
+    p.add_argument("--release-id", default="v4.5-audio-001")
+    p.add_argument("--repo-id", default="shahink/asr_bench")
+    p.add_argument("--title", default="Arabic ASR Bench · Enhanced References")
+    p.add_argument("--datasets", nargs="+")
     p.add_argument("--workers", type=int, default=16)
     p.add_argument("--shard-mib", type=int, default=256)
     p = commands.add_parser("publish")
@@ -211,6 +214,9 @@ def main(argv=None):
                 args.audio_root,
                 args.output,
                 release_id=args.release_id,
+                repo_id=args.repo_id,
+                title=args.title,
+                datasets=args.datasets,
                 workers=args.workers,
                 shard_mib=args.shard_mib,
             )

@@ -71,12 +71,19 @@ case "$COMMAND" in
         --release-id "${ARABIC_REF_RELEASE_ID:-v4-board-001}" ${EXTRA[@]+"${EXTRA[@]}"} "$@"
     fi ;;
   package-audio)
+    EXTRA=()
+    if [[ -n "${REF_DATASETS:-}" ]]; then
+      read -r -a DATASET_NAMES <<< "$REF_DATASETS"
+      EXTRA=(--datasets "${DATASET_NAMES[@]}")
+    fi
     exec "${CLI[@]}" package-audio \
       --annotations "${ARABIC_REF_ANNOTATIONS_BUNDLE:-$ROOT/dataset-release-v4.4}" \
       --audio-root "$AUDIO_ROOT" \
-      --output "${ARABIC_REF_DATASET_BUNDLE:-$ROOT/dataset-release-v4.4-audio}" \
-      --release-id "${ARABIC_REF_RELEASE_ID:-v4.4-audio-001}" \
-      --workers "${REF_AUDIO_WORKERS:-90}" --shard-mib "${REF_AUDIO_SHARD_MIB:-256}" "$@" ;;
+      --output "${ARABIC_REF_DATASET_BUNDLE:-$ROOT/dataset-release-v4.5-audio}" \
+      --release-id "${ARABIC_REF_RELEASE_ID:-v4.5-audio-001}" \
+      --repo-id "${HF_DATASET_REPO:-shahink/asr_bench}" \
+      --title "${HF_DATASET_TITLE:-Arabic ASR Bench · Enhanced References}" \
+      --workers "${REF_AUDIO_WORKERS:-90}" --shard-mib "${REF_AUDIO_SHARD_MIB:-256}" ${EXTRA[@]+"${EXTRA[@]}"} "$@" ;;
   publish-dataset)
     exec "${CLI[@]}" publish --bundle "${ARABIC_REF_DATASET_BUNDLE:-$ROOT/dataset-release}" \
       --repo-id "${HF_DATASET_REPO:?Set HF_DATASET_REPO to your private dataset ID}" "$@" ;;

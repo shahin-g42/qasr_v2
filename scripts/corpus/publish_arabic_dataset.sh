@@ -16,6 +16,8 @@ export REF_DATASETS="${REF_DATASETS:-sada commonvoice masc_clean masc_noisy mgb2
 export ARABIC_REF_SOURCE_REPO="${ARABIC_REF_SOURCE_REPO:-/lustrefs/shared/shahin.konadath/workspace/train/stt/v2/qasr_v2}"
 export ARABIC_REF_ROOT="${ARABIC_REF_ROOT:-$ARABIC_REF_SOURCE_REPO/verification/arabic-reference-v4.1-full}"
 export ARABIC_REF_ANNOTATIONS_BUNDLE="${ARABIC_REF_ANNOTATIONS_BUNDLE:-$ARABIC_REF_ROOT/dataset-release-v4.4}"
+# If the annotation directory is missing, import this transferred archive automatically.
+export ARABIC_REF_ANNOTATIONS_ARCHIVE="${ARABIC_REF_ANNOTATIONS_ARCHIVE:-$ARABIC_REF_ROOT/arabic-reference-v4.4-cluster-upload.tar.gz}"
 export ARABIC_REF_AUDIO_ROOT="${ARABIC_REF_AUDIO_ROOT:-$ARABIC_REF_SOURCE_REPO/gemma_speech/gqasr/verification/arabic-stream-cache/prepared/audio}"
 export ARABIC_REF_RELEASE_ID="${ARABIC_REF_RELEASE_ID:-v4.5-audio-001}"
 export ARABIC_REF_DATASET_BUNDLE="${ARABIC_REF_DATASET_BUNDLE:-$ARABIC_REF_ROOT/dataset-release-$ARABIC_REF_RELEASE_ID}"

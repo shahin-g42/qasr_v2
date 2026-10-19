@@ -728,3 +728,22 @@ as part of the new dataset. Publication rejects audio bundles missing the comple
 or configured for a different repository. The publisher snapshots verified files and
 commits against the observed private Hub head; remote integrity verification uses LFS
 SHA-256 or Git blob identities without downloading the entire corpus again.
+
+
+### Transferring the repaired annotation data
+
+`git pull` updates code only. The final twelve recovered proposals and six speculative
+drafts are already in the frozen `dataset-release-v4.4` Parquet bundle. Copy
+`arabic-reference-v4.4-cluster-upload.tar.gz` from the Mac into `ARABIC_REF_ROOT`
+on the cluster, or set `ARABIC_REF_ANNOTATIONS_ARCHIVE` to the archive's actual cluster path.
+The publisher's `check`, `package` and `all` stages now import that archive automatically
+when the annotation bundle is absent. They stage only the dataset files, verify the full
+release manifest and every checksum, then make the complete directory available atomically.
+The archive's older helper script is not imported or executed. Existing valid bundles
+are reused; incomplete nonempty directories are never overwritten.
+
+If the bundle is already extracted elsewhere, set `ARABIC_REF_ANNOTATIONS_BUNDLE`
+to the directory directly containing `release.json`. Missing data now produces an
+actionable transfer/path message instead of a FileNotFoundError traceback. There is no
+need to repeat correction or inference. This import preserves the twelve recovered
+transcripts and six labelled speculative drafts exactly.

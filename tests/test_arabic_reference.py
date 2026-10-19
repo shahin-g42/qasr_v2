@@ -3075,3 +3075,75 @@ def test_cluster_command_packages_selected_datasets_with_configured_name(plan, t
     assert manifest["package_config"]["dataset_repo"] == "test-team/custom-speech"
     assert manifest["package_config"]["dataset_title"] == env["HF_DATASET_TITLE"]
     assert not list(tmp_path.glob("publication-*.json"))
+
+
+def test_missing_annotation_bundle_explains_transfer_and_path_override(tmp_path):
+    from data_processing.arabic_reference.cluster_release import ensure_annotations
+
+    bundle, archive = tmp_path / "dataset-release-v4.4", tmp_path / "release.tar.gz"
+    with pytest.raises(ValueError, match="git pull transfers code") as caught:
+        ensure_annotations(bundle, archive)
+    assert str(archive) in str(caught.value)
+    assert "ARABIC_REF_ANNOTATIONS_BUNDLE" in str(caught.value)
+    assert "ARABIC_REF_ANNOTATIONS_ARCHIVE" in str(caught.value)
+    assert not bundle.exists()
+
+
+@pytest.mark.parametrize("mutation", [None, "changed", "traversal", "link", "duplicate", "partial"])
+def test_annotation_archive_import_is_validated_and_atomic(plan, tmp_path, mutation):
+    import io
+    import tarfile
+
+    from data_processing.arabic_reference.cluster_release import ensure_annotations
+    from data_processing.arabic_reference.release import export_dataset, validate_bundle
+
+    original = tmp_path / "original"
+    expected = export_dataset(plan, original)
+    archive = tmp_path / "transfer.tar.gz"
+    prefix = "dataset-release-v4.4"
+    with tarfile.open(archive, "w:gz") as handle:
+        for path in sorted(p for p in original.rglob("*") if p.is_file()):
+            relative = path.relative_to(original).as_posix()
+            name = f"{prefix}/{relative}"
+            body = path.read_bytes()
+            if mutation == "changed" and relative == "README.md":
+                body += b"changed"
+            member = tarfile.TarInfo(name)
+            member.size = len(body)
+            if mutation == "link" and relative == "README.md":
+                member.type = tarfile.SYMTYPE
+                member.linkname = "/tmp/not-an-annotation"
+                member.size = 0
+            handle.addfile(member, io.BytesIO(body) if member.isfile() else None)
+            if mutation == "duplicate" and relative == "README.md":
+                handle.addfile(member, io.BytesIO(body))
+        # Ancillary handoff scripts are never unpacked or executed by the importer.
+        helper = tarfile.TarInfo("release-on-cluster.sh")
+        helper.size = 4
+        handle.addfile(helper, io.BytesIO(b"exit"))
+        if mutation == "traversal":
+            member = tarfile.TarInfo(f"{prefix}/../escaped.txt")
+            member.size = 3
+            handle.addfile(member, io.BytesIO(b"bad"))
+    destination = tmp_path / "target" / prefix
+    if mutation == "partial":
+        destination.mkdir(parents=True)
+        (destination / "local-work.txt").write_text("keep")
+    if mutation:
+        with pytest.raises(ValueError):
+            ensure_annotations(destination, archive, emit=lambda _: None)
+        if mutation == "partial":
+            assert (destination / "local-work.txt").read_text() == "keep"
+        else:
+            assert not destination.exists()
+    else:
+        result = ensure_annotations(destination, archive, emit=lambda _: None)
+        assert result["bundle_sha256"] == expected["bundle_sha256"]
+        assert validate_bundle(destination)["bundle_sha256"] == expected["bundle_sha256"]
+        # A valid existing bundle needs no archive, and is not overwritten.
+        archive.unlink()
+        assert (
+            ensure_annotations(destination, archive)["bundle_sha256"] == expected["bundle_sha256"]
+        )
+    assert not (destination.parent / "release-on-cluster.sh").exists()
+    assert not (destination.parent / "escaped.txt").exists()

@@ -6,11 +6,91 @@ import argparse
 import hashlib
 import json
 import os
-from pathlib import Path
+import shutil
+import tarfile
+import tempfile
+from pathlib import Path, PurePosixPath
 
 from .audio_release import package_audio
 from .core import sha256, write_json
 from .release import publish_bundle, validate_bundle
+
+
+def ensure_annotations(annotations, archive, *, emit=print):
+    """Import the frozen annotation payload atomically, without overwriting local work."""
+    annotations, archive = Path(annotations), Path(archive)
+    if (annotations / "release.json").is_file():
+        return validate_bundle(annotations)
+    if annotations.exists() and (not annotations.is_dir() or any(annotations.iterdir())):
+        raise ValueError(
+            f"Annotation directory exists but has no release.json: {annotations}. "
+            "Set ARABIC_REF_ANNOTATIONS_BUNDLE to the complete extracted bundle; "
+            "the existing directory will not be overwritten."
+        )
+    if not archive.is_file():
+        raise ValueError(
+            f"Annotation bundle is missing: {annotations / 'release.json'}. "
+            f"Copy arabic-reference-v4.4-cluster-upload.tar.gz from the Mac to {archive}, "
+            "or set ARABIC_REF_ANNOTATIONS_ARCHIVE to its cluster location. "
+            "The script will validate and unpack it automatically. "
+            "If already extracted elsewhere, set ARABIC_REF_ANNOTATIONS_BUNDLE to that directory. "
+            "git pull transfers code, not the repaired transcript data."
+        )
+    with tarfile.open(archive, "r:*") as handle:
+        members = handle.getmembers()
+        by_name = {m.name: m for m in members}
+        if len(by_name) != len(members):
+            raise ValueError("Annotation archive contains duplicate members")
+        manifests = [m for m in members if PurePosixPath(m.name).name == "release.json"]
+        if len(manifests) != 1 or not manifests[0].isfile():
+            raise ValueError("Annotation archive must contain exactly one regular release.json")
+        manifest_member = manifests[0]
+        prefix = PurePosixPath(manifest_member.name).parent
+        if prefix.is_absolute() or ".." in prefix.parts:
+            raise ValueError("Unsafe annotation archive path")
+        manifest_bytes = handle.extractfile(manifest_member).read()
+        manifest = json.loads(manifest_bytes)
+        wanted = {*manifest["files"], "release.json"}
+        for relative in wanted:
+            path = PurePosixPath(relative)
+            if path.is_absolute() or ".." in path.parts or path.as_posix() != relative:
+                raise ValueError("Unsafe annotation release path")
+        inside = {
+            str(PurePosixPath(m.name).relative_to(prefix))
+            for m in members
+            if not m.isdir() and PurePosixPath(m.name).is_relative_to(prefix)
+        }
+        if inside != wanted:
+            raise ValueError("Unexpected or missing files in the archived annotation bundle")
+        annotations.parent.mkdir(parents=True, exist_ok=True)
+        with tempfile.TemporaryDirectory(
+            prefix=".annotation-import-", dir=annotations.parent
+        ) as temp:
+            stage = Path(temp) / "bundle"
+            stage.mkdir()
+            for relative in sorted(wanted):
+                member = by_name.get(str(prefix / relative))
+                if member is None or not member.isfile():
+                    raise ValueError("Annotation payload must contain regular files, not links")
+                destination = stage / relative
+                destination.parent.mkdir(parents=True, exist_ok=True)
+                with handle.extractfile(member) as incoming, destination.open("wb") as outgoing:
+                    shutil.copyfileobj(incoming, outgoing)
+            result = validate_bundle(stage)
+            if result["repo_type"] != "dataset":
+                raise ValueError("Expected an annotation dataset archive")
+            stage.rename(annotations)
+    emit(
+        json.dumps(
+            {
+                "event": "annotations_imported",
+                "archive": str(archive),
+                "annotations": str(annotations),
+                "bundle_sha256": result["bundle_sha256"],
+            }
+        )
+    )
+    return result
 
 
 def verify_published_bundle(root, repo_id, revision, api):
@@ -74,7 +154,13 @@ def main(argv=None):
     }
     print(json.dumps({"event": "release_configuration", **config}, ensure_ascii=False, indent=2))
     if args.stage in {"check", "package", "all"}:
-        source = validate_bundle(annotations)
+        archive = Path(
+            os.environ.get(
+                "ARABIC_REF_ANNOTATIONS_ARCHIVE",
+                root / "arabic-reference-v4.4-cluster-upload.tar.gz",
+            )
+        )
+        source = ensure_annotations(annotations, archive)
         if not Path(config["audio_root"]).is_dir():
             raise ValueError("Prepared audio directory is absent; configure ARABIC_REF_AUDIO_ROOT")
         if not config["datasets"] or set(config["datasets"]) - set(source["datasets"]):
@@ -130,4 +216,7 @@ def main(argv=None):
 
 
 if __name__ == "__main__":
-    main()
+    try:
+        main()
+    except (ValueError, OSError, tarfile.TarError) as exc:
+        raise SystemExit(f"ERROR: {exc}") from None

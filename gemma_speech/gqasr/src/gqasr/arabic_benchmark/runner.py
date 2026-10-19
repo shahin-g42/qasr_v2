@@ -22,6 +22,9 @@ from .scoring import aggregate
 
 
 def checkpoint_identity(path, backend="gqasr"):
+    if backend in ("hf-qwen", "cohere", "whisper"):
+        from .public_backend import checkpoint_identity as public_identity
+        return public_identity(path, backend)
     if backend == "qasr":
         from .qasr_backend import checkpoint_identity as qasr_identity
         return qasr_identity(path)
@@ -111,9 +114,11 @@ def report(output, expected, identity, elapsed, attempts):
         write_rows(Path(output) / f"predictions-{mode}.jsonl", rows)
         scores[mode] = aggregate(rows, full_suite=full_suite)
         diagnostics[mode] = {
-            "utterances": len(rows), "generation_limit_hits": sum(r["generation_limit_hit"] for r in rows),
+            "utterances": len(rows), "generation_limit_hits": sum(r.get("generation_limit_hit") is True for r in rows),
             "empty_outputs": sum(not r["pred_text"].strip() for r in rows),
-            "generated_tokens": sum(r["generated_tokens"] for r in rows),
+            "generated_tokens": sum(r.get("generated_tokens") or 0 for r in rows),
+            "generation_limit_unobservable": sum(r.get("generation_limit_hit") is None for r in rows),
+            "generated_tokens_unobservable": sum(r.get("generated_tokens") is None for r in rows),
             "language_header_mismatch": sum(
                 r.get("predicted_language") not in (None, "Arabic") for r in rows
             ) if mode == "auto" else None,
@@ -259,8 +264,8 @@ def _run(cfg, datasets, gpu_ids, workers_per_gpu, batch_size, limit, output, mod
         raise ValueError(f"Prepared manifests omit {len(missing_prepared)} selected official samples")
     expected = [prepared_by_id[row["id"]] for row in expected]
     backend = cfg.get("backend", "gqasr")
-    if backend not in ("gqasr", "qasr"):
-        raise ValueError("backend must be gqasr or qasr")
+    if backend not in ("gqasr", "qasr", "hf-qwen", "cohere", "whisper"):
+        raise ValueError("Unsupported Arabic benchmark backend")
     identities = checkpoint_identity(cfg["checkpoint"], backend)
     identity = {"version": 1, "backend": backend, "catalog": CATALOG, "checkpoint": identities,
                 "selection": fingerprint(expected), "modes": modes, "precision": cfg.get("precision", "bf16"),
@@ -271,6 +276,8 @@ def _run(cfg, datasets, gpu_ids, workers_per_gpu, batch_size, limit, output, mod
                             "transformers": importlib.metadata.version("transformers"),
                             "rapidfuzz": importlib.metadata.version("rapidfuzz")},
                 "implementation": backend_implementation_identity(backend)}
+    if cfg.get("public_model"):
+        identity["public_model"] = cfg["public_model"]
     run_id = fingerprint(identity)
     path = output / "run.json"
     if path.exists() and json.loads(path.read_text()) != identity:

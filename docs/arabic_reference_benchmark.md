@@ -759,11 +759,20 @@ On the cluster, from the `codex/arabic-reference-pilot` checkout:
 
 ```bash
 git pull --ff-only origin codex/arabic-reference-pilot
+# Install into the same interpreter used by the publishing script.
+"${PYTHON:-python3}" -m pip install 'pyarrow>=21' 'rapidfuzz>=3.9,<4' huggingface-hub
 export HF_SPACE_REPO="shahink/asr_ideal_leaderboard"  # independently configurable
 export HF_SPACE_TITLE="Arabic ASR Benchmark"
 export HF_DATASET_REPO="audarai/asr_ideal_bench"
 bash scripts/corpus/publish_arabic_leaderboard.sh all
 ```
+
+`PYTHON` selects the interpreter (default: `python3`). To reuse the cluster environment,
+set `PYTHON=/path/to/venv/bin/python`. The script checks `pyarrow` (Parquet) and
+`rapidfuzz` (WER/CER) for `build`/`all`, and `huggingface-hub` for Hub stages, before
+reading bundles or contacting the Hub. Missing dependencies produce an install command
+for that exact interpreter. For a full project installation, these build dependencies
+are also available through `pip install -e '.[leaderboard]'`.
 
 The script reads the exact dataset commit from
 `$ARABIC_REF_ROOT/publication-v4.5-audio-001.json`. Override
@@ -799,3 +808,116 @@ subtracted across different panels. Missing denominators and incomplete six-data
 macros remain null, not zero. CSV rates are fractions; the UI displays percentages and
 paired deltas in percentage points. New model submissions use the general leaderboard
 CLI's `--prediction NAME=PATH`, with exact frozen IDs, references and audio identity checks.
+
+### Public-model benchmarks and automatic leaderboard refresh
+
+`scripts/corpus/benchmark_public_asr.sh` reuses the frozen plan, enhanced annotation
+bundle, prepared audio and completed QASR/GQASR predictions. It adds these baselines:
+
+| Selection name | Official checkpoint | Decoding |
+|---|---|---|
+| `qwen3-asr-0.6b` | [Qwen/Qwen3-ASR-0.6B-hf](https://huggingface.co/Qwen/Qwen3-ASR-0.6B-hf) | Arabic hint, greedy |
+| `qwen3-asr-1.7b` | [Qwen/Qwen3-ASR-1.7B-hf](https://huggingface.co/Qwen/Qwen3-ASR-1.7B-hf) | Arabic hint, greedy |
+| `cohere-arabic` | [CohereLabs/cohere-transcribe-arabic-07-2026](https://huggingface.co/CohereLabs/cohere-transcribe-arabic-07-2026) | Arabic hint, punctuation, greedy |
+| `cohere-multilingual` | [CohereLabs/cohere-transcribe-03-2026](https://huggingface.co/CohereLabs/cohere-transcribe-03-2026) | Arabic hint, punctuation, greedy |
+| `whisper-large-v3` | [openai/whisper-large-v3](https://huggingface.co/openai/whisper-large-v3) | Arabic transcription, greedy, overlapping 30-second chunks |
+
+Use an allocated eight-GPU node and the inference environment, with native
+`transformers==5.19.0`, CUDA-enabled PyTorch, NumPy, librosa, soundfile, PyYAML,
+pyarrow, rapidfuzz and huggingface-hub. The older training environment is not suitable.
+The native Qwen checkpoints avoid requiring a separate Qwen SDK/vLLM environment.
+Cohere checkpoints are gated: the authenticated cluster account needs access on their
+model pages before download. No corrector server is used by this route.
+
+If that environment is not already available, run this once from the checkout using
+the node's existing CUDA-enabled Python. This keeps inference dependencies separate
+from the training project's Transformers pin while reusing its installed PyTorch:
+
+```bash
+python3 -m venv --system-site-packages .venv-public-asr
+.venv-public-asr/bin/python -m pip install -r scripts/corpus/public_asr_requirements.txt
+export PYTHON="$PWD/.venv-public-asr/bin/python"
+```
+
+```bash
+cd /lustrefs/shared/shahin.konadath/workspace/train/stt/v2/qasr-reference-pilot
+git pull --ff-only origin codex/arabic-reference-pilot
+# Activate the benchmark environment first, or export PYTHON=/path/to/its/bin/python.
+export ARABIC_REF_ROOT=/lustrefs/shared/shahin.konadath/workspace/train/stt/v2/qasr_v2/verification/arabic-reference-v4.1-full
+export HF_DATASET_REPO=audarai/asr_ideal_bench
+export HF_SPACE_REPO=shahink/asr_ideal_leaderboard
+export PUBLIC_GPUS=0,1,2,3,4,5,6,7
+export PUBLIC_WORKERS_PER_GPU=1
+export PUBLIC_BATCH_SIZE=16
+export PUBLIC_MODELS="qwen3-asr-0.6b qwen3-asr-1.7b cohere-arabic cohere-multilingual whisper-large-v3"
+export ARABIC_REF_BOARD_RELEASE_ID=v4.7-public-001
+export ARABIC_REF_SPACE_BUNDLE="$ARABIC_REF_ROOT/leaderboard-$ARABIC_REF_BOARD_RELEASE_ID"
+bash scripts/corpus/benchmark_public_asr.sh all
+```
+
+Alternatively omit the explicit bundle variable and let the launcher derive it from
+the root and release ID. Clear an inherited `ARABIC_REF_SPACE_BUNDLE` if it points to
+an earlier immutable leaderboard. Use a new board release ID when changing its inputs.
+
+`all` checks the runtime and all 46,757 audio hashes, downloads immutable checkpoint
+revisions, and runs each model sequentially across the eight GPUs. Each model first
+gets a 192-clip duration-stratified smoke run including the longest clip from every
+dataset, then the full run. Successful tasks resume after interruption. Independent
+`PUBLIC_*` settings avoid inheriting the earlier QASR `WORKERS_PER_GPU=8` setting.
+One replica per H100 and batches of 16 are the starting configuration; this is GPU
+inference, so the earlier 90 annotation workers are not reused here. OOM batches split
+without dropping clips. Runtime/model/code changes require a fresh `PUBLIC_BENCH_ROOT`.
+
+After all selected full runs complete, the script exports checksummed `submissions.json`,
+scores all models against both original and enhanced references, rebuilds the static
+leaderboard, publishes it privately and verifies the resulting Hub commit. It retains
+QASR/GQASR alongside the new entries. Model links, exact revisions, runtime and decoding
+details appear in provenance. Neither smoke results nor incomplete full runs enter the
+ranking. Empty model predictions count as errors; they are not filtered out. Each
+submission must match every frozen ID, reference, duration and prepared-audio hash.
+
+Defaults: model cache `$ARABIC_REF_ROOT/public-models`, inference outputs
+`$ARABIC_REF_ROOT/public-benchmarks-v1/<model>/{smoke,full}`, Space bundle
+`$ARABIC_REF_ROOT/leaderboard-v4.7-public-001`. Override `PUBLIC_MODEL_CACHE`,
+`PUBLIC_BENCH_ROOT` or `PUBLIC_PREPARED_WORK` independently. QASR/GQASR are rescored
+from the plan's saved predictions; no additional GPU inference for them is necessary.
+
+Stages can also run separately:
+
+```bash
+bash scripts/corpus/benchmark_public_asr.sh download # pin and download models only
+bash scripts/corpus/benchmark_public_asr.sh check    # GPU/runtime/audio/checkpoint checks
+bash scripts/corpus/benchmark_public_asr.sh smoke    # 32 clips per dataset per model
+bash scripts/corpus/benchmark_public_asr.sh run      # full inference, resumable
+bash scripts/corpus/benchmark_public_asr.sh score    # offline board build from completed runs
+bash scripts/corpus/benchmark_public_asr.sh publish  # build, publish privately, verify
+```
+
+To rescore only the existing QASR/GQASR outputs on CPU, use `rescore` (no model download,
+audio read or CUDA needed). It defaults to a separate `v4.7-existing-001` board. A compact
+comparison report is written beside the immutable Space bundle. On a Mac with no local
+publication receipt, supply the published dataset SHA explicitly:
+
+```bash
+export ARABIC_REF_ROOT=/Users/shahin.konadath/Projects/codex/qasr/verification/arabic-reference-v4.1-full
+export HF_DATASET_REVISION=421d9a6beb31a5adb3a56ddf70967ef18b2efb36
+unset ARABIC_REF_SPACE_BUNDLE ARABIC_REF_BOARD_RELEASE_ID
+bash scripts/corpus/benchmark_public_asr.sh rescore
+```
+
+Only audio and the fixed Arabic language/task hint reach the new models. Original
+references, ideal drafts and other models' predictions never enter their prompts.
+Qwen output parsing preserves repetitions instead of applying the processor's optional
+repetition repair. Cohere uses its native audio chunk boundaries and reassembles all
+chunks, including empty outputs. Whisper uses the documented pipeline with 30-second
+chunks and five-second strides; this is a chunked baseline, not its alternative sequential
+long-form strategy. Its pipeline hides per-chunk token counts, so generation-limit
+diagnostics are explicitly unavailable. Token budgets are 768 for Qwen/Cohere and 440
+for Whisper to fit its decoder context. These protocols are recorded per run.
+
+Enhanced scores still use the same 46,751 non-speculative `ideal_text_draft` values;
+the six guessed transcripts remain excluded. Both paired tracks use identical clips
+and normalization, with strict WER/CER available separately. Candidate-assisted drafts
+may favor QASR/GQASR, which participated in their creation. Adding independent public
+models does not turn those drafts into independently verified ground truth; the
+original-reference leaderboard remains available alongside the enhanced comparison.

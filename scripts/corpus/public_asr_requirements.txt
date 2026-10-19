@@ -1,0 +1,10 @@
+# Install in a separate inference venv inheriting the node's CUDA PyTorch.
+# Do not install the training project's conflicting Transformers requirements here.
+transformers==5.19.0
+numpy>=1.26
+librosa>=0.10.2
+soundfile>=0.12
+PyYAML>=6
+pyarrow>=21
+rapidfuzz>=3.9,<4
+huggingface-hub>=1.5

@@ -4,10 +4,11 @@ const node = id => document.getElementById(id);
 const make = (tag, text, cls) => { const el = document.createElement(tag); if (text !== undefined) el.textContent = text; if (cls) el.className = cls; return el; };
 const count = n => n.toLocaleString('en-US');
 const pct = n => Number.isFinite(n) ? (100 * n).toFixed(2) + '%' : '—';
-const displayModel = name => ['qasr', 'gqasr'].includes(name) ? name.toUpperCase() : name;
+const displayModel = name => data.model_details?.[name]?.display_name || (['qasr', 'gqasr'].includes(name) ? name.toUpperCase() : name);
 const names = {sada:'SADA', commonvoice:'Common Voice', masc_clean:'MASC · Clean', masc_noisy:'MASC · Noisy', mgb2:'MGB-2', casablanca:'Casablanca'};
-const palette = ['#256555', '#a57b58', '#6b73a3', '#996082', '#527c91', '#7c7c38'];
-const modelColor = name => name === 'qasr' ? palette[0] : name === 'gqasr' ? palette[1] : palette[(data.models.indexOf(name) + 2) % palette.length];
+const palette = ['#256555', '#a57b58', '#6b73a3', '#996082', '#527c91', '#7c7c38', '#ac604e', '#476f9c'];
+const colorOrder = ['qasr', 'gqasr', ...data.models.filter(name => !['qasr', 'gqasr'].includes(name))];
+const modelColor = name => palette[colorOrder.indexOf(name) % palette.length];
 const option = (select, text, value) => { const el = make('option', text); el.value = value; select.append(el); };
 const dot = model => { const el = make('span', undefined, 'dot'); el.style.backgroundColor = modelColor(model); el.setAttribute('aria-hidden', 'true'); return el; };
 node('selected').textContent = count(data.selected_clips);
@@ -24,7 +25,7 @@ for (const model of data.models) { const label = make('span'); label.append(dot(
 for (const text of data.limitations) node('limitations').append(make('li', text));
 node('draft-note').textContent = data.annotation_source ? `${count(data.annotation_source.eligible_clips)} completed, non-speculative drafts are available. ${count(data.annotation_source.excluded_clips)} clips are excluded from the enhanced comparison.` : 'No enhanced draft bundle has been attached to this release.';
 node('review-note').textContent = `${count(data.verified_clips)} of ${count(data.selected_clips)} selected clips have listening attestations. ${data.verified_clips ? 'These are reviewer attestations, not an independent audit.' : 'Audio-reviewed reference scores are not yet available.'}`;
-node('provenance').textContent = JSON.stringify({release_id:data.release_id, dataset_release:data.dataset_release, annotation_source:data.annotation_source, manifest_digest:data.manifest_digest, policy_sha256:data.policy_sha256, scorer_sha256:data.scorer_sha256, builder_sha256:data.builder_sha256, reviewed_manifest_sha256:data.reviewed_manifest_sha256, prediction_sources:data.prediction_sources}, null, 2);
+node('provenance').textContent = JSON.stringify({release_id:data.release_id, dataset_release:data.dataset_release, annotation_source:data.annotation_source, manifest_digest:data.manifest_digest, policy_sha256:data.policy_sha256, scorer_sha256:data.scorer_sha256, builder_sha256:data.builder_sha256, reviewed_manifest_sha256:data.reviewed_manifest_sha256, prediction_sources:data.prediction_sources, model_details:data.model_details, submission_manifest_sha256:data.submission_manifest_sha256}, null, 2);
 node('example-sampling').textContent = data.example_sampling + ' Text preview only; listen to the source audio before judging accuracy.';
 
 function render(updateTracks = false) {
@@ -54,7 +55,7 @@ function render(updateTracks = false) {
     last = r[metric];
     const tr = make('tr', undefined, valid && rank === 1 ? 'top-row' : '');
     const rankCell = make('td', undefined, 'rank-cell'); rankCell.append(make('span', valid ? String(rank).padStart(2, '0') : '—', valid && rank === 1 ? 'rank-badge' : '')); tr.append(rankCell);
-    const model = make('td', undefined, 'model-cell'); const name = make('div', undefined, 'model-name'); name.append(dot(r.model), make('span', displayModel(r.model))); model.append(name, make('div', 'Forced-Arabic evaluation', 'model-caption')); tr.append(model);
+    const model = make('td', undefined, 'model-cell'); const name = make('div', undefined, 'model-name'); const modelLabel = make(data.model_details?.[r.model]?.model_url ? 'a' : 'span', displayModel(r.model)); if (modelLabel.tagName === 'A') { modelLabel.href = data.model_details[r.model].model_url; modelLabel.target = '_blank'; modelLabel.rel = 'noopener noreferrer'; } name.append(dot(r.model), modelLabel); model.append(name, make('div', 'Arabic language hint', 'model-caption')); tr.append(model);
     for (const key of ['wer', 'cer']) { const td = make('td', undefined, 'num'); td.append(make('span', pct(r[key]), `rate ${metric === key ? 'main-rate' : ''} ${Number.isFinite(r[key]) ? '' : 'unavailable'}`)); tr.append(td); }
     const base = panel.scores.find(s => s.model === r.model && s.dataset === ds && s.track === track.replace(/^draft_/, 'original_'));
     const delta = draft && Number.isFinite(r[metric]) && Number.isFinite(base?.[metric]) ? (r[metric] - base[metric]) * 100 : null;
@@ -71,7 +72,7 @@ function render(updateTracks = false) {
     const max = Math.max(.01, ...scores.map(r => r[metric] || 0));
     for (const score of scores) {
       const row = make('div', undefined, 'bar-row'); const trackEl = make('div', undefined, 'bar-track'); const bar = make('div', undefined, 'bar'); bar.style.backgroundColor = modelColor(score.model); bar.style.width = Number.isFinite(score[metric]) ? `${Math.min(100, 100 * score[metric] / max)}%` : '0'; trackEl.append(bar);
-      row.append(make('span', displayModel(score.model)), trackEl, make('strong', pct(score[metric]))); card.append(row);
+      const modelLabel = make('span', displayModel(score.model)); modelLabel.title = displayModel(score.model); row.append(modelLabel, trackEl, make('strong', pct(score[metric]))); card.append(row);
     }
     if (!scores.length) card.append(make('p', 'No eligible clips', 'small muted'));
     card.onclick = () => { node('dataset').value = dataset; render(); };

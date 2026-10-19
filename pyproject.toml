@@ -33,6 +33,7 @@ dependencies = [
 # same install, so a missing extra fails with this command rather than a bare
 # ImportError mid-download.
 datasets = ["datasets>=3.0", "huggingface-hub[hf_transfer]"]
+leaderboard = ["pyarrow>=21", "rapidfuzz>=3.9,<4"]
 deepspeed = ["deepspeed>=0.18.0"]
 dev = ["pytest>=8.3.0", "ruff>=0.16"]
 streaming = ["fastapi>=0.115.0", "uvicorn[standard]>=0.30.0"]

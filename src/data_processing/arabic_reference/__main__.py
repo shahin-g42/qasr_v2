@@ -98,6 +98,9 @@ def main(argv=None):
             p.add_argument("--dataset-repo", help="Published audio dataset OWNER/NAME")
             p.add_argument("--dataset-revision", help="Immutable published dataset commit")
             p.add_argument(
+                "--submissions", type=Path, help="Complete public benchmark submissions manifest"
+            )
+            p.add_argument(
                 "--prediction",
                 action="append",
                 default=[],
@@ -215,6 +218,7 @@ def main(argv=None):
                 annotations=args.annotations,
                 dataset_repo=args.dataset_repo,
                 dataset_revision=args.dataset_revision,
+                submissions=args.submissions,
             )
         elif args.command == "package-audio":
             from .audio_release import package_audio

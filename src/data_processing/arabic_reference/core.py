@@ -224,14 +224,16 @@ def binding(row):
     return digest({k: v for k, v in row.items() if k != "binding"})
 
 
-def validate_source(row):
+def validate_source(row, *, allow_empty_prediction=False):
     ds = row.get("dataset")
     if ds not in DATASETS or not re.fullmatch(re.escape(str(ds)) + r":\d{6}", row.get("id", "")):
         raise ValueError(f"Invalid benchmark ID: {row.get('id')}")
     if type(row.get("ordinal")) is not int or int(row["id"].split(":")[1]) != row["ordinal"]:
         raise ValueError(f"Ordinal mismatch: {row['id']}")
     for key in ("text", "pred_text", "audio", "audio_sha256", "preparation_id"):
-        if not isinstance(row.get(key), str) or not row[key].strip():
+        if not isinstance(row.get(key), str) or (
+            not row[key].strip() and not (allow_empty_prediction and key == "pred_text")
+        ):
             raise ValueError(f"{row['id']}: missing {key}")
     if not re.fullmatch(r"[0-9a-f]{64}", row["audio_sha256"]):
         raise ValueError("Invalid audio SHA256")

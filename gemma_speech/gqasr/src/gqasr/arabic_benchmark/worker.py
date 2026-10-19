@@ -109,6 +109,9 @@ def worker_main(slot, gpu, checkpoint, settings, jobs, events, start_event, load
                 if settings.get("backend", "gqasr") == "qasr":
                     from .qasr_backend import QASRRecognizer
                     recognizer_class = QASRRecognizer
+                if settings.get("backend") in ("hf-qwen", "cohere", "whisper"):
+                    from .public_backend import recognizer_class as public_class
+                    recognizer_class = public_class(settings["backend"])
                 recognizer = recognizer_class(checkpoint, "cpu" if gpu == "cpu" else "cuda:0",
                                         settings["precision"], settings["memory_fraction"])
             torch = recognizer.torch

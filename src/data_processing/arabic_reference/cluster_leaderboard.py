@@ -3,8 +3,11 @@
 from __future__ import annotations
 
 import argparse
+import importlib
 import json
 import os
+import shlex
+import sys
 from pathlib import Path
 
 from .cluster_release import ensure_annotations, verify_published_bundle
@@ -12,6 +15,29 @@ from .core import digest, sha256, write_json
 from .leaderboard import build_leaderboard
 from .leaderboard_inputs import dataset_pin
 from .release import publish_bundle, validate_bundle
+
+
+def require_dependencies(stage):
+    """Check the selected interpreter before reading bundles or contacting the Hub."""
+    required = {}
+    if stage in {"build", "all"}:
+        required.update({"pyarrow.parquet": "pyarrow", "rapidfuzz.distance": "rapidfuzz"})
+    if stage in {"check", "publish", "verify", "all"}:
+        required["huggingface_hub"] = "huggingface-hub"
+    missing, errors = [], []
+    for module, package in required.items():
+        try:
+            importlib.import_module(module)
+        except ImportError as exc:
+            missing.append(package)
+            errors.append(f"{package}: {exc}")
+    if missing:
+        command = shlex.join([sys.executable, "-m", "pip", "install", *missing])
+        raise ValueError(
+            f"Leaderboard dependencies unavailable in {sys.executable} "
+            f"({'; '.join(errors)}).\nRun:\n  {command}\n"
+            "Alternatively, set PYTHON to the Python executable in your prepared environment."
+        )
 
 
 def verify_dataset_binding(repo_id, revision, annotations, api, *, download=None):
@@ -65,6 +91,7 @@ def main(argv=None):
         "stage", choices=["build", "check", "publish", "verify", "all"], nargs="?", default="all"
     )
     args = parser.parse_args(argv)
+    require_dependencies(args.stage)
     root = Path(os.environ["ARABIC_REF_ROOT"])
     output = Path(os.environ["ARABIC_REF_SPACE_BUNDLE"])
     annotations = Path(os.environ["ARABIC_REF_ANNOTATIONS_BUNDLE"])
@@ -72,6 +99,7 @@ def main(argv=None):
     revision = os.environ.get("HF_DATASET_REVISION", "")
     dataset_repo = os.environ["HF_DATASET_REPO"]
     release_id = os.environ["ARABIC_REF_BOARD_RELEASE_ID"]
+    submissions = os.environ.get("ARABIC_REF_SUBMISSIONS") or None
     receipt = root / f"publication-{release_id}.json"
     dataset_receipt = Path(os.environ["ARABIC_REF_DATASET_RECEIPT"])
     if dataset_receipt.exists():
@@ -117,6 +145,7 @@ def main(argv=None):
             release_id=release_id,
             dataset_repo=dataset_repo,
             dataset_revision=revision,
+            submissions=submissions,
         )
         print(json.dumps(result, indent=2))
     if args.stage in {"publish", "verify", "all"}:
@@ -126,6 +155,8 @@ def main(argv=None):
             or bundle.get("dataset_release") != dataset_pin(dataset_repo, revision)
             or bundle.get("annotations_bundle_sha256") != binding["annotations_bundle_sha256"]
             or bundle["release_id"] != release_id
+            or bundle.get("submission_manifest_sha256")
+            != (sha256(submissions) if submissions else None)
         ):
             raise ValueError(
                 "Space bundle does not match this dataset or release; build a new version"

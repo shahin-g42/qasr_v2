@@ -3356,6 +3356,57 @@ def test_leaderboard_publication_checks_dataset_revision_and_annotation_binding(
         )
 
 
+@pytest.mark.parametrize("stage", ["build", "all"])
+def test_cluster_leaderboard_missing_dependencies_fail_before_io(stage, monkeypatch):
+    import shlex
+
+    from data_processing.arabic_reference import cluster_leaderboard
+
+    def unavailable(name):
+        if name in {"pyarrow.parquet", "rapidfuzz.distance"}:
+            raise ModuleNotFoundError(f"No module named '{name.split('.')[0]}'")
+        return object()
+
+    def unexpected_io(*args, **kwargs):
+        pytest.fail("Missing build dependencies must fail before file or Hub access")
+
+    monkeypatch.setattr(cluster_leaderboard.importlib, "import_module", unavailable)
+    monkeypatch.setattr(cluster_leaderboard.sys, "executable", "/test env/bin/python")
+    monkeypatch.setattr(cluster_leaderboard, "ensure_annotations", unexpected_io)
+    monkeypatch.setattr(cluster_leaderboard, "verify_dataset_binding", unexpected_io)
+    monkeypatch.delenv("ARABIC_REF_ROOT", raising=False)
+    with pytest.raises(ValueError, match="Leaderboard dependencies unavailable") as exc:
+        cluster_leaderboard.main([stage])
+    command = str(exc.value).split("Run:\n", 1)[1].splitlines()[0]
+    assert shlex.split(command) == [
+        "/test env/bin/python", "-m", "pip", "install", "pyarrow", "rapidfuzz"
+    ]
+
+
+@pytest.mark.parametrize("stage", ["check", "publish", "verify"])
+def test_cluster_leaderboard_hub_stages_do_not_require_build_dependencies(stage, monkeypatch):
+    from data_processing.arabic_reference import cluster_leaderboard
+
+    def hub_only(name):
+        if name != "huggingface_hub":
+            raise ModuleNotFoundError(name)
+        return object()
+
+    monkeypatch.setattr(cluster_leaderboard.importlib, "import_module", hub_only)
+    cluster_leaderboard.require_dependencies(stage)
+
+
+def test_cluster_leaderboard_missing_hub_dependency_names_install_package(monkeypatch):
+    from data_processing.arabic_reference import cluster_leaderboard
+
+    def unavailable(name):
+        raise ModuleNotFoundError(name)
+
+    monkeypatch.setattr(cluster_leaderboard.importlib, "import_module", unavailable)
+    with pytest.raises(ValueError, match="pip install huggingface-hub"):
+        cluster_leaderboard.require_dependencies("check")
+
+
 def test_leaderboard_cluster_build_uses_configurable_space_and_dataset_without_network(
     board_annotations, tmp_path
 ):

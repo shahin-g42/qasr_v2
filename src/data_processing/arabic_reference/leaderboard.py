@@ -42,7 +42,7 @@ def additional_predictions(rows, predictions):
         before = sha256(path)
         seen = set()
         for prediction in read_jsonl(path):
-            validate_source(prediction)
+            validate_source(prediction, allow_empty_prediction=True)
             identifier = prediction["id"]
             if identifier not in by_id or identifier in seen:
                 raise ValueError(
@@ -118,6 +118,7 @@ def build_leaderboard(
     annotations=None,
     dataset_repo=None,
     dataset_revision=None,
+    submissions=None,
 ):
     from gqasr.arabic_benchmark import scoring
 
@@ -131,6 +132,12 @@ def build_leaderboard(
         raise ValueError("Space title must be a nonempty single line of at most 120 characters")
     title = title.strip()
     plan, rows = load_plan(plan_root)
+    model_details, submission_sha256 = {}, None
+    if submissions:
+        from .submissions import read_submissions
+
+        public_predictions, model_details, submission_sha256 = read_submissions(submissions, plan)
+        predictions = [*predictions, *public_predictions]
     pin = dataset_pin(dataset_repo, dataset_revision)
     drafts, annotation_rows, annotation_source = (
         annotation_drafts(annotations, plan, rows) if annotations else ([], [], None)
@@ -204,6 +211,8 @@ def build_leaderboard(
         "models": sorted(
             {c["name"] for r in rows for c in [*r["candidates"], *additions.get(r["id"], [])]}
         ),
+        "model_details": model_details,
+        "submission_manifest_sha256": submission_sha256,
         "dataset_summary": [
             {
                 "dataset": ds,
@@ -311,5 +320,6 @@ The page records the immutable dataset revision, annotation bundle, prediction s
                 "annotations_bundle_sha256": annotation_source["bundle_sha256"]
                 if annotation_source
                 else None,
+                "submission_manifest_sha256": submission_sha256,
             },
         )

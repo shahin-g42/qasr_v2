@@ -1,0 +1,7 @@
+{
+  "qwen3-asr-0.6b": {"repository": "Qwen/Qwen3-ASR-0.6B-hf", "backend": "hf-qwen", "display_name": "Qwen3-ASR 0.6B", "max_new_tokens": 768},
+  "qwen3-asr-1.7b": {"repository": "Qwen/Qwen3-ASR-1.7B-hf", "backend": "hf-qwen", "display_name": "Qwen3-ASR 1.7B", "max_new_tokens": 768},
+  "cohere-arabic": {"repository": "CohereLabs/cohere-transcribe-arabic-07-2026", "backend": "cohere", "display_name": "Cohere Arabic 2B", "max_new_tokens": 768},
+  "cohere-multilingual": {"repository": "CohereLabs/cohere-transcribe-03-2026", "backend": "cohere", "display_name": "Cohere Multilingual 2B", "max_new_tokens": 768},
+  "whisper-large-v3": {"repository": "openai/whisper-large-v3", "backend": "whisper", "display_name": "Whisper Large v3", "max_new_tokens": 440}
+}

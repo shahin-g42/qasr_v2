@@ -112,6 +112,9 @@ def public_corrector(identity):
     }
     if result["reported_checkpoint"] and str(result["reported_checkpoint"]).startswith("/"):
         result["reported_checkpoint"] = "local checkpoint; see private run provenance"
+    if identity.get("processing_mode"):
+        result["processing_mode"] = identity["processing_mode"]
+        result["llm_requests"] = identity["llm_requests"]
     if identity.get("recovery_version"):
         result.update(
             {

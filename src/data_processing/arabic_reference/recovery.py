@@ -8,7 +8,7 @@ from pathlib import Path
 
 from .core import digest
 
-RECOVERY_VERSION = "arabic-reference-recovery-v1"
+RECOVERY_VERSION = "arabic-reference-recovery-v2"
 RECOVERY_INSTRUCTION = """Recovery output requirements (the linguistic policy still applies):
 Return only the final JSON decision, never a debate, self-correction monologue, or repeated
 alternatives. Preserve full transcript text; shorten explanations, never the utterance.
@@ -24,22 +24,43 @@ JSON escaping inside strings. Do not invent speech or set null merely to avoid a
 """
 
 
-def validate_recovery_metadata(value):
-    """Reject runaway explanations without trimming or accepting partial transcripts."""
-    reasons = [value["reason"], *value["issue_notes"].values()]
-    reasons.extend(change["reason"] for change in value["changes"])
-    uncertainties = value["uncertainties"]
-    if (
-        len(value["changes"]) > 128
-        or len(uncertainties) > 8
-        or any(len(s) > 360 for s in reasons)
-        or any(len(s) > 480 for s in uncertainties)
-        or sum(map(len, reasons + uncertainties)) > 6000
-    ):
-        raise ValueError("Recovery explanations exceed limits; give concise final decisions")
+def recovery_metadata_warnings(value):
+    """Prose budgets guide generation; they do not determine transcript validity."""
+    fields = [("reason", value["reason"], 360)]
+    fields += [(f"issue_notes.{k}", v, 360) for k, v in value["issue_notes"].items()]
+    fields += [(f"changes[{i}].reason", c["reason"], 360) for i, c in enumerate(value["changes"])]
+    fields += [(f"uncertainties[{i}]", v, 480) for i, v in enumerate(value["uncertainties"])]
+    exceeded = [
+        {"field": key, "characters": len(text), "preferred_limit": limit}
+        for key, text, limit in fields
+        if len(text) > limit
+    ]
+    total = sum(len(text) for _, text, _ in fields)
+    if total > 6000:
+        exceeded.append({"field": "all_explanations", "characters": total, "preferred_limit": 6000})
+    for field, limit in (("changes", 128), ("uncertainties", 8)):
+        if len(value[field]) > limit:
+            exceeded.append({"field": field, "items": len(value[field]), "preferred_limit": limit})
+    result = []
+    if exceeded:
+        result.append(
+            {
+                "type": "metadata_warning",
+                "code": "verbose_explanation",
+                "reason": "Explanation exceeds the preferred prose budget; complete draft retained unverified with all original wording and notes.",
+                "exceeded": exceeded,
+            }
+        )
     edits = [(c["kind"], c["before"], c["after"]) for c in value["changes"]]
     if any(n > 3 for n in Counter(edits).values()):
-        raise ValueError("Recovery repeats the same edit; consolidate its explanation")
+        result.append(
+            {
+                "type": "metadata_warning",
+                "code": "repeated_edit_explanation",
+                "reason": "The model repeats an edit explanation; inspect its evidence. No transcript text was changed.",
+            }
+        )
+    return result
 
 
 def source_index(source, plan, all_rows):

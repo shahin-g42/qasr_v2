@@ -2164,7 +2164,7 @@ def test_recovery_only_requests_failures_and_exports_complete_unchanged_rows(
         propose(plan, output, **{**kwargs, "max_tokens": 6144})
 
 
-@pytest.mark.parametrize("failure", ["length", "json", "verbose"])
+@pytest.mark.parametrize("failure", ["length", "json"])
 def test_recovery_retries_fresh_context_and_retains_each_attempt(
     plan, tmp_path, server, mixed_recovery_source, failure
 ):
@@ -2177,8 +2177,6 @@ def test_recovery_retries_fresh_context_and_retains_each_attempt(
         state["fail"] = first and failure == "length"
         if first and failure == "json":
             return '{"reason":"bad JSON'
-        if first and failure == "verbose":
-            value["reason"] = "Repeated explanation. " * 100
         return value
 
     state["reply"] = reply
@@ -2350,3 +2348,195 @@ def test_recovered_dataset_preserves_both_run_origins_and_null_final_columns(
     assert {r["proposal_run_sha256"] for r in rows} == {r["run_sha256"] for r in lineage}
     assert lineage[0]["source_run_sha256"] == lineage[1]["run_sha256"]
     assert str(tmp_path) not in json.dumps(provenance)
+
+
+def test_verbose_metadata_is_a_warning_without_changing_transcripts():
+    from data_processing.arabic_reference.recovery import recovery_metadata_warnings
+
+    value = proposal_value()
+    value["reason"] = "A complete but excessively detailed explanation. " * 20
+    before = json.dumps(value, ensure_ascii=False)
+    warnings = recovery_metadata_warnings(value)
+    assert warnings[0]["code"] == "verbose_explanation"
+    assert warnings[0]["exceeded"][0]["field"] == "reason"
+    assert json.dumps(value, ensure_ascii=False) == before
+
+
+def test_recovery_keeps_complete_verbose_reply_without_wasting_a_retry(
+    plan, tmp_path, server, mixed_recovery_source
+):
+    url, state = server
+    source, _ = mixed_recovery_source
+
+    def reply(body):
+        value = proposal_value(payload=json.loads(body["messages"][1]["content"]))
+        value["reason"] = "Detailed explanation. " * 30
+        return value
+
+    state["reply"] = reply
+    output = tmp_path / "recovered"
+    result = propose(
+        plan, output, url=url, model="corrector", repair_from=source, emit=lambda _: None
+    )
+    assert result["counts"] == {"proposed": 5, "unresolved": 1}
+    assert len(state["requests"]) == 1
+    record = next(r for r in read_jsonl(output / "proposals.jsonl") if "recovery_source" in r)
+    assert record["proposal"]["reason"] == "Detailed explanation. " * 30
+    assert any(
+        w.get("code") == "verbose_explanation"
+        for w in record["proposal_checks"]["metadata_warnings"]
+    )
+
+
+@pytest.fixture
+def saved_reply_source(plan, mixed_recovery_source):
+    from data_processing.arabic_reference.core import write_json
+    from data_processing.arabic_reference.runtime import record_path
+
+    source, _ = mixed_recovery_source
+    records = list(read_jsonl(source / "proposals.jsonl"))
+    failed = next(r for r in records if r["status"] == "failed")
+    row = next(r for r in load_plan(plan)[1] if r["id"] == failed["id"])
+    value = proposal_value(row=row)
+    value["reason"] = "Complete saved explanation. " * 20
+    raw = json.dumps(value, ensure_ascii=False)
+    failed["attempts"] = [
+        {
+            "number": 1,
+            "raw_response": raw,
+            "finish_reason": "stop",
+            "usage": {"completion_tokens": 50},
+            "validation_error": "Recovery explanations exceed limits; give concise final decisions",
+        },
+        {
+            "number": 2,
+            "raw_response": '{"reason":"unterminated',
+            "finish_reason": "stop",
+            "usage": {"completion_tokens": 50},
+            "validation_error": "Unterminated string",
+        },
+    ]
+    failed["usage"] = {"completion_tokens": 100}
+    failed["raw_response"] = failed["attempts"][-1]["raw_response"]
+    failed["error"] = "JSONDecodeError: Unterminated string"
+    failed.pop("record_sha256")
+    failed["record_sha256"] = digest(failed)
+    write_json(record_path(source, failed["id"]), failed)
+    write_jsonl(source / "proposals.jsonl", records)
+    return source, records, raw
+
+
+def test_offline_revalidation_recovers_earlier_complete_reply_without_network(
+    plan, tmp_path, saved_reply_source, monkeypatch
+):
+    import shutil
+
+    from data_processing.arabic_reference import runtime
+    from data_processing.arabic_reference.release import export_dataset, load_release_proposals
+    from data_processing.arabic_reference.revalidate import revalidate_saved
+
+    source, originals, raw = saved_reply_source
+    original_hash = sha256(source / "proposals.jsonl")
+
+    def no_network(*args, **kwargs):
+        raise AssertionError("Offline revalidation must never contact a model server")
+
+    monkeypatch.setattr(runtime, "doctor", no_network)
+    monkeypatch.setattr(runtime, "client_for", no_network)
+    # The complete hash-checked aggregate is portable even during a partial records copy.
+    shutil.rmtree(source / "records")
+    output = tmp_path / "offline"
+    summary = revalidate_saved(plan, source, output, emit=lambda _: None)
+    assert summary["counts"] == {"proposed": 5, "unresolved": 1}
+    assert summary["revalidation_counts"] == {"proposed": 1}
+    assert summary["llm_requests"] == summary["verified"] == 0
+    assert sha256(source / "proposals.jsonl") == original_hash
+    metadata, rows = load_plan(plan)
+    records, identity = load_release_proposals(output, metadata, rows)
+    assert identity["initial_cleanup"] == "agreement-rendering-v1"
+    assert len(records) == len(originals)
+    for original in originals:
+        record = records[original["id"]]
+        assert record["ideal_text"] is record["verified_text"] is None
+        if original["status"] != "failed":
+            assert record == original
+        else:
+            assert record["attempts"] == original["attempts"]
+            assert record["raw_response"] == raw
+            assert (
+                record["proposal"]["proposed_ideal_text"] == json.loads(raw)["proposed_ideal_text"]
+            )
+            assert record["saved_response_revalidation"]["selected_attempt"] == 1
+            assert record["saved_response_revalidation"]["attempt_results"][0]["accepted"] is False
+            assert "error" not in record
+    assert (
+        revalidate_saved(plan, source, output, emit=lambda _: None)["counts"] == summary["counts"]
+    )
+    pytest.importorskip("pyarrow")
+    release = tmp_path / "release"
+    export_dataset(plan, release, proposals=output)
+    provenance = json.loads((release / "provenance.json").read_text())
+    assert provenance["corrector"]["processing_mode"] == "saved_response_revalidation"
+    assert provenance["corrector"]["llm_requests"] == 0
+    assert provenance["corrector"]["generation"] is None
+    assert [r["records_in_release"] for r in provenance["corrector_runs"]] == [1, 5]
+
+
+@pytest.mark.parametrize("mutation", ["missing", "duplicate", "changed", "binding"])
+def test_offline_revalidation_rejects_incomplete_or_changed_aggregate(
+    plan, tmp_path, saved_reply_source, mutation
+):
+    from data_processing.arabic_reference.revalidate import revalidate_saved
+
+    source, records, _ = saved_reply_source
+    if mutation == "missing":
+        records.pop()
+    elif mutation == "duplicate":
+        records.append(records[0])
+    elif mutation == "changed":
+        records[0]["raw_response"] = "tampered"
+    else:
+        records[0].pop("record_sha256")
+        records[0]["binding"] = "changed-binding"
+        records[0]["record_sha256"] = digest(records[0])
+    write_jsonl(source / "proposals.jsonl", records)
+    with pytest.raises(ValueError, match=r"incomplete|Changed|duplicate"):
+        revalidate_saved(plan, source, tmp_path / "offline", emit=lambda _: None)
+
+
+def test_offline_revalidation_does_not_salvage_malformed_or_length_limited_replies(
+    plan, tmp_path, saved_reply_source
+):
+    from data_processing.arabic_reference.revalidate import revalidate_saved
+
+    source, records, _ = saved_reply_source
+    failed = next(r for r in records if r["status"] == "failed")
+    # Even syntactically complete text is rejected if the server reported truncation.
+    failed["attempts"][0]["finish_reason"] = "length"
+    failed.pop("record_sha256")
+    failed["record_sha256"] = digest(failed)
+    write_jsonl(source / "proposals.jsonl", records)
+    summary = revalidate_saved(plan, source, tmp_path / "offline", emit=lambda _: None)
+    assert summary["counts"] == {"failed": 1, "unresolved": 1, "proposed": 4}
+    record = next(
+        r for r in read_jsonl(tmp_path / "offline/proposals.jsonl") if r["status"] == "failed"
+    )
+    assert record["saved_response_revalidation"]["selected_attempt"] is None
+    assert "proposal" not in record
+
+
+def test_offline_revalidation_cli_and_inherited_run_chain(
+    plan, tmp_path, saved_reply_source, capsys
+):
+    from data_processing.arabic_reference.__main__ import main
+    from data_processing.arabic_reference.revalidate import revalidate_saved
+
+    source, _, _ = saved_reply_source
+    output = tmp_path / "offline"
+    assert (
+        main(["revalidate", "--plan", str(plan), "--source", str(source), "--output", str(output)])
+        == 0
+    )
+    summary = revalidate_saved(plan, output, tmp_path / "offline-again", emit=lambda _: None)
+    assert summary["targeted_failures"] == 0 and summary["carried_forward"] == 6
+    assert summary["counts"] == {"proposed": 5, "unresolved": 1}

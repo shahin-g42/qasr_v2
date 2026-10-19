@@ -1,7 +1,26 @@
 # Arabic reference benchmark initiative
 
-Status: the v4.1 full correction run completed with 46,341 proposed drafts, 410 failed responses and 6 unresolved clips. A failed-only `repair` stage is available. It carries completed records forward unchanged and preserves the original failed responses and run provenance.
+Status: v4.2 recovered 398 of the original 410 failed responses in 340.644 seconds. The remaining 12 all contain an earlier or final complete saved reply; most were rejected only because of a preferred prose-length budget. Offline `revalidate` now retains those replies as unverified drafts and exposes verbosity as a metadata warning. Linguistic review remains required.
 This is an evaluation-only initiative. Original benchmark references and training labels remain immutable. Full-suite selection, private Parquet releases, a private static leaderboard Space and additional-model scoring are now implemented. They do not mark drafts as reviewed.
+
+## Revalidate saved v4.2 replies without further LLM inference
+
+The supplied v4.2 snapshot contains 46,739 proposed, 12 failed and six unresolved records. Eleven final replies are valid complete JSON with overlong explanations. The last failed record, `masc_noisy:005982`, has a complete second reply with a 367-character rationale; the 360-character preferred limit triggered another retry, whose reply was malformed. The complete earlier reply can be retained without reconstructing the malformed one.
+
+Prose budgets remain in the generation prompt, but exceeding them now creates `metadata_warning` entries instead of discarding complete transcript drafts. Notes are preserved verbatim; no explanation or transcript is silently clipped. Structural validation, rejection of `finish_reason=length`, candidate binding and loop-shaped transcript rejection remain unchanged. `revalidate` selects the latest saved attempt that passes those checks; it never combines pieces from different attempts or sends a new model request.
+
+```bash
+git pull --ff-only origin codex/arabic-reference-pilot
+export ARABIC_REF_SOURCE_REPO=/lustrefs/shared/shahin.konadath/workspace/train/stt/v2/qasr_v2
+export ARABIC_REF_ROOT="$ARABIC_REF_SOURCE_REPO/verification/arabic-reference-v4.1-full"
+export ARABIC_REF_PROPOSALS="$ARABIC_REF_ROOT/proposals-repaired-v4.2"
+export ARABIC_REF_REVALIDATED_OUTPUT="$ARABIC_REF_ROOT/proposals-revalidated-v4.3"
+bash scripts/corpus/run_arabic_reference.sh revalidate
+```
+
+This stage runs on CPU, needs no corrector server, and uses the complete `run.json` and `proposals.jsonl` aggregate even if the individual record copy is incomplete. It verifies every record hash, input binding, inherited origin and full ID coverage before processing. It writes a separate complete snapshot with all checkpoint files, records the parent run and aggregate hash, and preserves source failed records under `source-failures/records/`. Successful and unresolved source records retain their exact contents and hashes. Failed records gain a `saved_response_revalidation` audit naming the selected original attempt. All original attempts are retained. `llm_requests=0`, `generation=null` and `new_usage={}` explicitly distinguish this processing from a new LLM generation run. Any record with no complete valid saved reply remains failed.
+
+Use `ARABIC_REF_PROPOSALS="$ARABIC_REF_REVALIDATED_OUTPUT"` for downstream review/export; the normal private dataset and configurable Space workflow remains available. Revalidation preserves full provenance in exports and does not set final `verified_text`/`ideal_text`. The six unresolved SADA clips still require listening. Nor does recovery certify proposed edits: examples in the remaining 12 include shadda removal, number rendering changes and word/grammar substitutions present only in the ideal draft. These remain visible in saved replies, computed differences and review flags; do not treat a zero processing-failure count as zero transcription errors.
 
 ## Recover failed responses from the completed v4.1 run
 
@@ -26,6 +45,8 @@ bash scripts/corpus/run_arabic_reference.sh repair
 ```
 
 This reads the existing full plan; do not rerun `plan-full`, `scan` or `correct`. `REF_REPAIR_MAX_TOKENS` is separate from the old `REF_MAX_TOKENS=4096`. The source directory must contain its original `run.json` and every selected checkpoint in `records/`; the aggregate file alone is not a resumable checkpoint set. Source records are validated before any LLM requests. For this run, only the 410 failed IDs are sent; 46,341 proposed plus six unresolved records are copied byte-for-byte with their original run hashes. New replies use a new run identity recording the parent, selected failure hashes, prompt and generation settings. The six unresolved SADA cases require listening, not retries to force an answer.
+
+For current code, prose-budget overruns are warnings; the original v4.2 run applied a hard check, addressed by `revalidate` above.
 
 The new directory contains all 46,757 records and its combined `summary.json`/`proposals.jsonl`. Source failures are archived under `source-failures/records/`. Repeating the exact same repair command resumes the repair run and retries only remaining failures; prior failed repair records are retained under `attempt-history/`. Settings/code changes require a new repair output directory; the previous repaired directory can become the new source. Never rewrite the original `run.json` to bypass the resume check.
 

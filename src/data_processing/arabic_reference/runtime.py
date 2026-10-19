@@ -36,8 +36,8 @@ from .prompts import (
 from .recovery import (
     RECOVERY_INSTRUCTION,
     RECOVERY_VERSION,
+    recovery_metadata_warnings,
     source_index,
-    validate_recovery_metadata,
 )
 
 
@@ -405,7 +405,9 @@ def propose(
                             adjustments=attempt["validation_adjustments"],
                         )
                         if source:
-                            validate_recovery_metadata(record["proposal"])
+                            attempt["validation_adjustments"].extend(
+                                recovery_metadata_warnings(record["proposal"])
+                            )
                         record["validation_adjustments"] = attempt["validation_adjustments"]
                         apply_ideal_style(record["proposal"], record["validation_adjustments"])
                         record["proposal_checks"] = proposal_checks(

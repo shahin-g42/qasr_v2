@@ -50,6 +50,10 @@ def main(argv=None):
                 action="store_true",
                 help="Prepare conservative initial drafts, then run contextual LLM correction for every row",
             )
+    p = commands.add_parser("revalidate")
+    p.add_argument("--plan", type=Path, required=True)
+    p.add_argument("--source", type=Path, required=True)
+    p.add_argument("--output", type=Path, required=True)
     p = commands.add_parser("scan")
     p.add_argument("--plan", type=Path, required=True)
     p.add_argument("--output", type=Path, required=True)
@@ -142,6 +146,10 @@ def main(argv=None):
                 initial_cleanup=args.initial_cleanup,
                 repair_from=args.source if args.command == "repair" else None,
             )
+        elif args.command == "revalidate":
+            from .revalidate import revalidate_saved
+
+            result = revalidate_saved(args.plan, args.source, args.output)
         elif args.command == "scan":
             from .cleanup import scan
 
@@ -203,10 +211,10 @@ def main(argv=None):
                 result["missing_or_failed"] = len(rows) - len(records)
         print(json.dumps(result, ensure_ascii=False, indent=2))
         return int(
-            args.command in {"propose", "repair"}
+            args.command in {"propose", "repair", "revalidate"}
             and (
                 result["counts"].get("failed", 0) > 0
-                or (args.smoke and not result["smoke_checks"]["passed"])
+                or (getattr(args, "smoke", False) and not result["smoke_checks"]["passed"])
             )
         )
     except (ValueError, OSError, KeyError, RuntimeError) as exc:

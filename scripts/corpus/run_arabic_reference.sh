@@ -17,7 +17,7 @@ MODEL_NAME="${LLM_MODEL_NAME:-corrector}"
 CHECKPOINT_ARGS=()
 if [[ -n "${ARABIC_REF_CHECKPOINT:-}" ]]; then CHECKPOINT_ARGS=(--checkpoint "$ARABIC_REF_CHECKPOINT"); fi
 PROPOSALS="${ARABIC_REF_PROPOSALS:-$ROOT/proposals}"
-COMMAND="${1:?Expected plan|plan-full|scan|doctor|smoke|run|correct|repair|status|review-pack|import-reviews|score|export-dataset|leaderboard|publish-dataset|publish-leaderboard|test|llm-print|llm-start}"
+COMMAND="${1:?Expected plan|plan-full|scan|doctor|smoke|run|correct|repair|revalidate|status|review-pack|import-reviews|score|export-dataset|leaderboard|publish-dataset|publish-leaderboard|test|llm-print|llm-start}"
 shift
 CLI=("$PY" -m data_processing.arabic_reference)
 case "$COMMAND" in
@@ -44,6 +44,9 @@ case "$COMMAND" in
       --url "$LLM_URL" --model "$MODEL_NAME" ${CHECKPOINT_ARGS[@]+"${CHECKPOINT_ARGS[@]}"} \
       --revision "${LLM_REVISION:-unrecorded}" --concurrency "${REF_CONCURRENCY:-90}" \
       --max-tokens "${REF_REPAIR_MAX_TOKENS:-8192}" "$@" ;;
+  revalidate)
+    exec "${CLI[@]}" revalidate --plan "$ROOT/plan" --source "$PROPOSALS" \
+      --output "${ARABIC_REF_REVALIDATED_OUTPUT:-$ROOT/proposals-revalidated-v4.3}" "$@" ;;
   review-pack)
     exec "${CLI[@]}" review-pack --plan "$ROOT/plan" --proposals "$PROPOSALS" \
       --audio-root "$AUDIO_ROOT" --output "$ROOT/listening" "$@" ;;

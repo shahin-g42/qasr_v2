@@ -885,6 +885,7 @@ from the plan's saved predictions; no additional GPU inference for them is neces
 Stages can also run separately:
 
 ```bash
+bash scripts/corpus/benchmark_public_asr.sh transport # offline HTTP decoder self-check; no GPU
 bash scripts/corpus/benchmark_public_asr.sh download # pin and download models only
 bash scripts/corpus/benchmark_public_asr.sh check    # GPU/runtime/audio/checkpoint checks
 bash scripts/corpus/benchmark_public_asr.sh smoke    # 32 clips per dataset per model
@@ -921,3 +922,39 @@ and normalization, with strict WER/CER available separately. Candidate-assisted 
 may favor QASR/GQASR, which participated in their creation. Adding independent public
 models does not turn those drafts into independently verified ground truth; the
 original-reference leaderboard remains available alongside the enhanced comparison.
+
+#### Recover an HTTP Brotli download failure
+
+`TypeError: Decompressor.decompress() got an unexpected keyword argument
+'output_buffer_limit'` comes from the HTTP client's Brotli decoder during download.
+An inference venv created with `--system-site-packages` can inherit an older Brotli or
+brotlipy implementation from the base environment. Installing the newer Hub client does
+not necessarily upgrade that optional decoder. The inference requirements now pin
+`Brotli==1.2.0` and `brotlicffi==1.2.0.2`, compatible with the HTTP client's bounded
+streaming decompression API. The upstream [HTTP client requirements](https://github.com/pydantic/httpx2/blob/main/src/httpx2/pyproject.toml)
+specify these minimum versions for Brotli support.
+
+From the same cluster checkout, keeping the previous benchmark configuration:
+
+```bash
+git pull --ff-only origin codex/arabic-reference-pilot
+export PYTHON="$PWD/.venv-public-asr/bin/python"
+"$PYTHON" -m pip install -r scripts/corpus/public_asr_requirements.txt
+bash scripts/corpus/benchmark_public_asr.sh transport &&
+bash scripts/corpus/benchmark_public_asr.sh all
+```
+
+The transport stage makes no network request and reads no audio. It checks the HTTP
+implementation used by the installed Hub client and decodes a known two-MiB Brotli
+payload in small chunks. This runs in a child process so a native decoder crash or
+timeout produces an actionable parent-process error. Diagnostics include the actual
+decoder version and import path, which also expose an old package shadowing the venv
+installation. The check runs automatically before `download`, `check`, `publish` and
+`all`, before plan reads, CUDA initialization or Hub access.
+
+Keep `PUBLIC_MODEL_CACHE` and the existing benchmark output directories. Completed
+checkpoint snapshots are verified and reused; unfinished downloads remain available
+to the Hub client's normal resume behavior. This repair does not change the model
+weights, decoding protocol, transcripts or inference run identity. The trailing
+`Segmentation fault` alone does not identify its native cause; if it persists after
+the transport check passes, retain that separate crash trace for diagnosis.

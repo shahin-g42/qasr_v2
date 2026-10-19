@@ -14,6 +14,7 @@ from gqasr.arabic_benchmark.public_backend import checkpoint_identity
 from gqasr.arabic_benchmark.runner import run
 
 from .core import load_plan, sha256
+from .hub_transport import check_hub_transport
 from .leaderboard import additional_predictions
 from .leaderboard_inputs import annotation_drafts
 
@@ -243,11 +244,25 @@ def main(argv=None):
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument(
         "stage",
-        choices=["download", "check", "smoke", "run", "rescore", "score", "publish", "all"],
+        choices=[
+            "transport",
+            "download",
+            "check",
+            "smoke",
+            "run",
+            "rescore",
+            "score",
+            "publish",
+            "all",
+        ],
         nargs="?",
         default="all",
     )
     args = parser.parse_args(argv)
+    if args.stage in {"transport", "download", "check", "publish", "all"}:
+        print(json.dumps({"event": "public_hub_transport", **check_hub_transport()}), flush=True)
+    if args.stage == "transport":
+        return
     plan_root = Path(os.environ["ARABIC_REF_PLAN"])
     plan, rows = load_plan(plan_root)
     annotations = Path(os.environ["ARABIC_REF_ANNOTATIONS_BUNDLE"])

@@ -8,3 +8,7 @@ PyYAML>=6
 pyarrow>=21
 rapidfuzz>=3.9,<4
 huggingface-hub>=1.5
+# httpx2 streams require output_buffer_limit; inherited Brotli 1.1/brotlipy
+# decoders do not implement it. Install these in the inference venv itself.
+Brotli==1.2.0
+brotlicffi==1.2.0.2

@@ -51,6 +51,18 @@ def download_model(name, cache, *, api=None, download=None):
     if not isinstance(revision, str) or not re.fullmatch(r"[0-9a-f]{40}", revision):
         raise ValueError("Hub did not return an immutable public checkpoint revision")
     snapshot = root / "snapshot"
+    print(
+        json.dumps(
+            {
+                "event": "public_model_download",
+                "name": name,
+                "repository": entry["repository"],
+                "revision": revision,
+                "snapshot": str(snapshot),
+            }
+        ),
+        flush=True,
+    )
     # Native Transformers implementations only; no remote Python files are executed.
     download(
         entry["repository"],

@@ -17,6 +17,32 @@ BACKENDS = ("hf-qwen", "cohere", "whisper")
 MODEL_TYPES = {"hf-qwen": "qwen3_asr", "cohere": "cohere_asr", "whisper": "whisper"}
 
 
+def frontend_config(directory):
+    """Read either native Transformers processor layout without rewriting assets."""
+    root = Path(directory)
+    processor_path = root / "processor_config.json"
+    processor = json.loads(processor_path.read_text()) if processor_path.is_file() else {}
+    if not isinstance(processor, dict):
+        raise ValueError(f"Invalid processor configuration: {processor_path}")
+    if "feature_extractor" in processor:
+        # Native Qwen3-ASR HF checkpoints embed the complete frontend here.
+        frontend = processor["feature_extractor"]
+        location = f"{processor_path}:feature_extractor"
+    else:
+        path = root / "preprocessor_config.json"
+        if not path.is_file():
+            raise ValueError(
+                f"Public checkpoint frontend missing in {root}: expected preprocessor_config.json "
+                "or processor_config.json with a feature_extractor object"
+            )
+        frontend, location = json.loads(path.read_text()), str(path)
+    if not isinstance(frontend, dict) or not frontend:
+        raise ValueError(f"Public checkpoint frontend is empty or malformed: {location}")
+    if "sampling_rate" in frontend and frontend["sampling_rate"] != 16000:
+        raise ValueError(f"Public checkpoint frontend must use 16000 Hz: {location}")
+    return frontend
+
+
 def checkpoint_identity(directory, backend):
     root = Path(directory)
     config = json.loads((root / "config.json").read_text())
@@ -26,8 +52,9 @@ def checkpoint_identity(directory, backend):
         p for p in root.rglob("*") if p.is_file() and ".cache" not in p.relative_to(root).parts
     )
     weights = [p for p in files if p.suffix == ".safetensors"]
-    if not weights or not (root / "preprocessor_config.json").is_file():
-        raise ValueError("Public checkpoint requires safetensors weights and its saved frontend")
+    if not weights:
+        raise ValueError(f"Public checkpoint safetensors weights missing: {root}")
+    frontend_config(root)
     if not any(p.name in {"tokenizer.json", "tokenizer.model", "vocab.json"} for p in files):
         raise ValueError("Public checkpoint tokenizer is missing")
     index = root / "model.safetensors.index.json"

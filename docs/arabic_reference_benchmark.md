@@ -958,3 +958,19 @@ to the Hub client's normal resume behavior. This repair does not change the mode
 weights, decoding protocol, transcripts or inference run identity. The trailing
 `Segmentation fault` alone does not identify its native cause; if it persists after
 the transport check passes, retain that separate crash trace for diagnosis.
+
+#### Checkpoint downloaded, but the saved frontend check failed
+
+The initial validator incorrectly required a separate `preprocessor_config.json` for
+every model. The official native [Qwen processor configuration](https://huggingface.co/Qwen/Qwen3-ASR-0.6B-hf/blob/main/processor_config.json)
+embeds its audio frontend under `feature_extractor` in `processor_config.json`.
+Both Qwen sizes use this supported Transformers layout. Validation now accepts either
+the embedded frontend or the separate file, checks its structure and declared sample
+rate, and retains checksums of the original files. It does not manufacture or rename
+configuration files. Missing weights, missing frontend and missing tokenizer have
+separate errors, and download events identify the model, revision and snapshot path.
+
+Pull the fix and repeat `bash scripts/corpus/benchmark_public_asr.sh all` with the same
+environment settings and cache directory. No dependency reinstall or cache deletion is
+needed for this validator correction. A download progress display of `0.00B` on retry
+can mean the files are already cached; it does not by itself indicate empty weights.

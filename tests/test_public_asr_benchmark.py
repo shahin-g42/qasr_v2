@@ -295,7 +295,8 @@ def test_public_submission_hash_and_model_binding_rechecked(public_plan, tmp_pat
         read_submissions(manifest, plan)
 
 
-def test_download_pins_revision_and_reuses_only_unchanged_snapshot(tmp_path):
+@pytest.mark.parametrize("layout", ["separate", "combined"])
+def test_download_pins_revision_and_reuses_only_unchanged_snapshot(tmp_path, layout):
     calls = []
 
     def download(repository, **kwargs):
@@ -303,7 +304,21 @@ def test_download_pins_revision_and_reuses_only_unchanged_snapshot(tmp_path):
         root.mkdir(parents=True)
         calls.append(kwargs)
         (root / "config.json").write_text(json.dumps({"model_type": "qwen3_asr"}))
-        (root / "preprocessor_config.json").write_text("{}")
+        if layout == "separate":
+            (root / "preprocessor_config.json").write_text('{"sampling_rate":16000}')
+        else:
+            (root / "processor_config.json").write_text(
+                json.dumps(
+                    {
+                        "processor_class": "Qwen3ASRProcessor",
+                        "feature_extractor": {
+                            "feature_extractor_type": "Qwen3ASRFeatureExtractor",
+                            "sampling_rate": 16000,
+                            "feature_size": 128,
+                        },
+                    }
+                )
+            )
         (root / "tokenizer.json").write_text("{}")
         (root / "model.safetensors").write_bytes(b"fixture weights")
 
@@ -315,6 +330,50 @@ def test_download_pins_revision_and_reuses_only_unchanged_snapshot(tmp_path):
     (tmp_path / "qwen3-asr-0.6b/snapshot/model.safetensors").write_bytes(b"changed")
     with pytest.raises(ValueError, match="changed"):
         download_model("qwen3-asr-0.6b", tmp_path, api=api, download=download)
+
+
+@pytest.mark.parametrize("kind", backend.BACKENDS)
+@pytest.mark.parametrize("layout", ["separate", "combined"])
+def test_checkpoint_accepts_native_frontend_layouts_without_rewriting(tmp_path, kind, layout):
+    (tmp_path / "config.json").write_text(json.dumps({"model_type": backend.MODEL_TYPES[kind]}))
+    (tmp_path / "model.safetensors").write_bytes(b"fixture weights")
+    (tmp_path / "tokenizer.json").write_text("{}")
+    frontend = {"sampling_rate": 16000, "feature_size": 128}
+    config = tmp_path / (
+        "processor_config.json" if layout == "combined" else "preprocessor_config.json"
+    )
+    config.write_text(
+        json.dumps({"feature_extractor": frontend} if layout == "combined" else frontend)
+    )
+    before = {p.name: p.read_bytes() for p in tmp_path.iterdir()}
+    identity = backend.checkpoint_identity(tmp_path, kind)
+    assert identity[config.name] == sha256(config)
+    assert before == {p.name: p.read_bytes() for p in tmp_path.iterdir()}
+    frontend["feature_size"] = 80
+    config.write_text(
+        json.dumps({"feature_extractor": frontend} if layout == "combined" else frontend)
+    )
+    assert backend.checkpoint_identity(tmp_path, kind) != identity
+
+
+@pytest.mark.parametrize("frontend", [None, {}, [], "frontend.json", {"sampling_rate": 8000}])
+def test_invalid_embedded_frontend_cannot_bypass_validation(tmp_path, frontend):
+    (tmp_path / "processor_config.json").write_text(json.dumps({"feature_extractor": frontend}))
+    with pytest.raises(ValueError, match="frontend"):
+        backend.frontend_config(tmp_path)
+
+
+def test_checkpoint_errors_identify_missing_component_and_snapshot(tmp_path):
+    (tmp_path / "config.json").write_text('{"model_type":"qwen3_asr"}')
+    with pytest.raises(ValueError, match="safetensors weights missing") as exc:
+        backend.checkpoint_identity(tmp_path, "hf-qwen")
+    assert str(tmp_path) in str(exc.value)
+    (tmp_path / "model.safetensors").write_bytes(b"fixture weights")
+    # A processor class alone is not a saved audio frontend.
+    (tmp_path / "processor_config.json").write_text('{"processor_class":"Qwen3ASRProcessor"}')
+    with pytest.raises(ValueError, match="frontend missing") as exc:
+        backend.checkpoint_identity(tmp_path, "hf-qwen")
+    assert str(tmp_path) in str(exc.value)
 
 
 def test_prepared_plan_binding_detects_wrong_cache(public_plan, monkeypatch):

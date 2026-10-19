@@ -242,7 +242,7 @@ def validate_source(row):
         raise ValueError("This pilot accepts forced-Arabic predictions only")
 
 
-def prepare(predictions, output, per_dataset=100, seed=20261019):
+def prepare(predictions, output, per_dataset=100, seed=20261019, *, full_suite=False):
     if per_dataset < 1 or not predictions:
         raise ValueError("Positive sample size and prediction inputs required")
     output = Path(output)
@@ -308,10 +308,12 @@ def prepare(predictions, output, per_dataset=100, seed=20261019):
             if row["dataset"] == ds:
                 representatives.setdefault(row["audio_sha256"], row["id"])
         ranked = sorted(representatives, key=lambda h: digest([seed, ds, h]))
-        if len(ranked) < per_dataset:
+        if not full_suite and len(ranked) < per_dataset:
             raise ValueError(f"{ds}: fewer unique audio clips than requested")
         pilot.update(representatives[h] for h in ranked[:per_dataset])
-    selection = pilot | set(flags)
+    if full_suite:
+        pilot = set()
+    selection = set(base) if full_suite else pilot | set(flags)
     rows = []
     for identifier in sorted(selection):
         raw = base[identifier]
@@ -339,7 +341,7 @@ def prepare(predictions, output, per_dataset=100, seed=20261019):
                 "ideal_text": None,
                 "review_status": "pending",
                 "policy_sha256": digest(POLICY),
-                "cohorts": (["pilot"] if identifier in pilot else [])
+                "cohorts": (["full"] if full_suite else ["pilot"] if identifier in pilot else [])
                 + (["diagnostic"] if identifier in flags else []),
                 "flags": sorted(flags.get(identifier, [])),
                 "candidates": [
@@ -371,6 +373,14 @@ def prepare(predictions, output, per_dataset=100, seed=20261019):
         "manifest_digest": digest(rows),
         "sampling": "100 per dataset by default; uniform hash ranking of unique prepared audio. Diagnostics are a separate, overlapping, outcome-selected cohort. Neither is a full-suite score.",
     }
+    if full_suite:
+        plan.update(
+            {
+                "selection_scope": "full_suite",
+                "per_dataset": None,
+                "sampling": "All rows of the pinned six-dataset suite, including duplicate evaluation rows. Diagnostics overlap the full cohort and are not an independent sample.",
+            }
+        )
     if (output / "plan.json").exists():
         old, previous = load_plan(output)
         if old != plan or previous != rows:

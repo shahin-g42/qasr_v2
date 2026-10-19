@@ -1,7 +1,80 @@
 # Arabic reference benchmark initiative
 
 Status: policy/prompt v4 implements contextual linguistic editing with independent text-difference auditing. It needs a fresh cluster smoke and manual inspection before scaling. The v3.3 full pilot produced 918 proposed, 136 failed and five unresolved drafts across 1,059 clips; none were audio verified. Of its failures, 32 were truncated replies. The default response allowance is now 4,096 tokens, with shorter instructions and concise edit explanations.
-This is an evaluation-only initiative. Original benchmark references and training labels remain immutable.
+This is an evaluation-only initiative. Original benchmark references and training labels remain immutable. Full-suite selection, private Parquet releases, a private static leaderboard Space and additional-model scoring are now implemented. They do not mark drafts as reviewed.
+
+## Proceed through full enhancement, private datasets and leaderboard
+
+The configured destinations for this initiative are **private** `shahink/asr_bench` repositories: one dataset and one Space. Hugging Face supports the same owner/name under these separate repository types. This pipeline creates only private repositories, verifies their visibility before uploading, and refuses an existing public destination. No public release is required for this workflow.
+
+The local source results contain 46,757 matched QASR/GQASR test clips. The full-suite stage uses every original evaluation row, including duplicates, with a `full` cohort; the outcome-selected diagnostic cohort remains separate. The pilot selector stays available. Use a fresh root for full-suite processing and changed code/model settings:
+
+```bash
+export ARABIC_REF_SOURCE_REPO=/lustrefs/shared/shahin.konadath/workspace/train/stt/v2/qasr_v2
+export ARABIC_REF_ROOT="$ARABIC_REF_SOURCE_REPO/verification/arabic-reference-v4-full"
+export LLM_MODEL_NAME=corrector
+export REF_CONCURRENCY=90
+export REF_MAX_TOKENS=4096
+export HF_DATASET_REPO=shahink/asr_bench
+export HF_SPACE_REPO=shahink/asr_bench
+
+bash scripts/corpus/run_arabic_reference.sh test -q &&
+bash scripts/corpus/run_arabic_reference.sh plan-full &&
+bash scripts/corpus/run_arabic_reference.sh doctor &&
+bash scripts/corpus/run_arabic_reference.sh smoke
+```
+
+Inspect the fresh smoke drafts and computed differences, then run all selected clips:
+
+```bash
+bash scripts/corpus/run_arabic_reference.sh run
+bash scripts/corpus/run_arabic_reference.sh status
+bash scripts/corpus/run_arabic_reference.sh export-dataset
+bash scripts/corpus/run_arabic_reference.sh leaderboard
+```
+
+`run` returns a nonzero status if any request still fails. Completed rows are saved and resumable under the same run identity. Exports retain all rows and their pending/failed/unresolved statuses, so they can also be produced during a partial run. A partial export is a snapshot: subsequent progress requires a new bundle directory/release ID. The launcher automatically includes `proposals/` and `reviewed-v1.jsonl` when present. Existing v4 proposals can be exported with their original plan; do not rewrite older policy bindings or run identities.
+
+The dataset bundle (`dataset-release/`) contains one explicitly typed Parquet file per source dataset, an `all` configuration and six source configurations, all assigned to `test`. Its principal columns are `text`, `asr_text` (QASR), `gqasr_text`, `verified_text_draft`, `ideal_text_draft`, `verified_text`, `ideal_text`, `proposal_status` and `review_status`. Final values remain null until review import; drafts are never substituted for them. Source locators, prediction hashes, policy, edit audits and coverage accompany each release. This is an **annotation-overlay dataset**: audio bytes are not copied. Reuse the pinned source identifiers and existing preparation pipeline to obtain recordings. Prepared cache paths, raw replies, reviewer IDs and host logs are not uploaded.
+
+The leaderboard bundle (`leaderboard-release/`) is a static HTML Space with no server dependency. Original-reference results are available immediately. Reviewed tracks appear only after listening attestations are imported. Original, verified and ideal references each have normalized and strict WER/CER on the exact same reviewed subset. Diagnostics and full/pilot cohorts are shown separately; incomplete six-dataset macros stay unavailable. The page discloses candidate-assisted reference development and the lack of independent audit. These are private research comparisons, not official ELM ranks. Future independent review/fresh-holdout work is unchanged.
+
+The bundles are immutable and include an allowlist of file hashes in `release.json`. Start with an offline upload preview:
+
+```bash
+bash scripts/corpus/run_arabic_reference.sh publish-dataset
+bash scripts/corpus/run_arabic_reference.sh publish-leaderboard
+```
+
+Authenticate on the publishing machine using its existing Hugging Face CLI (`hf auth login`; never paste a token into chat). Then upload the prepared files:
+
+```bash
+bash scripts/corpus/run_arabic_reference.sh publish-dataset --execute
+bash scripts/corpus/run_arabic_reference.sh publish-leaderboard --execute
+```
+
+For an existing private destination, review its current commit and supply `--expected-head <commit-sha>`; the Hub commit uses that parent to reject concurrent updates. This protects unrelated repositories and older releases without force-pushing or deleting files. Save the returned Hub commit SHA and pin it when loading the dataset. Source attribution is retained; this private workflow does not invent a blanket license.
+
+To build a later reviewed snapshot, import listening reviews as before, then choose new immutable bundle directories:
+
+```bash
+export ARABIC_REF_RELEASE_ID=v4-reviewed-001
+export ARABIC_REF_DATASET_BUNDLE="$ARABIC_REF_ROOT/dataset-reviewed-001"
+export ARABIC_REF_SPACE_BUNDLE="$ARABIC_REF_ROOT/leaderboard-reviewed-001"
+bash scripts/corpus/run_arabic_reference.sh export-dataset
+bash scripts/corpus/run_arabic_reference.sh leaderboard
+```
+
+To add another model, run it on this exact frozen selection and provide its benchmark-format prediction JSONL. IDs, source references, prepared audio hashes, preparation IDs and durations must match; duplicate/missing/extra IDs fail. The submission must use forced-Arabic mode. Reference texts are not regenerated:
+
+```bash
+bash scripts/corpus/run_arabic_reference.sh leaderboard \
+  --prediction new-model=/absolute/path/predictions-arabic.jsonl \
+  --output "$ARABIC_REF_ROOT/leaderboard-with-new-model" \
+  --release-id v4-board-002
+```
+
+This accepts validated offline submissions. Automatic model serving, arbitrary web uploads and independent annotation adjudication are later stages. Training cleanup remains separate from these test datasets.
 
 ## V4 linguistic editing and review
 
@@ -405,7 +478,7 @@ list of speech errors; reviewers must still inspect every clip.
 
 ## Public release and training boundaries
 
-The existing benchmark documentation records a CC-BY-NC-ND source card for Casablanca, and other datasets have their own conditions. A license and provenance audit is an actual release dependency; do not assume that an annotation overlay automatically resolves redistribution or derivative-work restrictions. No Hugging Face upload or public leaderboard publication is implemented in this pilot.
+The existing benchmark documentation records a CC-BY-NC-ND source card for Casablanca, and other datasets have their own conditions. A license and provenance audit is an actual release dependency; do not assume that an annotation overlay automatically resolves redistribution or derivative-work restrictions. The implemented publisher supports private repositories only. A public release would be a separate decision and audit.
 
 The eventual dataset card must disclose the reviewed coverage, original versus amended references, corrector identity and prompt, human-review method, dataset-specific permissions, source revisions, duplicate policy, unresolved spans and known limitations. Freeze references before ranking additional model versions, and retain the original-reference evaluation track.
 

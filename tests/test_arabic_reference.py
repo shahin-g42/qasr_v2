@@ -1515,3 +1515,286 @@ def test_scoring_rechecks_computed_editorial_differences(plan, tmp_path, mutatio
     write_jsonl(reviewed, rows)
     with pytest.raises(ValueError, match="editorial differences"):
         score(plan, reviewed, tmp_path / "score.json")
+
+
+def test_full_suite_selection_retains_every_source_row_and_smoke_controls(inputs, tmp_path):
+    root = tmp_path / "full"
+    metadata = prepare(inputs, root, full_suite=True)
+    _, rows = load_plan(root)
+    assert len(rows) == 18 and metadata["pilot_clips"] == 0
+    assert metadata["selection_scope"] == "full_suite" and metadata["per_dataset"] is None
+    assert all(r["cohorts"] == ["full"] for r in rows)
+    assert prepare(inputs, root, full_suite=True) == metadata
+    selected, controls = select_smoke(metadata, rows)
+    assert len(controls) == 6 and set(controls.values()) <= {r["id"] for r in selected}
+    with pytest.raises(ValueError, match="differs"):
+        prepare(inputs, root, per_dataset=1)
+
+
+def test_full_suite_review_scores_have_separate_normalized_and_strict_tracks(inputs, tmp_path):
+    pytest.importorskip("rapidfuzz")
+    root = tmp_path / "full"
+    prepare(inputs, root, full_suite=True)
+    rows = load_plan(root)[1]
+    path, reviewed = tmp_path / "reviews.jsonl", tmp_path / "reviewed.jsonl"
+    write_jsonl(path, [human_review(r) for r in rows])
+    import_reviews(root, [path], reviewed)
+    result = score(root, reviewed, tmp_path / "scores.json")
+    assert result["scores"]["full/one/ideal_elm/macro"]["full_suite"] is True
+    assert result["scores"]["full/one/ideal_strict/macro"]["wer"] == 0
+    assert result["scores"]["full/one/original_strict/macro"]["wer"] > 0
+    assert result["coverage"]["full"]["verified"] == dict.fromkeys(DATASETS, 3)
+
+
+def test_dataset_export_preserves_qasr_and_separates_drafts_from_final(inputs, tmp_path, server):
+    pq = pytest.importorskip("pyarrow.parquet")
+    from data_processing.arabic_reference.release import export_dataset, validate_bundle
+
+    root = tmp_path / "qasr-plan"
+    prepare([("qasr", inputs[0][1]), ("gqasr", inputs[1][1])], root, per_dataset=1)
+    url, _ = server
+    proposals = tmp_path / "proposals"
+    propose(root, proposals, url=url, model="corrector", emit=lambda _: None)
+    output = tmp_path / "release"
+    manifest = export_dataset(root, output, proposals=proposals)
+    assert manifest["visibility"] == "private" and manifest["repo_type"] == "dataset"
+    assert validate_bundle(output)["bundle_sha256"] == manifest["bundle_sha256"]
+    for ds in DATASETS:
+        table = pq.read_table(output / "data" / ds / "test.parquet")
+        rows = table.to_pylist()
+        assert len(rows) == 1
+        r = rows[0]
+        assert r["text"] == "مرحبا بكم" and r["asr_text"] == r["gqasr_text"] == "مرحبًا بكم."
+        assert r["ideal_text_draft"] == "مرحبًا بكم." and r["verified_text_draft"] == "مرحبا بكم"
+        assert (
+            r["ideal_text"] is None and r["verified_text"] is None and r["audio_reviewed"] is False
+        )
+        assert r["review_status"] == "pending" and r["proposal_status"] == "proposed"
+        assert r["split"] == "test" and r["purpose"] == "evaluation_only"
+        assert str(tmp_path) not in json.dumps(r)
+        assert str(table.schema.field("ideal_text").type) == "string"
+    provenance = json.loads((output / "provenance.json").read_text())
+    assert provenance["corrector"]["served_model"] == "corrector"
+    assert provenance["corrector"]["prompt_version"] == "arabic-reference-proposer-v4"
+    assert provenance["audio_included"] is False
+    assert (
+        export_dataset(root, output, proposals=proposals)["bundle_sha256"]
+        == manifest["bundle_sha256"]
+    )
+
+
+def test_dataset_export_keeps_failed_and_pending_rows_visible(plan, tmp_path, server):
+    pq = pytest.importorskip("pyarrow.parquet")
+    from data_processing.arabic_reference.release import export_dataset
+
+    url, state = server
+    state["fail"] = True
+    proposals = tmp_path / "failed"
+    propose(plan, proposals, url=url, model="corrector", emit=lambda _: None)
+    output = tmp_path / "release"
+    export_dataset(plan, output, proposals=proposals)
+    rows = [r for p in output.glob("data/*/*.parquet") for r in pq.read_table(p).to_pylist()]
+    assert len(rows) == 6 and all(r["ideal_text"] is None for r in rows)
+    assert all(r["proposal_status"] == "failed" and r["ideal_text_draft"] is None for r in rows)
+    pending = tmp_path / "pending"
+    export_dataset(plan, pending)
+    pending_rows = [
+        r for p in pending.glob("data/*/*.parquet") for r in pq.read_table(p).to_pylist()
+    ]
+    assert all(
+        r["proposal_status"] == "pending" and r["ideal_text_draft"] is None for r in pending_rows
+    )
+
+
+def test_dataset_export_validates_reviews_and_never_fills_unreviewed_finals(plan, tmp_path):
+    pq = pytest.importorskip("pyarrow.parquet")
+    from data_processing.arabic_reference.release import export_dataset
+
+    row = load_plan(plan)[1][0]
+    path, reviewed = tmp_path / "review.jsonl", tmp_path / "reviewed.jsonl"
+    write_jsonl(path, [human_review(row)])
+    import_reviews(plan, [path], reviewed)
+    output = tmp_path / "release"
+    export_dataset(plan, output, reviewed=reviewed)
+    values = [r for p in output.glob("data/*/*.parquet") for r in pq.read_table(p).to_pylist()]
+    assert sum(r["ideal_text"] is not None for r in values) == 1
+    assert sum(r["audio_reviewed"] for r in values) == 1
+    forged = list(read_jsonl(reviewed))
+    target = next(r for r in forged if r["review_status"] == "pending")
+    target["ideal_text"] = "Unreviewed text"
+    target["reviewed_sha256"] = digest({k: v for k, v in target.items() if k != "reviewed_sha256"})
+    write_jsonl(reviewed, forged)
+    with pytest.raises(ValueError, match="Pending rows"):
+        export_dataset(plan, tmp_path / "forged", reviewed=reviewed)
+
+
+@pytest.mark.parametrize("mutation", ["extra", "changed", "symlink"])
+def test_frozen_upload_bundle_rejects_extra_or_mutated_files(plan, tmp_path, mutation):
+    pytest.importorskip("pyarrow")
+    from data_processing.arabic_reference.release import export_dataset, validate_bundle
+
+    output = tmp_path / "release"
+    export_dataset(plan, output)
+    if mutation == "extra":
+        (output / "private-log.txt").write_text("Not an approved upload")
+    elif mutation == "changed":
+        (output / "README.md").write_text("Changed release")
+    else:
+        (output / "outside").symlink_to(tmp_path)
+    with pytest.raises(ValueError, match=r"Unexpected|changed|symlinks"):
+        validate_bundle(output)
+
+
+def test_release_outputs_are_immutable_and_dataset_selection_is_explicit(plan, tmp_path):
+    pytest.importorskip("pyarrow")
+    from data_processing.arabic_reference.release import export_dataset
+
+    output = tmp_path / "release"
+    result = export_dataset(plan, output, datasets=["sada"])
+    assert result["datasets"] == ["sada"] and len(list(output.glob("data/*/*.parquet"))) == 1
+    with pytest.raises(ValueError, match="different contents"):
+        export_dataset(plan, output, datasets=["commonvoice"])
+    with pytest.raises(ValueError, match="known dataset"):
+        export_dataset(plan, tmp_path / "bad", datasets=["nonexistent"])
+    with pytest.raises(ValueError, match="filename-safe"):
+        export_dataset(plan, tmp_path / "bad", release_id="../bad")
+
+
+class PrivateHubStub:
+    def __init__(self, exists=True, private=True):
+        self.exists, self.private = exists, private
+        self.calls = []
+
+    def repo_info(self, repo_id, repo_type):
+        from types import SimpleNamespace
+
+        from huggingface_hub.errors import RepositoryNotFoundError
+
+        if not self.exists:
+            raise RepositoryNotFoundError("Fixture repository is absent")
+        return SimpleNamespace(private=self.private, sha="existing-head")
+
+    def create_repo(self, repo_id, **kwargs):
+        self.calls.append(("create_repo", repo_id, kwargs))
+        self.exists = True
+        self.private = kwargs["private"]
+
+    def create_commit(self, repo_id, **kwargs):
+        from types import SimpleNamespace
+
+        self.calls.append(("create_commit", repo_id, kwargs))
+        return SimpleNamespace(
+            oid="new-head", commit_url="https://huggingface.co/datasets/test/bench/commit/new-head"
+        )
+
+
+def test_private_publisher_dry_run_never_calls_hub_and_uploads_only_frozen_files(plan, tmp_path):
+    pytest.importorskip("pyarrow")
+    from data_processing.arabic_reference.release import export_dataset, publish_bundle
+
+    output = tmp_path / "release"
+    export_dataset(plan, output)
+    api = PrivateHubStub(exists=False)
+    dry = publish_bundle(output, "test/bench", api=api)
+    assert dry["executed"] is False and api.calls == []
+    result = publish_bundle(output, "test/bench", execute=True, api=api)
+    assert result["executed"] and result["commit_sha"] == "new-head"
+    assert api.calls[0][2]["private"] is True and api.calls[0][2]["exist_ok"] is False
+    commit = api.calls[1][2]
+    assert commit["parent_commit"] == "existing-head"
+    assert {op.path_in_repo for op in commit["operations"]} == set(dry["files"])
+    assert all(isinstance(op.path_or_fileobj, bytes) for op in commit["operations"])
+
+
+@pytest.mark.parametrize(
+    "private,expected,match",
+    [
+        (False, "existing-head", "public"),
+        (True, None, "expected-head"),
+        (True, "stale-head", "expected-head"),
+    ],
+)
+def test_private_publisher_refuses_public_or_unreviewed_existing_destination(
+    plan, tmp_path, private, expected, match
+):
+    pytest.importorskip("pyarrow")
+    from data_processing.arabic_reference.release import export_dataset, publish_bundle
+
+    output = tmp_path / "release"
+    export_dataset(plan, output)
+    api = PrivateHubStub(private=private)
+    with pytest.raises(ValueError, match=match):
+        publish_bundle(output, "test/bench", execute=True, expected_head=expected, api=api)
+    assert api.calls == []
+
+
+def test_leaderboard_uses_original_scores_until_reviews_exist(plan, tmp_path):
+    pytest.importorskip("rapidfuzz")
+    from data_processing.arabic_reference.leaderboard import build_leaderboard
+    from data_processing.arabic_reference.release import publish_bundle, validate_bundle
+
+    output = tmp_path / "space"
+    build_leaderboard(plan, output)
+    payload = json.loads((output / "leaderboard.json").read_text())
+    assert payload["verified_clips"] == 0 and payload["independently_audited"] is False
+    assert all(
+        p["reference_status"] == "original" and not p["full_suite"] for p in payload["panels"]
+    )
+    assert all(s["track"].startswith("original_") for p in payload["panels"] for s in p["scores"])
+    assert validate_bundle(output)["repo_type"] == "space"
+    api = PrivateHubStub(exists=False)
+    publish_bundle(output, "test/bench", execute=True, api=api)
+    assert api.calls[0][2]["space_sdk"] == "static" and api.calls[0][2]["private"]
+
+
+def test_leaderboard_reviewed_tracks_share_exact_subset_and_missing_macro_is_null(plan, tmp_path):
+    pytest.importorskip("rapidfuzz")
+    from data_processing.arabic_reference.leaderboard import build_leaderboard
+
+    row = load_plan(plan)[1][0]
+    path, reviewed = tmp_path / "reviews.jsonl", tmp_path / "reviewed.jsonl"
+    write_jsonl(path, [human_review(row)])
+    import_reviews(plan, [path], reviewed)
+    output = tmp_path / "space"
+    build_leaderboard(plan, output, reviewed=reviewed)
+    data = json.loads((output / "leaderboard.json").read_text())
+    panel = next(p for p in data["panels"] if p["id"] == "reviewed-pilot")
+    assert panel["scored_clips"] == 1 and panel["selected_clips"] == 6
+    assert len({s["track"] for s in panel["scores"]}) == 6
+    assert all(s["utterances"] == 1 for s in panel["scores"])
+    assert all(s["wer"] is None for s in panel["scores"] if s["dataset"] == "macro")
+
+
+@pytest.mark.parametrize(
+    "mutation", ["valid", "missing", "duplicate", "audio", "reference", "model_name"]
+)
+def test_leaderboard_additional_submission_requires_exact_frozen_membership(
+    inputs, tmp_path, mutation
+):
+    pytest.importorskip("rapidfuzz")
+    from data_processing.arabic_reference.leaderboard import build_leaderboard
+
+    root = tmp_path / "full"
+    prepare(inputs, root, full_suite=True)
+    data = list(read_jsonl(inputs[0][1]))
+    if mutation == "missing":
+        data.pop()
+    if mutation == "duplicate":
+        data.append(data[0])
+    if mutation == "audio":
+        data[0]["audio_sha256"] = "0" * 64
+    if mutation == "reference":
+        data[0]["text"] = "Different original reference"
+    path = tmp_path / "submission.jsonl"
+    write_jsonl(path, data)
+    output = tmp_path / "space"
+    name = "one" if mutation == "model_name" else "new-model"
+    if mutation != "valid":
+        with pytest.raises(ValueError):
+            build_leaderboard(root, output, predictions=[(name, path)])
+    else:
+        build_leaderboard(root, output, predictions=[(name, path)])
+        payload = json.loads((output / "leaderboard.json").read_text())
+        assert payload["panels"][0]["full_suite"] is True
+        assert {s["model"] for s in payload["panels"][0]["scores"]} == {"one", "two", "new-model"}
+        assert payload["prediction_sources"][-1]["predictions_sha256"] == sha256(path)

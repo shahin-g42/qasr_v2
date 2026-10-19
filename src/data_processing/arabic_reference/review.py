@@ -208,10 +208,8 @@ def import_reviews(plan_root, review_files, output):
     }
 
 
-def score(plan_root, reviewed_path, output):
-    from gqasr.arabic_benchmark.scoring import counts, rates
-
-    plan, originals = load_plan(plan_root)
+def validated_reviews(originals, reviewed_path):
+    """Validate every review status and source binding before scoring or exporting."""
     by_id = {r["id"]: r for r in originals}
     reviewed = list(read_jsonl(reviewed_path))
     if len(reviewed) != len(originals) or {r["id"] for r in reviewed} != set(by_id):
@@ -226,18 +224,32 @@ def score(plan_root, reviewed_path, output):
         for key, value in source.items():
             if key not in ("review_status", "verified_text", "ideal_text") and row[key] != value:
                 raise ValueError("Original benchmark data changed")
+        if row["review_status"] not in {"pending", "verified", "unresolved"}:
+            raise ValueError("Invalid reviewed manifest status")
+        if row["review_status"] == "pending":
+            if row["verified_text"] is not None or row["ideal_text"] is not None or "review" in row:
+                raise ValueError("Pending rows cannot contain final texts or review attestations")
+            continue
+        validate_review(row["review"], source)
+        if row["review"]["decision"] != row["review_status"] or any(
+            row[k] != row["review"][k] for k in ("verified_text", "ideal_text")
+        ):
+            raise ValueError("Reviewed text does not match attestation")
         if row["review_status"] == "verified":
-            validate_review(row["review"], source)
-            if row["review"]["decision"] != "verified" or any(
-                row[k] != row["review"][k] for k in ("verified_text", "ideal_text")
-            ):
-                raise ValueError("Reviewed text does not match attestation")
             if row.get("reviewed_ideal_differences") != text_differences(
                 row["verified_text"], row["ideal_text"]
             ):
                 raise ValueError("Reviewed editorial differences do not match the final texts")
             check_duplicate_review(reviewed_hashes, row)
             eligible.append(row)
+    return reviewed, eligible
+
+
+def score(plan_root, reviewed_path, output):
+    from gqasr.arabic_benchmark.scoring import counts, rates
+
+    plan, originals = load_plan(plan_root)
+    _, eligible = validated_reviews(originals, reviewed_path)
     if not eligible:
         raise ValueError(
             "No audio-reviewed verified references; proposals cannot be scored as gold"
@@ -247,7 +259,10 @@ def score(plan_root, reviewed_path, output):
         for candidate in row["candidates"]:
             for track, key, normalized in [
                 ("original_elm", "text", True),
+                ("original_strict", "text", False),
                 ("verified_elm", "verified_text", True),
+                ("verified_strict", "verified_text", False),
+                ("ideal_elm", "ideal_text", True),
                 ("ideal_strict", "ideal_text", False),
             ]:
                 c = counts(row[key], candidate["text"], normalized=normalized)
@@ -263,7 +278,9 @@ def score(plan_root, reviewed_path, output):
         ]
         results[prefix + "/macro"] = {
             "datasets": len(data),
-            "full_suite": False,
+            "full_suite": cohort == "full"
+            and len(eligible) == len(originals)
+            and len(originals) == sum(plan["input_counts"].values()),
             "wer": sum(r["wer"] for r in data) / 6 if len(data) == 6 else None,
             "cer": sum(r["cer"] for r in data) / 6 if len(data) == 6 else None,
         }
@@ -281,7 +298,7 @@ def score(plan_root, reviewed_path, output):
                 ),
                 "verified": dict(Counter(r["dataset"] for r in eligible if cohort in r["cohorts"])),
             }
-            for cohort in ("pilot", "diagnostic")
+            for cohort in sorted({c for r in originals for c in r["cohorts"]})
         },
         "note": "Paired verified subsets only; diagnostics are outcome-selected. Not an official leaderboard result. ideal_strict measures full-string agreement, not an isolated punctuation/diacritic quality metric.",
         "scores": results,

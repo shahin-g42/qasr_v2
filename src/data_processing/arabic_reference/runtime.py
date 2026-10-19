@@ -124,7 +124,7 @@ def select_smoke(plan, rows):
             r
             for r in rows
             if r["dataset"] == ds
-            and "pilot" in r["cohorts"]
+            and ("pilot" in r["cohorts"] or "full" in r["cohorts"])
             and not review_issues(r)
             and len(
                 {format_signature(t) for t in [r["text"], *(c["text"] for c in r["candidates"])]}

@@ -16,13 +16,14 @@ LLM_URL="${LLM_URL:-http://localhost:8010}"
 MODEL_NAME="${LLM_MODEL_NAME:-corrector}"
 CHECKPOINT_ARGS=()
 if [[ -n "${ARABIC_REF_CHECKPOINT:-}" ]]; then CHECKPOINT_ARGS=(--checkpoint "$ARABIC_REF_CHECKPOINT"); fi
-COMMAND="${1:?Expected plan|doctor|smoke|run|status|review-pack|import-reviews|score|test|llm-print|llm-start}"
+COMMAND="${1:?Expected plan|plan-full|doctor|smoke|run|status|review-pack|import-reviews|score|export-dataset|leaderboard|publish-dataset|publish-leaderboard|test|llm-print|llm-start}"
 shift
 CLI=("$PY" -m data_processing.arabic_reference)
 case "$COMMAND" in
-  plan)
+  plan|plan-full)
+    EXTRA=(); if [[ "$COMMAND" == plan-full ]]; then EXTRA=(--full-suite); fi
     exec "${CLI[@]}" prepare --prediction "qasr=$QASR_RESULTS/predictions-arabic.jsonl" \
-      --prediction "gqasr=$GQASR_RESULTS/predictions-arabic.jsonl" --output "$ROOT/plan" "$@" ;;
+      --prediction "gqasr=$GQASR_RESULTS/predictions-arabic.jsonl" --output "$ROOT/plan" ${EXTRA[@]+"${EXTRA[@]}"} "$@" ;;
   doctor)
     exec "${CLI[@]}" doctor --plan "$ROOT/plan" --audio-root "$AUDIO_ROOT" \
       --url "$LLM_URL" --model "$MODEL_NAME" ${CHECKPOINT_ARGS[@]+"${CHECKPOINT_ARGS[@]}"} "$@" ;;
@@ -41,6 +42,25 @@ case "$COMMAND" in
   score)
     exec "${CLI[@]}" score --plan "$ROOT/plan" --reviewed "$ROOT/reviewed-v1.jsonl" \
       --output "$ROOT/scores-v1.json" "$@" ;;
+  export-dataset|leaderboard)
+    EXTRA=()
+    if [[ -f "$ROOT/reviewed-v1.jsonl" ]]; then EXTRA+=(--reviewed "$ROOT/reviewed-v1.jsonl"); fi
+    if [[ "$COMMAND" == export-dataset ]]; then
+      if [[ -f "$ROOT/proposals/run.json" ]]; then EXTRA+=(--proposals "$ROOT/proposals"); fi
+      exec "${CLI[@]}" export-dataset --plan "$ROOT/plan" \
+        --output "${ARABIC_REF_DATASET_BUNDLE:-$ROOT/dataset-release}" \
+        --release-id "${ARABIC_REF_RELEASE_ID:-v4-draft-001}" ${EXTRA[@]+"${EXTRA[@]}"} "$@"
+    else
+      exec "${CLI[@]}" leaderboard --plan "$ROOT/plan" \
+        --output "${ARABIC_REF_SPACE_BUNDLE:-$ROOT/leaderboard-release}" \
+        --release-id "${ARABIC_REF_RELEASE_ID:-v4-board-001}" ${EXTRA[@]+"${EXTRA[@]}"} "$@"
+    fi ;;
+  publish-dataset)
+    exec "${CLI[@]}" publish --bundle "${ARABIC_REF_DATASET_BUNDLE:-$ROOT/dataset-release}" \
+      --repo-id "${HF_DATASET_REPO:?Set HF_DATASET_REPO to your private dataset ID}" "$@" ;;
+  publish-leaderboard)
+    exec "${CLI[@]}" publish --bundle "${ARABIC_REF_SPACE_BUNDLE:-$ROOT/leaderboard-release}" \
+      --repo-id "${HF_SPACE_REPO:?Set HF_SPACE_REPO to your private Space ID}" "$@" ;;
   status)
     EXTRA=(); if [[ -f "$ROOT/proposals/run.json" ]]; then EXTRA=(--proposals "$ROOT/proposals"); fi
     exec "${CLI[@]}" status --plan "$ROOT/plan" ${EXTRA[@]+"${EXTRA[@]}"} "$@" ;;

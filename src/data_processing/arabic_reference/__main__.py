@@ -22,6 +22,9 @@ def main(argv=None):
     p.add_argument("--output", type=Path, required=True)
     p.add_argument("--per-dataset", type=int, default=100)
     p.add_argument("--seed", type=int, default=20261019)
+    p.add_argument(
+        "--full-suite", action="store_true", help="Select every row in all six source test datasets"
+    )
     for command in ("doctor", "propose"):
         p = commands.add_parser(command)
         p.add_argument("--url", default="http://localhost:8010/v1")
@@ -54,6 +57,37 @@ def main(argv=None):
     p.add_argument("--plan", type=Path, required=True)
     p.add_argument("--reviewed", type=Path, required=True)
     p.add_argument("--output", type=Path, required=True)
+    for command in ("export-dataset", "leaderboard"):
+        p = commands.add_parser(command)
+        p.add_argument("--plan", type=Path, required=True)
+        p.add_argument("--output", type=Path, required=True)
+        p.add_argument("--reviewed", type=Path)
+        p.add_argument(
+            "--release-id",
+            default="v4-draft-001" if command == "export-dataset" else "v4-board-001",
+        )
+        if command == "export-dataset":
+            p.add_argument("--proposals", type=Path)
+            p.add_argument("--datasets", nargs="+")
+        else:
+            p.add_argument(
+                "--prediction",
+                action="append",
+                default=[],
+                help="Additional MODEL=prediction.jsonl on exactly this plan",
+            )
+    p = commands.add_parser("publish")
+    p.add_argument("--bundle", type=Path, required=True)
+    p.add_argument("--repo-id", required=True)
+    p.add_argument(
+        "--execute",
+        action="store_true",
+        help="Perform private upload; otherwise print an offline dry run",
+    )
+    p.add_argument(
+        "--expected-head",
+        help="Required current commit SHA when updating an existing private repository",
+    )
     p = commands.add_parser("status")
     p.add_argument("--plan", type=Path, required=True)
     p.add_argument("--proposals", type=Path)
@@ -66,7 +100,9 @@ def main(argv=None):
                 if not separator:
                     raise ValueError("--prediction must be NAME=PATH")
                 inputs.append((name, Path(path)))
-            result = prepare(inputs, args.output, args.per_dataset, args.seed)
+            result = prepare(
+                inputs, args.output, args.per_dataset, args.seed, full_suite=args.full_suite
+            )
             result = {k: v for k, v in result.items() if k not in ("sources", "policy")}
         elif args.command == "doctor":
             _, rows = load_plan(args.plan)
@@ -101,6 +137,39 @@ def main(argv=None):
             result = import_reviews(args.plan, args.reviews, args.output)
         elif args.command == "score":
             result = score(args.plan, args.reviewed, args.output)
+        elif args.command == "export-dataset":
+            from .release import export_dataset
+
+            result = export_dataset(
+                args.plan,
+                args.output,
+                proposals=args.proposals,
+                reviewed=args.reviewed,
+                datasets=args.datasets,
+                release_id=args.release_id,
+            )
+        elif args.command == "leaderboard":
+            from .leaderboard import build_leaderboard
+
+            inputs = []
+            for entry in args.prediction:
+                name, separator, path = entry.partition("=")
+                if not separator:
+                    raise ValueError("--prediction must be NAME=PATH")
+                inputs.append((name, Path(path)))
+            result = build_leaderboard(
+                args.plan,
+                args.output,
+                reviewed=args.reviewed,
+                predictions=inputs,
+                release_id=args.release_id,
+            )
+        elif args.command == "publish":
+            from .release import publish_bundle
+
+            result = publish_bundle(
+                args.bundle, args.repo_id, execute=args.execute, expected_head=args.expected_head
+            )
         else:
             plan, rows = load_plan(args.plan)
             result = {

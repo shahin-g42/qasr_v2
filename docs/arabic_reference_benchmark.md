@@ -1,6 +1,6 @@
 # Arabic reference benchmark initiative
 
-Status: the Flash-Next smoke has been inspected. Prompt/parser v3.2 preserves additional model notes as unverified uncertainties and clarifies retention of useful diacritics. Local replay accepts all 14 saved final replies without changing transcript strings. Full draft generation can follow a successful v3.2 cluster smoke; audio review remains pending.
+Status: the v3.2 Flash-Next smoke has been inspected. The v3.3 validator audits and removes anchored no-op edit records without changing draft text. Local replay accepts all 14 final replies and all 17 attempts, with all six controls passing. Full draft generation can follow a successful v3.3 cluster smoke; audio review remains pending.
 This is an evaluation-only initiative. No existing benchmark reference or training label is overwritten.
 
 ## Stages and evidence required
@@ -113,7 +113,7 @@ formatting edits may reference the intermediate text produced by earlier edits.
 
 This does not expand the permitted text transformations: real hamza additions still
 require declared spelling edits, and word, numeric, script and unsupported letter changes
-remain rejected. No-op edits remain invalid. V3.1 also clarifies tanwin/shadda versus hamza,
+remain rejected. V3.1 still rejected no-op edit records; v3.3 below handles anchored retention notes separately. V3.1 also clarifies tanwin/shadda versus hamza,
 omitting no-op edits, preserving useful diacritics during repairs, and avoiding invented
 alternative words or morphological explanations. The frozen annotation policy and plan
 remain v3; only the proposer/validator changes. New runs use `smoke-v3.1/` so the original
@@ -131,7 +131,7 @@ differences. The Casablanca French draft retains a parenthetical annotation that
 duplicate the spoken content. Review the complete audio and all candidates, not just
 issues mentioned by the proposer. Neither agreement nor fluent explanations certify truth.
 
-After the current v3.2 smoke passes, proceed with the 1,059-clip proposal pilot and listening pack.
+After the current v3.3 smoke passes, proceed with the 1,059-clip proposal pilot and listening pack.
 All final reference columns remain null until review. Inspect failures, abstentions and
 representative drafts across all datasets before any later expansion beyond this pilot.
 
@@ -160,7 +160,7 @@ All 14 saved final replies pass local parser replay, preserving both transcript 
 seven edit-label corrections across three records, plus three relocated notes across the
 two failed records. All six controls pass. The first Casablanca control reply is also
 recoverable without retry. Three other first attempts still fail for invalid/no-op edit
-spans; those checks are deliberately retained. Source hashes, row bindings and JSONL copies
+spans in that replay. V3.3 below distinguishes redundant retention notes from absent spans. Source hashes, row bindings and JSONL copies
 were validated. This is replay of saved replies, not a new inference run or audio validation.
 
 Text inspection also found substantive limitations:
@@ -186,13 +186,50 @@ higher accuracy. The small smoke times are not 90-worker throughput measurements
 The frozen annotation policy and plan remain v3; use a fresh output root for the new
 proposer run, and retain earlier evidence unchanged.
 
+## V3.2 smoke findings and v3.3 no-op normalization
+
+The next Flash-Next run returned 13 proposed and one failed in 17.703 seconds, with
+three validation retries. No issue-note relocation was needed. The failed Common Voice
+control `commonvoice:008808` preserved its complete selected candidate in both proposed
+fields, including punctuation and diacritics. Its edit list nevertheless contained
+`أنّه` → `أنّه` and `أنّ` → `أنّ`, explicitly explained as unchanged spelling.
+The first reply also included an unchanged whole-sentence formatting record.
+
+V3.3 removes an edit record only when its before/after strings are exactly equal,
+nonempty and anchored in both of the stated texts. It preserves the original record and
+reason in `validation_adjustments` with `type="no_op_edit_removed"`; `change_index` refers
+to the raw response's edit-list index, as it does for category adjustments. The summary
+adds `removed_no_op_edits`. These removals contribute to `normalized_records`, while
+`normalized_edits` continues to count category changes only. Raw replies stay unchanged.
+
+Retained text is not evidence for a real edit. Removed records cannot satisfy the checks
+for changed wording, ideal spelling or formatting. Empty/absent spans still fail, now
+with the offending edit index and whether its source or target span is missing. Missing
+required issue notes, unsupported transformations and audio-review gates are unchanged.
+The system and repair instructions are unchanged from v3.2; this is a validator fix.
+
+After source hashes, bindings and JSONL copies were checked, local replay accepted all
+14 final replies and all 17 attempts in this run, without changing either transcript.
+All six agreement controls pass. The final Common Voice reply loses two redundant edit
+records; the other final proposals retain their existing accepted text and edits.
+Regression replay of the two preceding smokes also passes their controls, while their
+genuinely absent spans and unsupported script conversion remain rejected.
+
+Content quality still needs review. Noisy MASC `000031` and MGB2 `000014` still strip
+supplied shaddas despite the prompt. MGB2 `003751` now adds guessed vowels; its rationale
+incorrectly calls vowel marks hamza additions. Several explanations still invent absent
+alternatives, and the Casablanca agreement control contains repetitive commentary.
+These are text-only drafts, not verified improvements. Parser success must not be treated
+as a semantic or audio-accuracy gate. The human listening stage remains necessary before
+any scoring against final columns.
+
 ## Retry on the cluster
 
 From the pilot code checkout, after fetching and fast-forwarding the pilot branch:
 
 ```bash
 export ARABIC_REF_SOURCE_REPO=/lustrefs/shared/shahin.konadath/workspace/train/stt/v2/qasr_v2
-export ARABIC_REF_ROOT="$ARABIC_REF_SOURCE_REPO/verification/arabic-reference-pilot-v3-flash-next-r2"
+export ARABIC_REF_ROOT="$ARABIC_REF_SOURCE_REPO/verification/arabic-reference-pilot-v3-flash-next-r3"
 export LLM_MODEL_NAME=corrector
 export REF_CONCURRENCY=90
 bash scripts/corpus/run_arabic_reference.sh test -q &&
@@ -203,7 +240,7 @@ bash scripts/corpus/run_arabic_reference.sh run &&
 bash scripts/corpus/run_arabic_reference.sh review-pack
 ```
 
-The smoke gate stops this chain if it fails. The new smoke writes to `$ARABIC_REF_ROOT/smoke-v3.2/`. Its start event and summary include
+The smoke gate stops this chain if it fails. The new smoke writes to `$ARABIC_REF_ROOT/smoke-v3.3/`. Its start event and summary include
 the absolute output path. Full drafts are in `proposals/`; the listening pack is in
 `listening/`. Return the smoke and full summaries and proposal records for inspection. No serving-model change
 or restart is needed for these client-side changes.
@@ -254,7 +291,7 @@ curl -fsS http://localhost:8010/health
 
 Wait for model loading and health before `doctor`. These commands do not stop an existing service; container-name or port conflicts should be resolved by identifying the existing service, not automatically replacing it.
 
-For the current v3 plan, the prior smoke inspection and parser replay support proceeding to the full proposal pilot after the v3.2 smoke gate passes. For a new dataset or plan, inspect the smoke records before scaling. Smoke covers each dataset, the longest request, a heavily flagged case and six wording-agreement controls (14 clips on the supplied plan, not all 1,059). The inspected cluster smoke runs are recorded above; the full pilot will provide the first 90-worker throughput evidence.
+For the current v3 plan, the prior smoke inspection and parser replay support proceeding to the full proposal pilot after the v3.3 smoke gate passes. For a new dataset or plan, inspect the smoke records before scaling. Smoke covers each dataset, the longest request, a heavily flagged case and six wording-agreement controls (14 clips on the supplied plan, not all 1,059). The inspected cluster smoke runs are recorded above; the full pilot will provide the first 90-worker throughput evidence.
 
 ## After smoke inspection
 

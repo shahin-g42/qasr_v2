@@ -28,7 +28,7 @@ case "$COMMAND" in
       --url "$LLM_URL" --model "$MODEL_NAME" ${CHECKPOINT_ARGS[@]+"${CHECKPOINT_ARGS[@]}"} "$@" ;;
   smoke|run)
     EXTRA=(); DEST="$ROOT/proposals"
-    if [[ "$COMMAND" == smoke ]]; then EXTRA=(--smoke); DEST="$ROOT/smoke-v3.2"; fi
+    if [[ "$COMMAND" == smoke ]]; then EXTRA=(--smoke); DEST="$ROOT/smoke-v3.3"; fi
     exec "${CLI[@]}" propose --plan "$ROOT/plan" --output "$DEST" \
       --url "$LLM_URL" --model "$MODEL_NAME" ${CHECKPOINT_ARGS[@]+"${CHECKPOINT_ARGS[@]}"} \
       --revision "${LLM_REVISION:-unrecorded}" --concurrency "${REF_CONCURRENCY:-16}" \

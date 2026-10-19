@@ -373,6 +373,9 @@ def propose(
         summary["relocated_issue_notes"] = sum(
             a.get("type") == "issue_note_relocation" for a in adjustments
         )
+        summary["removed_no_op_edits"] = sum(
+            a.get("type") == "no_op_edit_removed" for a in adjustments
+        )
         summary["validation_retries"] = sum(len(r.get("attempts", [])) > 1 for r in records)
         summary["failure_counts"] = dict(
             Counter(r["error"] for r in records if r["status"] == "failed")

@@ -478,7 +478,7 @@ def test_launcher_uses_explicit_corrector_not_training_tuning(tmp_path, monkeypa
     assert args[args.index("--model") + 1] == "corrector"
     if stage != "doctor":
         assert args[args.index("--concurrency") + 1] == "12"
-        destination = "smoke-v3.2" if stage == "smoke" else "proposals"
+        destination = "smoke-v3.3" if stage == "smoke" else "proposals"
         assert args[args.index("--output") + 1] == str(tmp_path / "out" / destination)
     assert "--batch-size" not in args and "--workers-per-gpu" not in args
     # Only an explicit pilot checkpoint pin constrains the running service.
@@ -962,10 +962,9 @@ def test_mislabelled_diacritics_preserve_transcript_and_record_adjustments(befor
         ("على", "علي"),
         ("أم", "ام"),
         ("بارت تايم", "part-time"),
-        ("مرحبا", "مرحبا"),
     ],
 )
-def test_edit_normalization_cannot_bypass_content_or_noop_validation(before, after):
+def test_edit_normalization_cannot_bypass_content_validation(before, after):
     row = proposal_row()
     row["text"] = before
     value = proposal_value(row)
@@ -1146,3 +1145,159 @@ def test_human_issue_resolutions_still_require_exact_keys(plan):
     review["issue_resolutions"]["duration"] = "Additional model note is not a required flag"
     with pytest.raises(ValueError, match="Unexpected review issue note keys: duration"):
         validate_review(review, row)
+
+
+@pytest.mark.parametrize("include_retention_note", [False, True])
+def test_commonvoice_unchanged_draft_drops_only_redundant_edit_metadata(include_retention_note):
+    row = proposal_row()
+    row["text"] = "قال توم أنّه شكّ أنّ ماري ستفعل ذلك."
+    value = proposal_value(row)
+    value.update(proposed_verified_text=row["text"], proposed_ideal_text=row["text"])
+    value["changes"] = [
+        {
+            "kind": "ideal_orthography",
+            "before": word,
+            "after": word,
+            "reason": "Hamza already present",
+        }
+        for word in ("أنّه", "أنّ")
+    ]
+    if include_retention_note:
+        value["changes"].append(
+            {
+                "kind": "formatting",
+                "before": row["text"],
+                "after": row["text"],
+                "reason": "Retained diacritics and punctuation",
+            }
+        )
+    raw = json.dumps(value, ensure_ascii=False)
+    adjustments = []
+    parsed = parse_proposal(raw, "stop", row, adjustments=adjustments)
+    assert parsed == {**value, "changes": []}
+    assert len(adjustments) == len(value["changes"])
+    for index, adjustment in enumerate(adjustments):
+        assert adjustment["type"] == "no_op_edit_removed"
+        assert adjustment["change_index"] == index
+        assert adjustment["change"] == value["changes"][index]
+    assert json.loads(raw) == value
+    again = []
+    assert parse_proposal(json.dumps(parsed), "stop", row, adjustments=again) == parsed
+    assert again == []
+
+
+@pytest.mark.parametrize(
+    "kind", ["formatting", "ideal_orthography", "orthography", "content", "script", "unclear"]
+)
+def test_anchored_noop_is_not_actual_edit_evidence(kind):
+    row = proposal_row()
+    value = proposal_value(row)
+    value.update(proposed_verified_text=row["text"], proposed_ideal_text=row["text"])
+    value["changes"] = [{"kind": kind, "before": "بكم", "after": "بكم", "reason": "Retained text"}]
+    assert parse_proposal(json.dumps(value), "stop", row)["changes"] == []
+
+
+@pytest.mark.parametrize("span", ["", " ", "not present"])
+def test_noop_must_have_nonempty_anchored_spans(span):
+    row = proposal_row()
+    value = proposal_value(row)
+    value.update(proposed_verified_text=row["text"], proposed_ideal_text=row["text"])
+    value["changes"] = [
+        {"kind": "formatting", "before": span, "after": span, "reason": "Claimed retention"}
+    ]
+    adjustments = []
+    with pytest.raises(ValueError, match=r"not anchored.*change\[0\]"):
+        parse_proposal(json.dumps(value), "stop", row, adjustments=adjustments)
+    assert adjustments == []
+
+
+@pytest.mark.parametrize(
+    "base,wording,ideal,kind,span,error",
+    [
+        ("مرحبا بكم", "مرحبا بكم", "مرحبًا بكم.", "formatting", "بكم", "Unexplained formatting"),
+        ("لا تذهب", "تذهب", "تذهب", "content", "تذهب", "Unexplained word/spelling/script"),
+        ("انا هنا", "انا هنا", "أنا هنا", "ideal_orthography", "هنا", "matching edit evidence"),
+    ],
+)
+def test_noop_cannot_cover_an_actual_unexplained_change(base, wording, ideal, kind, span, error):
+    row = proposal_row()
+    row["text"] = base
+    value = proposal_value(row)
+    value.update(proposed_verified_text=wording, proposed_ideal_text=ideal)
+    value["changes"] = [{"kind": kind, "before": span, "after": span, "reason": "Retained text"}]
+    adjustments = []
+    with pytest.raises(ValueError, match=error):
+        parse_proposal(json.dumps(value), "stop", row, adjustments=adjustments)
+    assert adjustments == []
+
+
+def test_noop_removal_keeps_raw_indices_for_actual_edit_adjustments():
+    row = proposal_row()
+    value = proposal_value(row)
+    value["changes"][0]["kind"] = "ideal_orthography"
+    value["changes"].insert(
+        0, {"kind": "content", "before": "بكم", "after": "بكم", "reason": "Retained"}
+    )
+    adjustments = []
+    parsed = parse_proposal(json.dumps(value), "stop", row, adjustments=adjustments)
+    assert len(parsed["changes"]) == 1 and parsed["changes"][0]["kind"] == "formatting"
+    assert [a["change_index"] for a in adjustments] == [0, 1]
+    assert [a["type"] for a in adjustments] == ["no_op_edit_removed", "edit_category"]
+    assert parsed["proposed_ideal_text"] == value["proposed_ideal_text"]
+
+
+def test_runtime_audits_noop_removal_without_regeneration(plan, tmp_path, server):
+    url, state = server
+
+    def reply(body):
+        value = proposal_value(payload=json.loads(body["messages"][1]["content"]))
+        value["proposed_ideal_text"] = value["proposed_verified_text"]
+        value["changes"] = [
+            {
+                "kind": "ideal_orthography",
+                "before": "بكم",
+                "after": "بكم",
+                "reason": "Retained spelling",
+            },
+            {
+                "kind": "formatting",
+                "before": "مرحبا بكم",
+                "after": "مرحبا بكم",
+                "reason": "Retained formatting",
+            },
+        ]
+        return value
+
+    state["reply"] = reply
+    output = tmp_path / "noop"
+    result = propose(plan, output, url=url, model="corrector", smoke=True, emit=lambda _: None)
+    assert state["calls"] == 6 and result["validation_retries"] == 0
+    assert result["normalized_records"] == 6 and result["removed_no_op_edits"] == 12
+    assert result["normalized_edits"] == 0 and result["relocated_issue_notes"] == 0
+    assert result["smoke_checks"]["passed"] and result["verified"] == 0
+    for record in read_jsonl(output / "proposals.jsonl"):
+        raw = json.loads(record["raw_response"])
+        assert len(raw["changes"]) == 2 and record["proposal"]["changes"] == []
+        assert record["validation_adjustments"] == record["attempts"][0]["validation_adjustments"]
+        assert record["proposal"]["proposed_verified_text"] == raw["proposed_verified_text"]
+        assert record["proposal"]["proposed_ideal_text"] == raw["proposed_ideal_text"]
+        assert record["verified_text"] is None and record["ideal_text"] is None
+    resumed = propose(plan, output, url=url, model="corrector", smoke=True, emit=lambda _: None)
+    assert resumed["resumed"] == 6 and state["calls"] == 6
+    assert resumed["removed_no_op_edits"] == 12
+    pack = tmp_path / "listening"
+    review_pack(plan, pack, proposals=output, metadata_only=True)
+    jobs = json.loads((pack / "jobs.json").read_text())["jobs"]
+    assert all(
+        len(job["validation_adjustments"]) == 2 and job["proposal"]["changes"] == [] for job in jobs
+    )
+
+
+@pytest.mark.parametrize("span,missing", [("مرحبا", "after"), ("مرحبًا", "before")])
+def test_noop_requires_presence_in_both_stated_texts(span, missing):
+    value = proposal_value()
+    value["changes"].insert(
+        0, {"kind": "formatting", "before": span, "after": span, "reason": "Claimed retention"}
+    )
+    with pytest.raises(ValueError, match=rf"change\[0\] {missing} span is absent"):
+        parse_proposal(json.dumps(value), "stop", proposal_row())

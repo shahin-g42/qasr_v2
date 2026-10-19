@@ -1677,7 +1677,14 @@ class PrivateHubStub:
         from huggingface_hub.errors import RepositoryNotFoundError
 
         if not self.exists:
-            raise RepositoryNotFoundError("Fixture repository is absent")
+            # Hub versions differ on whether response is optional. Keep the
+            # fixture transport-independent while supplying its HTTP attributes.
+            response = SimpleNamespace(
+                status_code=404,
+                headers={},
+                request=SimpleNamespace(method="GET", url=f"https://huggingface.co/{repo_id}"),
+            )
+            raise RepositoryNotFoundError("Fixture repository is absent", response=response)
         return SimpleNamespace(private=self.private, sha="existing-head")
 
     def create_repo(self, repo_id, **kwargs):

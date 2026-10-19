@@ -978,3 +978,36 @@ Pull the fix and repeat `bash scripts/corpus/benchmark_public_asr.sh all` with t
 environment settings and cache directory. No dependency reinstall or cache deletion is
 needed for this validator correction. A download progress display of `0.00B` on retry
 can mean the files are already cached; it does not by itself indicate empty weights.
+
+### Enhanced-reference guide in the leaderboard
+
+The dashboard and Space README explain the populated `ideal_text_draft` column,
+contextual orthography, selective diacritics, dialect retention, punctuation and
+`ﷺ`. Six curated examples show complete original/draft text pairs with source IDs
+and a computed indication of whether their differences survive ELM normalization.
+These illustrations are separate from the hash-sampled transcript browser. Each
+pair must match its recorded fingerprint and belong to the eligible, non-speculative
+subset; changed or absent pairs are omitted from other releases. They illustrate
+editorial features, not their prevalence or audio accuracy.
+
+The guide explains why paired reference tracks are useful, that unchanged model
+predictions can score differently against a different reference, and that candidate
+assistance may favor QASR/GQASR. The blessing example explicitly notes that the
+scorer does not expand `ﷺ`, so an equivalent spelled-out blessing can incur errors.
+No metric, reference, prediction or eligibility rule changes with this page update.
+
+To rebuild and publish after the public model runs complete, keep the same
+`PUBLIC_BENCH_ROOT` and `PUBLIC_MODELS` used for those runs, then choose a fresh
+leaderboard bundle:
+
+```bash
+git pull --ff-only origin codex/arabic-reference-pilot
+export ARABIC_REF_BOARD_RELEASE_ID=v4.8-reference-guide-001
+export ARABIC_REF_SPACE_BUNDLE="$ARABIC_REF_ROOT/leaderboard-$ARABIC_REF_BOARD_RELEASE_ID"
+bash scripts/corpus/benchmark_public_asr.sh publish
+```
+
+This stage reuses completed predictions, includes the public model submissions,
+rebuilds the scores and guide, and verifies the private Space upload. It does not
+run GPU inference again. For an offline preview of the same completed runs, use
+`score` instead of `publish`.

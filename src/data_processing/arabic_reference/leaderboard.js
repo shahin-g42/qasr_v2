@@ -28,6 +28,36 @@ node('review-note').textContent = `${count(data.verified_clips)} of ${count(data
 node('provenance').textContent = JSON.stringify({release_id:data.release_id, dataset_release:data.dataset_release, annotation_source:data.annotation_source, manifest_digest:data.manifest_digest, policy_sha256:data.policy_sha256, scorer_sha256:data.scorer_sha256, builder_sha256:data.builder_sha256, reviewed_manifest_sha256:data.reviewed_manifest_sha256, prediction_sources:data.prediction_sources, model_details:data.model_details, submission_manifest_sha256:data.submission_manifest_sha256}, null, 2);
 node('example-sampling').textContent = data.example_sampling + ' Text preview only; listen to the source audio before judging accuracy.';
 
+const guide = data.reference_guide;
+node('reference-eligible').textContent = count(data.annotation_source?.eligible_clips || 0);
+node('reference-coverage-note').textContent = data.annotation_source ? `${count(data.annotation_source.excluded_clips)} clips excluded from enhanced scoring. Original scores in the enhanced comparison use these same eligible clips.` : 'No enhanced annotation bundle is attached to this release.';
+node('reference-example-selection').textContent = guide?.selection || 'Editorial examples are not available in this release.';
+node('reference-examples-empty').hidden = !!guide?.examples?.length;
+for (const example of guide?.examples || []) {
+  const card = make('article', undefined, 'card reference-example');
+  card.append(make('p', `${names[example.dataset] || example.dataset} · ${example.id}`, 'reference-example-id'), make('h3', example.title));
+  for (const [label, text, cls] of [['Original reference', example.original, ''], ['Enhanced draft · ideal_text_draft', example.ideal_draft, ' draft']]) {
+    const block = make('div', undefined, 'reference-pair' + cls);
+    const content = make('p', text, 'arabic-text'); content.lang = 'ar'; content.dir = 'rtl';
+    block.append(make('span', label, 'reference-pair-label'), content); card.append(block);
+  }
+  const explanation = make('p', undefined, 'reference-explanation');
+  for (const part of example.explanation.split(/([\u0600-\u06ff\ufb50-\ufdff\ufe70-\ufeff]+(?: +[\u0600-\u06ff\ufb50-\ufdff\ufe70-\ufeff]+)*)/u)) {
+    if (/[\u0600-\u06ff\ufb50-\ufdff\ufe70-\ufeff]/u.test(part)) { const span = make('bdi', part); span.dir = 'rtl'; span.lang = 'ar'; explanation.append(span); }
+    else explanation.append(document.createTextNode(part));
+  }
+  card.append(explanation, make('p', example.normalized_equal ? 'ELM check: these two texts become identical after normalization. Strict scoring retains their differences.' : 'ELM check: differences remain after normalization, so both normalized and strict scoring can be affected.', 'reference-metric-note'));
+  node('reference-examples').append(card);
+}
+for (const [id, track] of [['explore-enhanced-normalized', 'draft_elm'], ['explore-enhanced-strict', 'draft_strict']]) {
+  const panel = data.panels.find(p => p.id === 'enhanced-full') || data.panels.find(p => p.reference_status === 'candidate_assisted_unverified');
+  node(id).disabled = !panel;
+  node(id).onclick = () => {
+    node('panel').value = panel.id; render(true); node('track').value = track; render();
+    location.hash = 'ranking';
+  };
+}
+
 function render(updateTracks = false) {
   const panel = data.panels.find(p => p.id === node('panel').value) || data.panels[0];
   if (!panel) { node('empty').hidden = false; return; }

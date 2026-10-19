@@ -13,6 +13,7 @@ from pathlib import Path
 
 from .core import DATASETS, load_plan, read_jsonl, sha256, validate_source, write_json
 from .leaderboard_inputs import annotation_drafts, dataset_pin, transcript_examples
+from .leaderboard_reference import reference_guide, reference_guide_markdown
 from .release import finish_bundle, valid_release_id
 from .review import validated_reviews
 
@@ -223,6 +224,7 @@ def build_leaderboard(
         ],
         "examples": transcript_examples(rows, drafts, annotation_rows, additions),
         "example_sampling": "Three SHA256-ranked IDs per dataset, independent of scores; non-speculative completed drafts when available. Illustrations, not an accuracy audit.",
+        "reference_guide": reference_guide(drafts),
         "panels": panels,
         "prediction_sources": [
             {k: s[k] for k in ("name", "predictions_sha256")} for s in plan["sources"]
@@ -302,7 +304,9 @@ The six-dataset macro gives each dataset equal weight. Within each dataset, WER/
 
 Dataset: {pin["url"] if pin else "No published dataset revision supplied."}
 
-The page records the immutable dataset revision, annotation bundle, prediction sources, reference policy and scorer hashes. Transcript examples are selected by stable ID hashes rather than favorable scores. Full-set ranking retains the original dataset membership, including any duplicate audio; enhanced coverage and exclusions are explicit.
+The page records the immutable dataset revision, annotation bundle, prediction sources, reference policy and scorer hashes. The transcript browser uses stable ID hashes; the separate editorial guide uses explicitly curated, exact-text-bound examples. Full-set ranking retains the original dataset membership, including any duplicate audio; enhanced coverage and exclusions are explicit.
+
+{reference_guide_markdown(payload["reference_guide"])}
 
 `leaderboard.json` contains metric counts, coverage, examples and provenance. `scores.csv` exports every panel (rates are fractions; multiply by 100 for percentages). `release.json` enumerates exactly the files allowed for upload. Private visibility is enforced by the publisher. This is not an independently audited public ranking or an official ELM rank.
 """)

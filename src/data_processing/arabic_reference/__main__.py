@@ -25,7 +25,7 @@ def main(argv=None):
     p.add_argument(
         "--full-suite", action="store_true", help="Select every row in all six source test datasets"
     )
-    for command in ("doctor", "propose"):
+    for command in ("doctor", "propose", "repair"):
         p = commands.add_parser(command)
         p.add_argument("--url", default="http://localhost:8010/v1")
         p.add_argument("--model", default="corrector")
@@ -41,7 +41,9 @@ def main(argv=None):
             p.add_argument("--output", type=Path, required=True)
             p.add_argument("--revision", default="unrecorded")
             p.add_argument("--concurrency", type=int, default=16)
-            p.add_argument("--max-tokens", type=int, default=4096)
+            p.add_argument("--max-tokens", type=int, default=8192 if command == "repair" else 4096)
+            if command == "repair":
+                p.add_argument("--source", type=Path, required=True)
             p.add_argument("--smoke", action="store_true")
             p.add_argument(
                 "--initial-cleanup",
@@ -125,7 +127,7 @@ def main(argv=None):
                     raise ValueError(f"Prepared audio changed: {row['id']}")
             result = doctor(args.url, args.model, args.checkpoint, args.timeout)
             result.update({"audio_hashes_checked": len(rows), "cpu_cores_visible": os.cpu_count()})
-        elif args.command == "propose":
+        elif args.command in {"propose", "repair"}:
             result = propose(
                 args.plan,
                 args.output,
@@ -138,6 +140,7 @@ def main(argv=None):
                 timeout=args.timeout,
                 smoke=args.smoke,
                 initial_cleanup=args.initial_cleanup,
+                repair_from=args.source if args.command == "repair" else None,
             )
         elif args.command == "scan":
             from .cleanup import scan
@@ -200,7 +203,7 @@ def main(argv=None):
                 result["missing_or_failed"] = len(rows) - len(records)
         print(json.dumps(result, ensure_ascii=False, indent=2))
         return int(
-            args.command == "propose"
+            args.command in {"propose", "repair"}
             and (
                 result["counts"].get("failed", 0) > 0
                 or (args.smoke and not result["smoke_checks"]["passed"])

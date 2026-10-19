@@ -16,7 +16,8 @@ LLM_URL="${LLM_URL:-http://localhost:8010}"
 MODEL_NAME="${LLM_MODEL_NAME:-corrector}"
 CHECKPOINT_ARGS=()
 if [[ -n "${ARABIC_REF_CHECKPOINT:-}" ]]; then CHECKPOINT_ARGS=(--checkpoint "$ARABIC_REF_CHECKPOINT"); fi
-COMMAND="${1:?Expected plan|plan-full|scan|doctor|smoke|run|correct|status|review-pack|import-reviews|score|export-dataset|leaderboard|publish-dataset|publish-leaderboard|test|llm-print|llm-start}"
+PROPOSALS="${ARABIC_REF_PROPOSALS:-$ROOT/proposals}"
+COMMAND="${1:?Expected plan|plan-full|scan|doctor|smoke|run|correct|repair|status|review-pack|import-reviews|score|export-dataset|leaderboard|publish-dataset|publish-leaderboard|test|llm-print|llm-start}"
 shift
 CLI=("$PY" -m data_processing.arabic_reference)
 case "$COMMAND" in
@@ -37,8 +38,14 @@ case "$COMMAND" in
       --url "$LLM_URL" --model "$MODEL_NAME" ${CHECKPOINT_ARGS[@]+"${CHECKPOINT_ARGS[@]}"} \
       --revision "${LLM_REVISION:-unrecorded}" --concurrency "${REF_CONCURRENCY:-$DEFAULT_CONCURRENCY}" \
       --max-tokens "${REF_MAX_TOKENS:-4096}" ${EXTRA[@]+"${EXTRA[@]}"} "$@" ;;
+  repair)
+    exec "${CLI[@]}" repair --plan "$ROOT/plan" --source "$PROPOSALS" \
+      --output "${ARABIC_REF_REPAIR_OUTPUT:-$ROOT/proposals-repaired-v4.2}" \
+      --url "$LLM_URL" --model "$MODEL_NAME" ${CHECKPOINT_ARGS[@]+"${CHECKPOINT_ARGS[@]}"} \
+      --revision "${LLM_REVISION:-unrecorded}" --concurrency "${REF_CONCURRENCY:-90}" \
+      --max-tokens "${REF_REPAIR_MAX_TOKENS:-8192}" "$@" ;;
   review-pack)
-    exec "${CLI[@]}" review-pack --plan "$ROOT/plan" --proposals "$ROOT/proposals" \
+    exec "${CLI[@]}" review-pack --plan "$ROOT/plan" --proposals "$PROPOSALS" \
       --audio-root "$AUDIO_ROOT" --output "$ROOT/listening" "$@" ;;
   import-reviews)
     exec "${CLI[@]}" import-reviews --plan "$ROOT/plan" --output "$ROOT/reviewed-v1.jsonl" "$@" ;;
@@ -49,7 +56,7 @@ case "$COMMAND" in
     EXTRA=()
     if [[ -f "$ROOT/reviewed-v1.jsonl" ]]; then EXTRA+=(--reviewed "$ROOT/reviewed-v1.jsonl"); fi
     if [[ "$COMMAND" == export-dataset ]]; then
-      if [[ -f "$ROOT/proposals/run.json" ]]; then EXTRA+=(--proposals "$ROOT/proposals"); fi
+      if [[ -f "$PROPOSALS/run.json" ]]; then EXTRA+=(--proposals "$PROPOSALS"); fi
       exec "${CLI[@]}" export-dataset --plan "$ROOT/plan" \
         --output "${ARABIC_REF_DATASET_BUNDLE:-$ROOT/dataset-release}" \
         --release-id "${ARABIC_REF_RELEASE_ID:-v4-draft-001}" ${EXTRA[@]+"${EXTRA[@]}"} "$@"
@@ -66,7 +73,7 @@ case "$COMMAND" in
     exec "${CLI[@]}" publish --bundle "${ARABIC_REF_SPACE_BUNDLE:-$ROOT/leaderboard-release}" \
       --repo-id "${HF_SPACE_REPO:?Set HF_SPACE_REPO to your private Space ID}" "$@" ;;
   status)
-    EXTRA=(); if [[ -f "$ROOT/proposals/run.json" ]]; then EXTRA=(--proposals "$ROOT/proposals"); fi
+    EXTRA=(); if [[ -f "$PROPOSALS/run.json" ]]; then EXTRA=(--proposals "$PROPOSALS"); fi
     exec "${CLI[@]}" status --plan "$ROOT/plan" ${EXTRA[@]+"${EXTRA[@]}"} "$@" ;;
   test) exec "$PY" -m pytest tests/test_arabic_reference.py "$@" ;;
   llm-print|llm-start)

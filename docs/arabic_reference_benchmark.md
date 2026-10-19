@@ -1,11 +1,52 @@
 # Arabic reference benchmark initiative
 
-Status: prompt v4.1 supports full-dataset initial cleanup followed by contextual LLM correction of every clip. The local initial pass has processed all 46,757 rows; the full LLM pass still needs to run on the cluster. Earlier pilot results remain preserved, and the corrector response allowance remains 4,096 tokens.
+Status: the v4.1 full correction run completed with 46,341 proposed drafts, 410 failed responses and 6 unresolved clips. A failed-only `repair` stage is available. It carries completed records forward unchanged and preserves the original failed responses and run provenance.
 This is an evaluation-only initiative. Original benchmark references and training labels remain immutable. Full-suite selection, private Parquet releases, a private static leaderboard Space and additional-model scoring are now implemented. They do not mark drafts as reviewed.
+
+## Recover failed responses from the completed v4.1 run
+
+The supplied run has 386 `finish_reason=length` failures (all reached 4,096 completion tokens) and 24 malformed-JSON failures. A conservative repetition check found the same 12-word sequence at least four times within the final 500 words in 346 failed replies. Examples loop over shadda conventions or speculative interpretations after already emitting the draft text. Increasing the token limit alone is not a sufficient remedy.
+
+`repair` retains the linguistic policy and adds bounded final explanations: one short sentence per reason/issue note, up to eight listening uncertainties, no repeated debates or edit lists. It allows 8,192 output tokens without shortening the transcript. Each failed ID gets at most three attempts, with fresh candidate context each time; failed response bodies are never fed back. The first attempt uses temperature 0, subsequent attempts 0.2. Incomplete/invalid replies remain failures, never silently salvaged or padded into valid JSON. Every raw response and its settings are retained. Valid output still needs linguistic/audio review.
+
+Run on the cluster from the `codex/arabic-reference-pilot` checkout, using the existing `corrector` server:
+
+```bash
+git pull --ff-only origin codex/arabic-reference-pilot
+export ARABIC_REF_SOURCE_REPO=/lustrefs/shared/shahin.konadath/workspace/train/stt/v2/qasr_v2
+export ARABIC_REF_ROOT="$ARABIC_REF_SOURCE_REPO/verification/arabic-reference-v4.1-full"
+export ARABIC_REF_PROPOSALS="$ARABIC_REF_ROOT/proposals"
+export ARABIC_REF_REPAIR_OUTPUT="$ARABIC_REF_ROOT/proposals-repaired-v4.2"
+export LLM_MODEL_NAME=corrector
+export REF_CONCURRENCY=90
+export REF_REPAIR_MAX_TOKENS=8192
+
+bash scripts/corpus/run_arabic_reference.sh test -q &&
+bash scripts/corpus/run_arabic_reference.sh repair
+```
+
+This reads the existing full plan; do not rerun `plan-full`, `scan` or `correct`. `REF_REPAIR_MAX_TOKENS` is separate from the old `REF_MAX_TOKENS=4096`. The source directory must contain its original `run.json` and every selected checkpoint in `records/`; the aggregate file alone is not a resumable checkpoint set. Source records are validated before any LLM requests. For this run, only the 410 failed IDs are sent; 46,341 proposed plus six unresolved records are copied byte-for-byte with their original run hashes. New replies use a new run identity recording the parent, selected failure hashes, prompt and generation settings. The six unresolved SADA cases require listening, not retries to force an answer.
+
+The new directory contains all 46,757 records and its combined `summary.json`/`proposals.jsonl`. Source failures are archived under `source-failures/records/`. Repeating the exact same repair command resumes the repair run and retries only remaining failures; prior failed repair records are retained under `attempt-history/`. Settings/code changes require a new repair output directory; the previous repaired directory can become the new source. Never rewrite the original `run.json` to bypass the resume check.
+
+Inspect `summary.json` and its `recovery` section. Set the proposal source for subsequent review/export commands:
+
+```bash
+export ARABIC_REF_PROPOSALS="$ARABIC_REF_REPAIR_OUTPUT"
+bash scripts/corpus/run_arabic_reference.sh status
+# Use a fresh immutable bundle if a previous export already exists:
+export ARABIC_REF_DATASET_BUNDLE="$ARABIC_REF_ROOT/dataset-repaired-v4.2"
+export ARABIC_REF_RELEASE_ID=v4.2-repaired-drafts
+bash scripts/corpus/run_arabic_reference.sh export-dataset
+```
+
+To retry remaining failures in the same repair output after this export selection, restore `ARABIC_REF_PROPOSALS="$ARABIC_REF_ROOT/proposals"` first; source and output must be separate. The recovered folder works with review packs and private exports directly; no manual JSON merge is needed. Per-row original run hashes and ancestry remain available, and all final reference columns remain null until listening review. Usage in the combined summary covers current records; archived failed attempts remain available separately.
+
+Recovery addresses execution failures only. The 14,039 proposed records with editorial flags (including potential shadda/diacritic loss) remain separate review work; a well-formed draft is not proof of a better transcript.
 
 ## Full correction route: initial cleanup, then contextual LLM review of every clip
 
-The local initial pass processed all 46,757 rows: 7,776 use a shared, mark-preserving rendering and 38,981 retain a conservative source-style baseline. All 46,757 remain queued for LLM contextual review. The initial draft differs from the original in 10,144 rows (including whitespace/style changes), and 119 drafts contain ﷺ; these are processing counts, not verified accuracy improvements.
+The local initial pass processed all 46,757 rows: 7,776 use a shared, mark-preserving rendering and 38,981 retain a conservative source-style baseline. All 46,757 were submitted for LLM contextual review in the completed v4.1 run. The initial draft differs from the original in 10,144 rows (including whitespace/style changes), and 119 drafts contain ﷺ; these are processing counts, not verified accuracy improvements.
 
 Prompt v4.1 incorporates the full scan and the 14-record linguistic audit. The initial pass is followed by the corrector for **all 46,757 clips**, including agreement cases. It does not bypass the LLM based on model agreement. Use the existing served alias `corrector`; the currently selected checkpoint remains the one already running on your node.
 
@@ -18,7 +59,7 @@ The contextual rules cover `أ / إ / آ / ؤ / ئ / ء`, `ي / ى`, and `ة / �
 
 The exact existing phrase `صلى الله عليه وسلم`, including diacritized forms, is rendered as **`ﷺ`** in the ideal draft, both before and after the LLM. The conversion is logged. It never inserts a missing blessing or removes additional words from a longer blessing. Original references and ASR strings are unchanged. Normalized/strict benchmark token counts can differ for this convention; retain the original-reference track alongside editorial comparisons.
 
-Use a fresh root because the prompt, code and run identity changed:
+Original v4.1 launch commands, already completed for the supplied results (use `repair` above for this existing run):
 
 ```bash
 git pull --ff-only origin codex/arabic-reference-pilot
@@ -35,7 +76,7 @@ bash scripts/corpus/run_arabic_reference.sh doctor &&
 bash scripts/corpus/run_arabic_reference.sh correct
 ```
 
-After completion, inspect `proposals/summary.json`, especially `correction_methods`, `initial_cleanup_methods`, `editorial_flag_counts`, failures and unresolved coverage. `candidate_shadda_loss` exposes losses previously hidden by normalized wording checks; `declared_content_change_only_in_ideal` flags inconsistent placement of declared lexical edits. Numeric/identifier changes are flagged separately. These checks expose mechanical risks; they do not certify semantics or acoustic accuracy. No LLM run has been completed merely because local tests or the initial scan pass.
+After completion, inspect `proposals/summary.json`, especially `correction_methods`, `initial_cleanup_methods`, `editorial_flag_counts`, failures and unresolved coverage. `candidate_shadda_loss` exposes losses previously hidden by normalized wording checks; `declared_content_change_only_in_ideal` flags inconsistent placement of declared lexical edits. Numeric/identifier changes are flagged separately. These checks expose mechanical risks; they do not certify semantics or acoustic accuracy. Local tests and the initial scan alone do not establish LLM output quality.
 
 ```bash
 bash scripts/corpus/run_arabic_reference.sh export-dataset

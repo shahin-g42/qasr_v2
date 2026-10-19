@@ -86,8 +86,9 @@ def load_release_proposals(root, plan, rows):
     if identity["manifest_digest"] != plan["manifest_digest"]:
         raise ValueError("Proposals belong to a different plan")
     records = {}
+    run_hash = digest(identity)
     for row in rows:
-        record = load_record(root, row, digest(identity))
+        record = load_record(root, row, run_hash, inherited=identity.get("inherited_records", {}))
         if record is not None:
             if record.get("verified_text") is not None or record.get("ideal_text") is not None:
                 raise ValueError("A corrector record cannot supply final reference columns")
@@ -95,6 +96,31 @@ def load_release_proposals(root, plan, rows):
                 raise ValueError("Unknown proposal status")
             records[row["id"]] = record
     return records, identity
+
+
+def public_corrector(identity):
+    server = identity.get("server", {})
+    reported = server.get("server_model", {})
+    result = {
+        "served_model": server.get("served_model"),
+        "reported_checkpoint": reported.get("root"),
+        "revision": identity.get("checkpoint_revision"),
+        "run_sha256": digest(identity),
+        "prompt_version": identity.get("prompt_version"),
+        "prompt_sha256": identity.get("prompt_sha256"),
+        "generation": identity.get("generation"),
+    }
+    if result["reported_checkpoint"] and str(result["reported_checkpoint"]).startswith("/"):
+        result["reported_checkpoint"] = "local checkpoint; see private run provenance"
+    if identity.get("recovery_version"):
+        result.update(
+            {
+                k: identity[k]
+                for k in ("recovery_version", "recovery_prompt_sha256", "recovery_temperatures")
+            }
+        )
+        result["source_run_sha256"] = identity["repair_source"]["run_sha256"]
+    return result
 
 
 def public_source(row):
@@ -218,21 +244,17 @@ def export_dataset(
         }
         for ds in selected
     }
-    model = None
-    if identity:
-        server = identity.get("server", {})
-        reported = server.get("server_model", {})
-        model = {
-            "served_model": server.get("served_model"),
-            "reported_checkpoint": reported.get("root"),
-            "revision": identity.get("checkpoint_revision"),
-            "run_sha256": digest(identity),
-            "prompt_version": identity.get("prompt_version"),
-            "prompt_sha256": identity.get("prompt_sha256"),
-            "generation": identity.get("generation"),
-        }
-        if model["reported_checkpoint"] and str(model["reported_checkpoint"]).startswith("/"):
-            model["reported_checkpoint"] = "local checkpoint; see private run provenance"
+    model = public_corrector(identity) if identity else None
+    origin_counts = Counter(
+        r["proposal_run_sha256"] for r in output_rows if r["proposal_run_sha256"]
+    )
+    corrector_runs = []
+    origin = identity
+    while origin:
+        public = public_corrector(origin)
+        public["records_in_release"] = origin_counts[public["run_sha256"]]
+        corrector_runs.append(public)
+        origin = origin.get("repair_source", {}).get("identity")
     provenance = {
         "release_id": release_id,
         "manifest_digest": plan["manifest_digest"],
@@ -246,6 +268,7 @@ def export_dataset(
             {k: s[k] for k in ("name", "predictions_sha256")} for s in plan["sources"]
         ],
         "corrector": model,
+        "corrector_runs": corrector_runs,
         "reviewed_manifest_sha256": sha256(reviewed) if reviewed else None,
         "limitations": [
             "Candidate-assisted text-only drafts are not audio verification.",

@@ -4,10 +4,11 @@ from __future__ import annotations
 
 import fcntl
 import json
+import shutil
 import time
 from collections import Counter
 from concurrent.futures import FIRST_COMPLETED, ThreadPoolExecutor, wait
-from contextlib import contextmanager
+from contextlib import ExitStack, contextmanager
 from pathlib import Path
 
 from data_processing.asr_clean.endpoints import JsonClient
@@ -31,6 +32,12 @@ from .prompts import (
     messages,
     parse_proposal,
     proposal_checks,
+)
+from .recovery import (
+    RECOVERY_INSTRUCTION,
+    RECOVERY_VERSION,
+    source_index,
+    validate_recovery_metadata,
 )
 
 
@@ -100,16 +107,30 @@ def record_path(root, identifier):
     return Path(root) / "records" / (identifier.replace(":", "-") + ".json")
 
 
-def load_record(root, row, run_hash):
+def load_record(root, row, run_hash, *, inherited=None):
     path = record_path(root, row["id"])
     if not path.exists():
         return None
     record = json.loads(path.read_text())
     stored_hash = record.pop("record_sha256")
+    if inherited is None:
+        identity = json.loads((Path(root) / "run.json").read_text())
+        if digest(identity) != run_hash:
+            raise ValueError("Changed recovery identity")
+        inherited = identity.get("inherited_records", {})
+    allowed_origin = record["run_sha256"] == run_hash
+    expected = inherited.get(row["id"])
+    if expected is not None:
+        allowed_origin = record["status"] in {"proposed", "unresolved"} and expected == {
+            "run_sha256": record["run_sha256"],
+            "record_sha256": stored_hash,
+            "status": record["status"],
+        }
     if (
         digest(record) != stored_hash
         or record["binding"] != row["binding"]
-        or record["run_sha256"] != run_hash
+        or record["id"] != row["id"]
+        or not allowed_origin
     ):
         raise ValueError(f"Changed checkpoint record: {row['id']}")
     record["record_sha256"] = stored_hash
@@ -188,6 +209,7 @@ def propose(
     timeout=180,
     smoke=False,
     initial_cleanup=False,
+    repair_from=None,
     emit=print,
 ):
     if not 1 <= concurrency <= 256 or max_tokens < 128 or timeout <= 0:
@@ -198,7 +220,24 @@ def propose(
     if smoke:
         rows, controls = select_smoke(plan, rows)
     output = Path(output)
-    with exclusive(output):
+    source = Path(repair_from).resolve() if repair_from is not None else None
+    if source and (
+        source == output.resolve()
+        or source in output.resolve().parents
+        or output.resolve() in source.parents
+    ):
+        raise ValueError("Recovery output must be a separate directory, outside its source")
+    if source and smoke:
+        raise ValueError("Recovery uses the source selection; do not combine it with smoke")
+    with ExitStack() as locks:
+        locks.enter_context(exclusive(output))
+        source_identity, index, inherited = None, {}, {}
+        if source:
+            locks.enter_context(exclusive(source))
+            emit(json.dumps({"event": "reference_recovery_scan", "source": str(source)}))
+            source_identity, rows, index = source_index(source, plan, all_rows)
+            initial_cleanup = bool(source_identity.get("initial_cleanup"))
+            inherited = {key: value for key, value in index.items() if value["status"] != "failed"}
         server = doctor(url, model, checkpoint, timeout)
         identity = {
             "schema_version": 1,
@@ -219,6 +258,24 @@ def propose(
             "validation_retries": 1,
             "repair_prompt_sha256": digest(REPAIR_INSTRUCTION),
         }
+        if source:
+            identity.update(
+                {
+                    "recovery_version": RECOVERY_VERSION,
+                    "recovery_prompt_sha256": digest(RECOVERY_INSTRUCTION),
+                    "recovery_temperatures": [0, 0.2, 0.2],
+                    "validation_retries": 2,
+                    "retry_ids": [r["id"] for r in rows if index[r["id"]]["status"] == "failed"],
+                    "inherited_records": inherited,
+                    "repair_source": {
+                        "run_sha256": digest(source_identity),
+                        "identity": source_identity,
+                        "failed_records": {
+                            k: v for k, v in index.items() if v["status"] == "failed"
+                        },
+                    },
+                }
+            )
         run_hash = digest(identity)
         metadata_path = output / "run.json"
         if metadata_path.exists() and json.loads(metadata_path.read_text()) != identity:
@@ -226,11 +283,44 @@ def propose(
                 "Run inputs, code, model, or policy changed; choose a new run directory"
             )
         write_json(metadata_path, identity)
+        if source:
+            # Copy completed records byte-for-byte: their original run hashes remain intact.
+            # Failed replies are preserved separately, never salvaged by inventing JSON tails.
+            for row in rows:
+                key = row["id"]
+                target = record_path(
+                    output if key in inherited else output / "source-failures", key
+                )
+                if not target.exists():
+                    target.parent.mkdir(parents=True, exist_ok=True)
+                    temporary = target.with_suffix(".copying")
+                    shutil.copyfile(record_path(source, key), temporary)
+                    temporary.replace(target)
+                if key not in inherited:
+                    archived = json.loads(target.read_text())
+                    expected = index[key]
+                    stored = archived.pop("record_sha256")
+                    if (
+                        stored != expected["record_sha256"]
+                        or digest(archived) != stored
+                        or archived["binding"] != row["binding"]
+                    ):
+                        raise ValueError(f"Changed archived failure: {key}")
         client = client_for(url, timeout)
         pending_rows = []
         for row in rows:
-            old = load_record(output, row, run_hash)
+            old = load_record(output, row, run_hash, inherited=inherited)
             if not old or old["status"] == "failed":
+                if source and row["id"] in inherited:
+                    raise ValueError("Carried-forward proposal is missing or failed")
+                if old:
+                    write_json(
+                        output
+                        / "attempt-history"
+                        / row["id"].replace(":", "-")
+                        / (old["record_sha256"] + ".json"),
+                        old,
+                    )
                 pending_rows.append(row)
         completed = len(rows) - len(pending_rows)
         start = time.monotonic()
@@ -265,10 +355,22 @@ def propose(
             )
             if initial:
                 record["initial_draft"] = initial
-            conversation = messages(row, initial=initial)
+            base_conversation = messages(row, initial=initial)
+            if source:
+                record["recovery_source"] = index[row["id"]]
+                base_conversation[0]["content"] += "\n" + RECOVERY_INSTRUCTION
+            conversation = base_conversation
             try:
-                for attempt_number in range(2):
+                for attempt_number in range(3 if source else 2):
+                    temperature = [0, 0.2, 0.2][attempt_number] if source else 0
                     attempt = {"number": attempt_number + 1}
+                    if source:
+                        attempt["request_settings"] = {
+                            "temperature": temperature,
+                            "max_tokens": max_tokens,
+                            "fresh_context": True,
+                        }
+                        attempt["messages_sha256"] = digest(conversation)
                     record["attempts"].append(attempt)
                     try:
                         response = client.request(
@@ -277,7 +379,7 @@ def propose(
                             {
                                 "model": model,
                                 "messages": conversation,
-                                "temperature": 0,
+                                "temperature": temperature,
                                 "max_tokens": max_tokens,
                                 "chat_template_kwargs": {"enable_thinking": False},
                             },
@@ -302,6 +404,8 @@ def propose(
                             row,
                             adjustments=attempt["validation_adjustments"],
                         )
+                        if source:
+                            validate_recovery_metadata(record["proposal"])
                         record["validation_adjustments"] = attempt["validation_adjustments"]
                         apply_ideal_style(record["proposal"], record["validation_adjustments"])
                         record["proposal_checks"] = proposal_checks(
@@ -309,6 +413,19 @@ def propose(
                         )
                     except ValueError as exc:
                         attempt["validation_error"] = str(exc)
+                        record.pop("proposal", None)
+                        if source and attempt_number < 2:
+                            feedback = (
+                                "Previous output failed: "
+                                + str(exc)[:500]
+                                + ". Produce a fresh complete JSON decision; do not continue the previous reply."
+                            )
+                            attempt["repair_feedback"] = feedback
+                            conversation = [
+                                *base_conversation,
+                                {"role": "user", "content": feedback},
+                            ]
+                            continue
                         if attempt_number == 0 and record["finish_reason"] == "stop":
                             feedback = REPAIR_INSTRUCTION + str(exc)
                             attempt["repair_feedback"] = feedback
@@ -365,7 +482,7 @@ def propose(
                         )
                     )
                     last = now
-        records = [load_record(output, row, run_hash) for row in rows]
+        records = [load_record(output, row, run_hash, inherited=inherited) for row in rows]
         counts = Counter(r["status"] for r in records)
         summary = {
             "run_sha256": run_hash,
@@ -436,6 +553,17 @@ def propose(
             for r in records
             if r["status"] == "failed"
         ][:10]
+        if source:
+            retry_records = [r for r in records if r["id"] not in inherited]
+            summary["recovery"] = {
+                "source_run_sha256": digest(source_identity),
+                "targeted_failures": len(index) - len(inherited),
+                "carried_forward": len(inherited),
+                "counts": dict(Counter(r["status"] for r in retry_records)),
+                "rows_retried_this_invocation": len(pending_rows),
+                "usage": dict(sum((Counter(r.get("usage", {})) for r in retry_records), Counter())),
+                "note": "Source failures and prior retries are archived; inherited records retain their original run hashes. Top-level usage covers current records, not discarded historical attempts.",
+            }
         if smoke:
             summary["smoke_checks"] = check_smoke(rows, records, controls)
         write_jsonl(output / "proposals.jsonl", records)
@@ -450,8 +578,9 @@ def load_proposals(root, plan, rows):
     if identity["manifest_digest"] != plan["manifest_digest"]:
         raise ValueError("Proposals belong to a different pilot")
     result = {}
+    run_hash = digest(identity)
     for row in rows:
-        record = load_record(root, row, digest(identity))
+        record = load_record(root, row, run_hash, inherited=identity.get("inherited_records", {}))
         if record and record["status"] != "failed":
             result[row["id"]] = record
     return result

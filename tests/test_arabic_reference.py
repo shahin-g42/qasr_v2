@@ -251,7 +251,10 @@ def server():
         def do_POST(self):
             assert self.path == "/v1/chat/completions"
             body = json.loads(self.rfile.read(int(self.headers["Content-Length"])))
-            assert body["temperature"] == 0 and not body["chat_template_kwargs"]["enable_thinking"]
+            assert (
+                body["temperature"] in {0, 0.2}
+                and not body["chat_template_kwargs"]["enable_thinking"]
+            )
             assert body["model"] == "corrector"
             state["calls"] += 1
             state["requests"].append(body)
@@ -2070,3 +2073,273 @@ def test_corrector_applies_salawat_style_after_llm_and_retains_raw_reply(inputs,
         assert record["proposal"]["proposed_ideal_text"] == "قال ﷺ"
         assert record["proposal_checks"]["editorial_style_changes"]
         assert record["verified_text"] is None and record["ideal_text"] is None
+
+
+@pytest.fixture
+def mixed_recovery_source(plan, tmp_path, server):
+    from data_processing.arabic_reference.runtime import record_path
+
+    url, state = server
+
+    def mixed(body):
+        if state["calls"] <= 2:
+            return '{"reason":"unterminated'
+        value = proposal_value(payload=json.loads(body["messages"][1]["content"]))
+        if state["calls"] == 3:
+            value.update(
+                base_candidate=None,
+                proposed_verified_text=None,
+                proposed_ideal_text=None,
+                changes=[],
+            )
+        return value
+
+    state["reply"] = mixed
+    source = tmp_path / "original"
+    summary = propose(
+        plan,
+        source,
+        url=url,
+        model="corrector",
+        concurrency=1,
+        initial_cleanup=True,
+        emit=lambda _: None,
+    )
+    assert summary["counts"] == {"failed": 1, "unresolved": 1, "proposed": 4}
+    rows = load_plan(plan)[1]
+    original = {r["id"]: record_path(source, r["id"]).read_bytes() for r in rows}
+    state.pop("reply")
+    state["requests"].clear()
+    return source, original
+
+
+def test_recovery_only_requests_failures_and_exports_complete_unchanged_rows(
+    plan, tmp_path, server, mixed_recovery_source
+):
+    from data_processing.arabic_reference.release import load_release_proposals
+    from data_processing.arabic_reference.runtime import load_proposals, record_path
+
+    url, state = server
+    source, original = mixed_recovery_source
+    output = tmp_path / "recovered"
+    kwargs = {
+        "url": url,
+        "model": "corrector",
+        "repair_from": source,
+        "max_tokens": 8192,
+        "emit": lambda _: None,
+    }
+    summary = propose(plan, output, **kwargs)
+    assert summary["counts"] == {"proposed": 5, "unresolved": 1}
+    assert summary["recovery"]["targeted_failures"] == 1
+    assert summary["recovery"]["carried_forward"] == 5
+    assert len(state["requests"]) == 1
+    assert state["requests"][0]["max_tokens"] == 8192
+    assert "initial_editorial_draft" in json.loads(state["requests"][0]["messages"][1]["content"])
+    metadata, rows = load_plan(plan)
+    records, identity = load_release_proposals(output, metadata, rows)
+    assert len(records) == len(load_proposals(output, metadata, rows)) == 6
+    for row in rows:
+        key = row["id"]
+        assert record_path(source, key).read_bytes() == original[key]
+        if key in identity["inherited_records"]:
+            assert record_path(output, key).read_bytes() == original[key]
+        else:
+            assert record_path(output / "source-failures", key).read_bytes() == original[key]
+            assert (
+                records[key]["recovery_source"]["record_sha256"]
+                == json.loads(original[key])["record_sha256"]
+            )
+        assert records[key]["verified_text"] is records[key]["ideal_text"] is None
+    assert propose(plan, output, **kwargs)["resumed"] == 6
+    assert len(state["requests"]) == 1
+    with pytest.raises(ValueError, match="changed"):
+        propose(plan, output, **{**kwargs, "max_tokens": 6144})
+
+
+@pytest.mark.parametrize("failure", ["length", "json", "verbose"])
+def test_recovery_retries_fresh_context_and_retains_each_attempt(
+    plan, tmp_path, server, mixed_recovery_source, failure
+):
+    url, state = server
+    source, _ = mixed_recovery_source
+
+    def reply(body):
+        first = len(state["requests"]) == 1
+        value = proposal_value(payload=json.loads(body["messages"][1]["content"]))
+        state["fail"] = first and failure == "length"
+        if first and failure == "json":
+            return '{"reason":"bad JSON'
+        if first and failure == "verbose":
+            value["reason"] = "Repeated explanation. " * 100
+        return value
+
+    state["reply"] = reply
+    output = tmp_path / "recovered"
+    summary = propose(
+        plan, output, url=url, model="corrector", repair_from=source, emit=lambda _: None
+    )
+    assert summary["counts"] == {"proposed": 5, "unresolved": 1}
+    assert len(state["requests"]) == 2
+    first, second = state["requests"]
+    assert first["temperature"] == 0 and second["temperature"] == 0.2
+    assert all(m["role"] != "assistant" for m in second["messages"])
+    assert len(second["messages"][-1]["content"]) < 700
+    records = list(read_jsonl(output / "proposals.jsonl"))
+    repaired = next(r for r in records if "recovery_source" in r)
+    assert len(repaired["attempts"]) == 2
+    assert repaired["attempts"][0]["validation_error"]
+    assert repaired["attempts"][1]["request_settings"]["fresh_context"]
+    assert repaired["usage"]["completion_tokens"] == 100
+
+
+def test_recovery_is_bounded_and_archives_previous_recovery_failures(
+    plan, tmp_path, server, mixed_recovery_source
+):
+    from data_processing.arabic_reference.runtime import record_path
+
+    url, state = server
+    source, _ = mixed_recovery_source
+    output = tmp_path / "recovered"
+    kwargs = {"url": url, "model": "corrector", "repair_from": source, "emit": lambda _: None}
+    state["fail"] = True
+    summary = propose(plan, output, **kwargs)
+    assert summary["counts"] == {"failed": 1, "unresolved": 1, "proposed": 4}
+    assert len(state["requests"]) == 3
+    failed = next(r for r in read_jsonl(output / "proposals.jsonl") if r["status"] == "failed")
+    before = record_path(output, failed["id"]).read_bytes()
+    state["fail"] = False
+    summary = propose(plan, output, **kwargs)
+    assert summary["counts"] == {"proposed": 5, "unresolved": 1}
+    archived = (
+        output
+        / "attempt-history"
+        / failed["id"].replace(":", "-")
+        / (failed["record_sha256"] + ".json")
+    )
+    assert json.loads(archived.read_bytes()) == json.loads(before)
+    assert len(state["requests"]) == 4
+    # A second-generation recovery remains portable and accepts the inherited origins.
+    next_output = tmp_path / "recovered-again"
+    assert (
+        propose(plan, next_output, **{**kwargs, "repair_from": output})["recovery"][
+            "targeted_failures"
+        ]
+        == 0
+    )
+    assert len(state["requests"]) == 4
+
+
+def test_recovery_rejects_changed_or_missing_source_and_unsafe_destination(
+    plan, tmp_path, server, mixed_recovery_source
+):
+    from data_processing.arabic_reference.runtime import record_path
+
+    url, state = server
+    source, _ = mixed_recovery_source
+    kwargs = {"url": url, "model": "corrector", "repair_from": source, "emit": lambda _: None}
+    for dest in (source, source / "nested", source.parent):
+        with pytest.raises(ValueError, match="separate directory"):
+            propose(plan, dest, **kwargs)
+    path = record_path(source, load_plan(plan)[1][0]["id"])
+    old = path.read_bytes()
+    changed = json.loads(old)
+    changed["error"] = "tampered"
+    path.write_text(json.dumps(changed))
+    with pytest.raises(ValueError, match="Changed checkpoint"):
+        propose(plan, tmp_path / "changed", **kwargs)
+    path.unlink()
+    with pytest.raises(ValueError, match="incomplete"):
+        propose(plan, tmp_path / "missing", **kwargs)
+    path.write_bytes(old)
+    assert len(state["requests"]) == 0
+
+
+@pytest.mark.parametrize("relabel_origin", [False, True])
+def test_recovery_detects_tampered_inherited_records_even_after_rehash(
+    plan, tmp_path, server, mixed_recovery_source, relabel_origin
+):
+    from data_processing.arabic_reference.core import write_json
+    from data_processing.arabic_reference.release import load_release_proposals
+    from data_processing.arabic_reference.runtime import record_path
+
+    url, _ = server
+    source, _ = mixed_recovery_source
+    output = tmp_path / "recovered"
+    propose(plan, output, url=url, model="corrector", repair_from=source, emit=lambda _: None)
+    metadata, rows = load_plan(plan)
+    identity = json.loads((output / "run.json").read_text())
+    key = next(iter(identity["inherited_records"]))
+    path = record_path(output, key)
+    record = json.loads(path.read_text())
+    record.pop("record_sha256")
+    record["raw_response"] = "tampered"
+    if relabel_origin:
+        record["run_sha256"] = digest(identity)
+    record["record_sha256"] = digest(record)
+    write_json(path, record)
+    with pytest.raises(ValueError, match="Changed checkpoint"):
+        load_release_proposals(output, metadata, rows)
+
+
+def test_recovery_launcher_defaults_and_downstream_selection(tmp_path):
+    import os
+    import subprocess
+    import sys
+    from pathlib import Path
+
+    root = Path(__file__).resolve().parents[1]
+    binary = tmp_path / "python"
+    binary.write_text(f"#!{sys.executable}\nimport json,sys\nprint(json.dumps(sys.argv[1:]))\n")
+    binary.chmod(0o755)
+    env = {
+        **os.environ,
+        "PYTHON": str(binary),
+        "ARABIC_REF_ROOT": str(tmp_path),
+        "ARABIC_REF_PROPOSALS": str(tmp_path / "custom-source"),
+        "REF_MAX_TOKENS": "4096",
+    }
+    for key in ("REF_CONCURRENCY", "REF_REPAIR_MAX_TOKENS", "ARABIC_REF_REPAIR_OUTPUT"):
+        env.pop(key, None)
+    (tmp_path / "custom-source").mkdir()
+    (tmp_path / "custom-source/run.json").write_text("{}")
+    for command in ("repair", "review-pack", "export-dataset", "status"):
+        result = subprocess.run(
+            ["bash", str(root / "scripts/corpus/run_arabic_reference.sh"), command],
+            env=env,
+            check=True,
+            capture_output=True,
+            text=True,
+        )
+        args = json.loads(result.stdout)
+        source_arg = "--source" if command == "repair" else "--proposals"
+        assert args[args.index(source_arg) + 1] == str(tmp_path / "custom-source")
+        if command == "repair":
+            assert args[args.index("--max-tokens") + 1] == "8192"
+            assert args[args.index("--concurrency") + 1] == "90"
+            assert args[args.index("--output") + 1] == str(tmp_path / "proposals-repaired-v4.2")
+
+
+def test_recovered_dataset_preserves_both_run_origins_and_null_final_columns(
+    plan, tmp_path, server, mixed_recovery_source
+):
+    pq = pytest.importorskip("pyarrow.parquet")
+    from data_processing.arabic_reference.release import export_dataset, validate_bundle
+
+    url, _ = server
+    source, _ = mixed_recovery_source
+    output = tmp_path / "recovered"
+    propose(plan, output, url=url, model="corrector", repair_from=source, emit=lambda _: None)
+    release = tmp_path / "release"
+    manifest = export_dataset(plan, release, proposals=output)
+    assert validate_bundle(release)["bundle_sha256"] == manifest["bundle_sha256"]
+    rows = [r for p in release.glob("data/*/*.parquet") for r in pq.read_table(p).to_pylist()]
+    assert len(rows) == 6
+    assert Counter(r["proposal_status"] for r in rows) == {"proposed": 5, "unresolved": 1}
+    assert all(r["verified_text"] is r["ideal_text"] is None for r in rows)
+    provenance = json.loads((release / "provenance.json").read_text())
+    lineage = provenance["corrector_runs"]
+    assert [r["records_in_release"] for r in lineage] == [1, 5]
+    assert {r["proposal_run_sha256"] for r in rows} == {r["run_sha256"] for r in lineage}
+    assert lineage[0]["source_run_sha256"] == lineage[1]["run_sha256"]
+    assert str(tmp_path) not in json.dumps(provenance)

@@ -293,6 +293,125 @@ def test_scheduler_stall_exits_and_preserves_resume_metadata(tmp_path, monkeypat
     assert json.loads((output / "attempts.json").read_text())[-1]["status"] == "interrupted"
 
 
+def _wait_for_marker(path):
+    deadline = time.monotonic() + 10
+    while not path.exists():
+        if time.monotonic() > deadline:
+            raise RuntimeError(f"Early-start dependency was not satisfied: {path.name}")
+        time.sleep(.01)
+
+
+def _staggered_worker(slot, gpu, checkpoint, settings, jobs, events, begin, load_slots, log_path):
+    """The second loader cannot finish until the first worker completes a task."""
+    root = Path(checkpoint)
+    try:
+        with load_slots:
+            if slot == 0:
+                # Both must be allowed inside the loading semaphore concurrently.
+                _wait_for_marker(root / "second-loading.json")
+            else:
+                atomic_json(root / "second-loading.json", {})
+                _wait_for_marker(root / "early-task.json")
+                if (root / "fail-late.json").exists():
+                    events.put({"event": "worker_error", "slot": slot,
+                                "traceback": "late loader failed after early task"})
+                    time.sleep(60)
+                atomic_json(root / "early-work-observed.json", {})
+        events.put({"event": "ready", "slot": slot, "gpu": gpu})
+        begin.wait()
+        while (task := jobs.get()) is not None:
+            predictions = [{**row, "mode": mode, "pred_text": row["text"], "generated_tokens": 1,
+                            "generation_limit_hit": False}
+                           for row in task["rows"] for mode in task["modes_by_id"][row["id"]]]
+            atomic_json(task["output"], {"run_id": task["run_id"], "task_id": task["task_id"],
+                                        "predictions": predictions, "stats": {
+                                            "inference_seconds": .01, "audio_seconds": 1,
+                                            "oom_batch_splits": 0, "peak_allocated_gib": 0,
+                                            "peak_reserved_gib": 0}})
+            events.put({"event": "task_complete", "slot": slot, "task_id": task["task_id"]})
+            if slot == 0:
+                atomic_json(root / "early-task.json", {})
+                _wait_for_marker(root / "early-work-observed.json")
+                # Let the second worker deliver readiness before the remaining tasks.
+                time.sleep(60)
+    except BaseException as exc:
+        events.put({"event": "worker_error", "slot": slot, "traceback": str(exc)})
+        time.sleep(60)
+
+
+@pytest.mark.parametrize("fail_late", [False, True])
+def test_as_ready_processing_overlaps_loading_and_late_failure_resumes(tmp_path, monkeypatch, fail_late):
+    cfg, output = _scheduler_fixture(tmp_path, monkeypatch)
+    cfg.update(start_when_ready=True, simultaneous_model_loads="all")
+    checkpoint = Path(cfg["checkpoint"])
+    if fail_late:
+        atomic_json(checkpoint / "fail-late.json", {})
+    monkeypatch.setattr(worker, "worker_main", _staggered_worker)
+    if fail_late:
+        with pytest.raises(RuntimeError, match="late loader failed after early task"):
+            runner.run(cfg, datasets=["sada"], gpus="0,1", workers_per_gpu=1)
+        assert list((output / "tasks").glob("*.json"))
+        attempt = json.loads((output / "attempts.json").read_text())[-1]
+        assert attempt["status"] == "interrupted" and attempt["ready_workers"] == 1
+        assert attempt["first_ready_seconds"] is not None and attempt["all_ready_seconds"] is None
+        monkeypatch.setattr(worker, "worker_main", _fake_worker)
+        runner.run(cfg, datasets=["sada"], gpus="0,1", workers_per_gpu=1)
+        assert json.loads((output / "attempts.json").read_text())[-1]["resumed_predictions"] > 0
+    else:
+        runner.run(cfg, datasets=["sada"], gpus="0,1", workers_per_gpu=1)
+        assert (checkpoint / "early-work-observed.json").is_file()
+        attempt = json.loads((output / "attempts.json").read_text())[-1]
+        assert attempt["first_ready_seconds"] < attempt["all_ready_seconds"]
+    performance = json.loads((output / "scores.json").read_text())["performance"]
+    assert performance["start_policy"] == "as_ready" and performance["simultaneous_model_loads"] == 2
+    assert performance["processing_includes_worker_startup"] is True
+    for mode in ("arabic", "auto"):
+        predictions = read_rows(output / f"predictions-{mode}.jsonl")
+        assert len(predictions) == len({r["id"] for r in predictions}) == 12
+
+
+def _partly_ready_worker(slot, gpu, checkpoint, settings, jobs, events, begin, load_slots, log_path):
+    if slot == 0:
+        events.put({"event": "ready", "slot": slot, "gpu": gpu})
+    time.sleep(60)
+
+
+def _unused_loader_worker(slot, gpu, checkpoint, settings, jobs, events, begin, load_slots, log_path):
+    if slot == 0:
+        _fake_worker(slot, gpu, checkpoint, settings, jobs, events, begin, load_slots, log_path)
+    else:
+        time.sleep(60)
+
+
+def test_as_ready_finishes_complete_coverage_without_waiting_for_unused_loader(tmp_path, monkeypatch):
+    cfg, output = _scheduler_fixture(tmp_path, monkeypatch)
+    cfg.update(start_when_ready=True, startup_timeout_seconds=5)
+    monkeypatch.setattr(worker, "worker_main", _unused_loader_worker)
+    runner.run(cfg, datasets=["sada"], gpus="0,1", workers_per_gpu=1)
+    attempt = json.loads((output / "attempts.json").read_text())[-1]
+    assert attempt["status"] == "complete" and attempt["ready_workers"] == 1
+    assert attempt["all_ready_seconds"] is None
+    assert json.loads((output / "progress.json").read_text())["completed"] == 24
+
+
+def test_as_ready_still_times_out_a_worker_that_never_loads(tmp_path, monkeypatch):
+    cfg, output = _scheduler_fixture(tmp_path, monkeypatch)
+    cfg.update(start_when_ready=True, startup_timeout_seconds=3, progress_timeout_seconds=30)
+    monkeypatch.setattr(worker, "worker_main", _partly_ready_worker)
+    with pytest.raises(TimeoutError, match=r"Model startup timeout \(1/2 ready\)"):
+        runner.run(cfg, datasets=["sada"], gpus="0,1", workers_per_gpu=1)
+    attempt = json.loads((output / "attempts.json").read_text())[-1]
+    assert attempt["status"] == "interrupted" and attempt["ready_workers"] == 1
+
+
+@pytest.mark.parametrize("value", [0, -1, "bad", True, 1.5])
+def test_invalid_model_loading_limit_fails_before_spawning(tmp_path, monkeypatch, value):
+    cfg, _ = _scheduler_fixture(tmp_path, monkeypatch)
+    cfg["simultaneous_model_loads"] = value
+    with pytest.raises(ValueError, match="simultaneous_model_loads"):
+        runner.run(cfg, datasets=["sada"], gpus="0", workers_per_gpu=1)
+
+
 def test_prediction_coverage_rejects_missing_duplicate_and_altered_references():
     expected = [{**_reference(0), "audio_sha256": "hash"}]
     prediction = {**expected[0], "mode": "arabic", "pred_text": "نص"}

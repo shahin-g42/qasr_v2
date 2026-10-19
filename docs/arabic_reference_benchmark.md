@@ -849,6 +849,7 @@ export HF_SPACE_REPO=shahink/asr_ideal_leaderboard
 export PUBLIC_GPUS=0,1,2,3,4,5,6,7
 export PUBLIC_WORKERS_PER_GPU=8
 export PUBLIC_BATCH_SIZE=32
+export PUBLIC_MODEL_LOAD_CONCURRENCY=all
 export PUBLIC_MODELS="qwen3-asr-0.6b qwen3-asr-1.7b cohere-arabic cohere-multilingual whisper-large-v3"
 export ARABIC_REF_BOARD_RELEASE_ID=v4.7-public-001
 export ARABIC_REF_SPACE_BUNDLE="$ARABIC_REF_ROOT/leaderboard-$ARABIC_REF_BOARD_RELEASE_ID"
@@ -867,6 +868,25 @@ dataset, then the full run. Successful tasks resume after interruption. Independ
 Eight replicas per H100 and batches of 32 per worker are the default configuration; this is GPU
 inference, so the earlier 90 annotation workers are not reused here. OOM batches split
 without dropping clips. Runtime/model/code changes require a fresh `PUBLIC_BENCH_ROOT`.
+Public workers start processing as soon as they are ready. The default
+`PUBLIC_MODEL_LOAD_CONCURRENCY=all` permits all scheduled replicas to load together
+(64 for an eight-GPU full run at eight workers/GPU; smoke uses fewer workers when
+there are fewer tasks). Set a positive integer such as `8` to limit simultaneous
+model loads across the node if CPU memory or shared-storage contention is high;
+this does not restore the all-workers startup barrier. Each process still loads
+its own model copy and retains its reserved fraction of GPU memory.
+
+Progress identifies `loading`, `processing_with_workers_loading`, and `processing`.
+Attempts record first/all-ready times, actual loading concurrency and the number of
+workers that became ready. Processing time starts with the first released worker
+and can overlap later loads; end-to-end wall time still includes all startup.
+Pending loaders retain their startup deadline. Worker failures preserve completed
+task files for resumption; when all tasks finish, unused loaders are stopped.
+
+Finish an active run before pulling this scheduler change: benchmark implementation
+hashes are checked again at completion. The updated runner needs a fresh
+`PUBLIC_BENCH_ROOT` for new inference; keep `PUBLIC_MODEL_CACHE` unchanged to reuse
+downloads. Completed older runs can still be scored and published.
 Explicit `PUBLIC_WORKERS_PER_GPU` and `PUBLIC_BATCH_SIZE` exports override these
 defaults, so update any older exports before launching. If inference already started
 with another batch size, use a new `PUBLIC_BENCH_ROOT`; keep `PUBLIC_MODEL_CACHE` to

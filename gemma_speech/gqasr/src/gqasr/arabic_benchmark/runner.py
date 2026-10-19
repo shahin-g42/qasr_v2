@@ -195,6 +195,12 @@ def report(output, expected, identity, elapsed, attempts):
     performance = {"gpus": last_attempt.get("gpus", []),
                    "workers_per_gpu": last_attempt.get("workers_per_gpu"),
                    "total_workers": last_attempt.get("actual_workers", 0),
+                   "ready_workers": last_attempt.get("ready_workers", len(last_attempt.get("workers", []))),
+                   "start_policy": last_attempt.get("start_policy", "all_ready"),
+                   "simultaneous_model_loads": last_attempt.get("simultaneous_model_loads"),
+                   "first_ready_seconds": last_attempt.get("first_ready_seconds"),
+                   "all_ready_seconds": last_attempt.get("all_ready_seconds"),
+                   "processing_includes_worker_startup": last_attempt.get("processing_includes_worker_startup", False),
                    "batch_size": last_attempt.get("batch_size"),
                    "attempts": attempts,
                    "last_attempt_wall_seconds": elapsed or last_attempt.get("wall_seconds", 0),
@@ -210,6 +216,9 @@ def report(output, expected, identity, elapsed, attempts):
     lines += ["## Performance", "", "```json", json.dumps(performance, indent=2), "```", "",
               "This is concurrent H100-node throughput, including model startup and prepared-audio reads. "
               "It is not directly comparable to the paper's single A100, batch-one, warmed-up RTF.", "",
+              "With as-ready startup, processing time begins when the first worker is released and overlaps "
+              "remaining model loads. End-to-end wall time includes all startup. First/all-ready timings and "
+              "the number of ready workers are recorded; unused loaders may be stopped once all tasks finish.", "",
               "Published comparison values are saved separately in published-reference.json, with their Space revision. "
               "No automatic leaderboard rank is claimed; verify source coverage and training overlap before submission."]
     atomic_json(Path(output) / "scores.json", {"protocol": identity, "full_suite": full_suite,
@@ -233,6 +242,20 @@ def run(cfg, *, datasets=DATASETS, gpus="0,1,2,3,4,5,6,7", workers_per_gpu=11,
     with exclusive(output):
         return _run(cfg, datasets, gpu_ids, workers_per_gpu, batch_size, limit_per_dataset,
                     output, modes or cfg.get("modes", ["arabic", "auto"]))
+
+
+def model_load_concurrency(value, slots):
+    if value == "all":
+        return slots
+    if isinstance(value, bool) or not isinstance(value, (int, str)):
+        raise ValueError("simultaneous_model_loads must be 'all' or a positive integer")
+    try:
+        count = int(value)
+    except ValueError:
+        raise ValueError("simultaneous_model_loads must be 'all' or a positive integer") from None
+    if count < 1:
+        raise ValueError("simultaneous_model_loads must be 'all' or a positive integer")
+    return min(count, slots)
 
 
 def _run(cfg, datasets, gpu_ids, workers_per_gpu, batch_size, limit, output, modes):
@@ -311,9 +334,13 @@ def _run(cfg, datasets, gpu_ids, workers_per_gpu, batch_size, limit, output, mod
     slots = min(len(gpu_ids) * workers_per_gpu, task_count)
     if slots < 1:
         raise ValueError("No inference tasks were selected")
+    load_concurrency = model_load_concurrency(cfg.get("simultaneous_model_loads", 4), slots)
+    start_when_ready = cfg.get("start_when_ready", False)
+    if not isinstance(start_when_ready, bool):
+        raise ValueError("start_when_ready must be a boolean")
     jobs, events = ctx.Queue(maxsize=max(2, slots * 2)), ctx.Queue()
     begin = ctx.Event()
-    load_slots = ctx.Semaphore(min(cfg.get("simultaneous_model_loads", 4), slots))
+    load_slots = ctx.Semaphore(load_concurrency)
     workers_on_gpus = [sum(slot % len(gpu_ids) == index for slot in range(slots))
                        for index in range(len(gpu_ids))]
     max_workers_on_gpu = max(workers_on_gpus)
@@ -327,12 +354,18 @@ def _run(cfg, datasets, gpu_ids, workers_per_gpu, batch_size, limit, output, mod
     started = time.monotonic()
     attempt = {"workers_per_gpu": workers_per_gpu, "gpus": gpu_ids, "actual_workers": slots,
                "batch_size": batch_size, "task_size": task_size,
+               "start_policy": "as_ready" if start_when_ready else "all_ready",
+               "simultaneous_model_loads": load_concurrency,
+               "first_ready_seconds": None, "all_ready_seconds": None,
+               "processing_includes_worker_startup": start_when_ready,
                "resumed_predictions": len(done), "status": "running", "wall_seconds": 0}
     attempts.append(attempt)
     atomic_json(attempts_path, attempts)
     print(json.dumps({"event": "benchmark_schedule", "requested_workers": len(gpu_ids) * workers_per_gpu,
                       "actual_workers": slots, "workers_per_gpu": workers_on_gpus,
                       "batch_size": batch_size, "task_size": task_size,
+                      "start_policy": attempt["start_policy"],
+                      "simultaneous_model_loads": load_concurrency,
                       "pending_samples": len(needed), "pending_tasks": task_count}), flush=True)
     task_ids = set()
     lock = threading.Lock()
@@ -414,7 +447,11 @@ def _run(cfg, datasets, gpu_ids, workers_per_gpu, batch_size, limit, output, mod
                 if event["event"] == "ready":
                     ready.add(event["slot"])
                     ready_info.append(event)
+                    if attempt["first_ready_seconds"] is None:
+                        attempt["first_ready_seconds"] = time.monotonic() - started
                     if len(ready) == slots:
+                        attempt["all_ready_seconds"] = time.monotonic() - started
+                    if not begin.is_set() and (start_when_ready or len(ready) == slots):
                         inference_started = time.monotonic()
                         last_completion = inference_started
                         begin.set()
@@ -428,6 +465,9 @@ def _run(cfg, datasets, gpu_ids, workers_per_gpu, batch_size, limit, output, mod
             if now - last >= 5:
                 total = len(expected) * len(modes)
                 progress = {"event": "benchmark_progress", "ready_workers": len(ready), "workers": slots,
+                            "loading_workers": slots - len(ready),
+                            "phase": ("loading" if not begin.is_set() else
+                                      "processing_with_workers_loading" if len(ready) < slots else "processing"),
                             "completed": len(done), "total": total, "percent": round(100 * len(done) / total, 2),
                             "samples_scheduled": len(emitted), "tasks_scheduled": len(task_ids),
                             "tasks_incomplete": len(task_ids - finished),
@@ -437,11 +477,6 @@ def _run(cfg, datasets, gpu_ids, workers_per_gpu, batch_size, limit, output, mod
                 attempt["wall_seconds"] = now - started
                 atomic_json(attempts_path, attempts)
                 last = now
-            if not begin.is_set() and now - started > cfg.get("startup_timeout_seconds", 1800):
-                raise TimeoutError("Model startup timeout; inspect worker logs")
-            if last_completion is not None and now - last_completion > cfg.get("progress_timeout_seconds", 1800):
-                raise TimeoutError("No inference task completed within progress_timeout_seconds; "
-                                   "inspect worker logs and rerun to resume completed tasks")
             with lock:
                 all_finished = finished == task_ids
             if producer_done.is_set() and all_finished:
@@ -449,6 +484,12 @@ def _run(cfg, datasets, gpu_ids, workers_per_gpu, batch_size, limit, output, mod
                 attempt["processing_seconds"] = now - inference_started if inference_started else 0
                 attempt["new_predictions"] = len(done) - attempt["resumed_predictions"]
                 break
+            # Starting early must not disable the deadline for workers still loading.
+            if len(ready) < slots and now - started > cfg.get("startup_timeout_seconds", 1800):
+                raise TimeoutError(f"Model startup timeout ({len(ready)}/{slots} ready); inspect worker logs")
+            if last_completion is not None and now - last_completion > cfg.get("progress_timeout_seconds", 1800):
+                raise TimeoutError("No inference task completed within progress_timeout_seconds; "
+                                   "inspect worker logs and rerun to resume completed tasks")
     finally:
         stop.set()
         if producer:
@@ -465,7 +506,7 @@ def _run(cfg, datasets, gpu_ids, workers_per_gpu, batch_size, limit, output, mod
         jobs.close()
         events.close()
         attempt.update(wall_seconds=time.monotonic() - started, status="complete" if success else "interrupted",
-                       workers=ready_info)
+                       workers=ready_info, ready_workers=len(ready))
         atomic_json(attempts_path, attempts)
     if checkpoint_identity(cfg["checkpoint"], backend) != identities:
         raise ValueError("Checkpoint changed during benchmarking; results cannot be published")

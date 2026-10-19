@@ -296,7 +296,9 @@ def test_public_submission_hash_and_model_binding_rechecked(public_plan, tmp_pat
 
 
 @pytest.mark.parametrize("layout", ["separate", "combined"])
-def test_download_pins_revision_and_reuses_only_unchanged_snapshot(tmp_path, layout):
+def test_download_pins_revision_and_reuses_only_unchanged_snapshot(tmp_path, layout, monkeypatch):
+    from data_processing.arabic_reference.public_benchmark import model_config
+
     calls = []
 
     def download(repository, **kwargs):
@@ -327,6 +329,11 @@ def test_download_pins_revision_and_reuses_only_unchanged_snapshot(tmp_path, lay
     assert first["revision"] == "a" * 40 and calls[0]["revision"] == "a" * 40
     assert download_model("qwen3-asr-0.6b", tmp_path, api=api, download=download) == first
     assert len(calls) == 1
+    monkeypatch.delenv("PUBLIC_MODEL_LOAD_CONCURRENCY", raising=False)
+    cfg = model_config("qwen3-asr-0.6b", tmp_path, tmp_path / "audio", tmp_path / "run")
+    assert cfg["start_when_ready"] is True and cfg["simultaneous_model_loads"] == "all"
+    monkeypatch.setenv("PUBLIC_MODEL_LOAD_CONCURRENCY", "8")
+    assert model_config("qwen3-asr-0.6b", tmp_path, tmp_path, tmp_path)["simultaneous_model_loads"] == "8"
     (tmp_path / "qwen3-asr-0.6b/snapshot/model.safetensors").write_bytes(b"changed")
     with pytest.raises(ValueError, match="changed"):
         download_model("qwen3-asr-0.6b", tmp_path, api=api, download=download)

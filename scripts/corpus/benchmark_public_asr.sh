@@ -22,6 +22,8 @@ export PUBLIC_PREPARED_WORK="${PUBLIC_PREPARED_WORK:-$ARABIC_REF_SOURCE_REPO/gem
 export PUBLIC_GPUS="${PUBLIC_GPUS:-0,1,2,3,4,5,6,7}"
 export PUBLIC_WORKERS_PER_GPU="${PUBLIC_WORKERS_PER_GPU:-8}"
 export PUBLIC_BATCH_SIZE="${PUBLIC_BATCH_SIZE:-32}"
+# Start ready replicas immediately; 'all' permits every requested replica to load together.
+export PUBLIC_MODEL_LOAD_CONCURRENCY="${PUBLIC_MODEL_LOAD_CONCURRENCY:-all}"
 BOARD_DEFAULT="v4.7-public-001"
 if [[ "$STAGE" == rescore ]]; then BOARD_DEFAULT="v4.7-existing-001"; fi
 export ARABIC_REF_BOARD_RELEASE_ID="${ARABIC_REF_BOARD_RELEASE_ID:-$BOARD_DEFAULT}"

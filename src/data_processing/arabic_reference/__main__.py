@@ -43,6 +43,14 @@ def main(argv=None):
             p.add_argument("--concurrency", type=int, default=16)
             p.add_argument("--max-tokens", type=int, default=4096)
             p.add_argument("--smoke", action="store_true")
+            p.add_argument(
+                "--initial-cleanup",
+                action="store_true",
+                help="Prepare conservative initial drafts, then run contextual LLM correction for every row",
+            )
+    p = commands.add_parser("scan")
+    p.add_argument("--plan", type=Path, required=True)
+    p.add_argument("--output", type=Path, required=True)
     p = commands.add_parser("review-pack")
     p.add_argument("--plan", type=Path, required=True)
     p.add_argument("--output", type=Path, required=True)
@@ -129,7 +137,12 @@ def main(argv=None):
                 max_tokens=args.max_tokens,
                 timeout=args.timeout,
                 smoke=args.smoke,
+                initial_cleanup=args.initial_cleanup,
             )
+        elif args.command == "scan":
+            from .cleanup import scan
+
+            result = scan(args.plan, args.output)
         elif args.command == "review-pack":
             result = review_pack(
                 args.plan, args.output, args.proposals, args.audio_root, args.metadata_only

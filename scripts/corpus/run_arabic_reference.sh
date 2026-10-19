@@ -16,7 +16,7 @@ LLM_URL="${LLM_URL:-http://localhost:8010}"
 MODEL_NAME="${LLM_MODEL_NAME:-corrector}"
 CHECKPOINT_ARGS=()
 if [[ -n "${ARABIC_REF_CHECKPOINT:-}" ]]; then CHECKPOINT_ARGS=(--checkpoint "$ARABIC_REF_CHECKPOINT"); fi
-COMMAND="${1:?Expected plan|plan-full|doctor|smoke|run|status|review-pack|import-reviews|score|export-dataset|leaderboard|publish-dataset|publish-leaderboard|test|llm-print|llm-start}"
+COMMAND="${1:?Expected plan|plan-full|scan|doctor|smoke|run|correct|status|review-pack|import-reviews|score|export-dataset|leaderboard|publish-dataset|publish-leaderboard|test|llm-print|llm-start}"
 shift
 CLI=("$PY" -m data_processing.arabic_reference)
 case "$COMMAND" in
@@ -24,15 +24,18 @@ case "$COMMAND" in
     EXTRA=(); if [[ "$COMMAND" == plan-full ]]; then EXTRA=(--full-suite); fi
     exec "${CLI[@]}" prepare --prediction "qasr=$QASR_RESULTS/predictions-arabic.jsonl" \
       --prediction "gqasr=$GQASR_RESULTS/predictions-arabic.jsonl" --output "$ROOT/plan" ${EXTRA[@]+"${EXTRA[@]}"} "$@" ;;
+  scan)
+    exec "${CLI[@]}" scan --plan "$ROOT/plan" --output "${ARABIC_REF_SCAN:-$ROOT/scan}" "$@" ;;
   doctor)
     exec "${CLI[@]}" doctor --plan "$ROOT/plan" --audio-root "$AUDIO_ROOT" \
       --url "$LLM_URL" --model "$MODEL_NAME" ${CHECKPOINT_ARGS[@]+"${CHECKPOINT_ARGS[@]}"} "$@" ;;
-  smoke|run)
-    EXTRA=(); DEST="$ROOT/proposals"
+  smoke|run|correct)
+    EXTRA=(); DEST="$ROOT/proposals"; DEFAULT_CONCURRENCY=16
+    if [[ "$COMMAND" == correct ]]; then EXTRA=(--initial-cleanup); DEFAULT_CONCURRENCY=90; fi
     if [[ "$COMMAND" == smoke ]]; then EXTRA=(--smoke); DEST="$ROOT/smoke-v4"; fi
     exec "${CLI[@]}" propose --plan "$ROOT/plan" --output "$DEST" \
       --url "$LLM_URL" --model "$MODEL_NAME" ${CHECKPOINT_ARGS[@]+"${CHECKPOINT_ARGS[@]}"} \
-      --revision "${LLM_REVISION:-unrecorded}" --concurrency "${REF_CONCURRENCY:-16}" \
+      --revision "${LLM_REVISION:-unrecorded}" --concurrency "${REF_CONCURRENCY:-$DEFAULT_CONCURRENCY}" \
       --max-tokens "${REF_MAX_TOKENS:-4096}" ${EXTRA[@]+"${EXTRA[@]}"} "$@" ;;
   review-pack)
     exec "${CLI[@]}" review-pack --plan "$ROOT/plan" --proposals "$ROOT/proposals" \

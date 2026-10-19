@@ -12,6 +12,7 @@ from pathlib import Path
 
 from data_processing.asr_clean.endpoints import JsonClient
 
+from .cleanup import CLEANUP_VERSION, initial_draft
 from .core import (
     DATASETS,
     digest,
@@ -22,6 +23,7 @@ from .core import (
     write_json,
     write_jsonl,
 )
+from .editorial import STYLE_VERSION, apply_ideal_style
 from .prompts import (
     PROMPT_VERSION,
     REPAIR_INSTRUCTION,
@@ -185,6 +187,7 @@ def propose(
     max_tokens=4096,
     timeout=180,
     smoke=False,
+    initial_cleanup=False,
     emit=print,
 ):
     if not 1 <= concurrency <= 256 or max_tokens < 128 or timeout <= 0:
@@ -210,6 +213,8 @@ def propose(
             "code": {p.name: sha256(p) for p in sorted(Path(__file__).parent.glob("*.py"))},
             "ids": [r["id"] for r in rows],
             "smoke": smoke,
+            "initial_cleanup": CLEANUP_VERSION if initial_cleanup else None,
+            "editorial_style": STYLE_VERSION,
             "smoke_controls": controls,
             "validation_retries": 1,
             "repair_prompt_sha256": digest(REPAIR_INSTRUCTION),
@@ -254,7 +259,13 @@ def propose(
                 "audio_supplied_to_corrector": False,
                 "attempts": [],
             }
-            conversation = messages(row)
+            initial = initial_draft(row) if initial_cleanup else None
+            record["correction_method"] = (
+                "llm_after_initial_cleanup" if initial else "llm_contextual"
+            )
+            if initial:
+                record["initial_draft"] = initial
+            conversation = messages(row, initial=initial)
             try:
                 for attempt_number in range(2):
                     attempt = {"number": attempt_number + 1}
@@ -292,6 +303,7 @@ def propose(
                             adjustments=attempt["validation_adjustments"],
                         )
                         record["validation_adjustments"] = attempt["validation_adjustments"]
+                        apply_ideal_style(record["proposal"], record["validation_adjustments"])
                         record["proposal_checks"] = proposal_checks(
                             record["proposal"], row, record["validation_adjustments"]
                         )
@@ -394,6 +406,26 @@ def propose(
         )
         summary["ideal_editorial_change_records"] = sum(
             bool(r.get("proposal_checks", {}).get("wording_to_ideal")) for r in records
+        )
+        summary["correction_methods"] = dict(
+            Counter(r.get("correction_method", "llm_contextual") for r in records)
+        )
+        summary["initial_cleanup_methods"] = dict(
+            Counter(r["initial_draft"]["method"] for r in records if r.get("initial_draft"))
+        )
+        summary["editorial_flag_records"] = sum(
+            bool(r.get("proposal_checks", {}).get("editorial_flags")) for r in records
+        )
+        summary["editorial_flag_counts"] = dict(
+            Counter(
+                flag
+                for r in records
+                for flag in r.get("proposal_checks", {}).get("editorial_flags", [])
+            )
+        )
+        summary["explicit_style_records"] = sum(
+            any(a["type"] == "editorial_style" for a in r.get("validation_adjustments", []))
+            for r in records
         )
         summary["validation_retries"] = sum(len(r.get("attempts", [])) > 1 for r in records)
         summary["failure_counts"] = dict(

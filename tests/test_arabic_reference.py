@@ -451,7 +451,7 @@ def test_verified_six_dataset_macro_uses_same_subset(plan, tmp_path):
     assert result["verified_clips"] == result["selected_clips"] == 6
 
 
-@pytest.mark.parametrize("stage", ["doctor", "smoke", "run"])
+@pytest.mark.parametrize("stage", ["doctor", "smoke", "run", "correct"])
 def test_launcher_uses_explicit_corrector_not_training_tuning(tmp_path, monkeypatch, stage):
     import os
     import subprocess
@@ -484,6 +484,7 @@ def test_launcher_uses_explicit_corrector_not_training_tuning(tmp_path, monkeypa
     )
     args = json.loads(proc.stdout)
     assert ("--smoke" in args) == (stage == "smoke")
+    assert ("--initial-cleanup" in args) == (stage == "correct")
     assert "--checkpoint" not in args
     assert args[args.index("--model") + 1] == "corrector"
     if stage != "doctor":
@@ -1083,7 +1084,9 @@ def test_runtime_audits_metadata_normalization_without_retry_or_verification(
     review_pack(plan, pack, proposals=output, metadata_only=True)
     jobs = json.loads((pack / "jobs.json").read_text())["jobs"]
     assert all(len(job["validation_adjustments"]) == edit_count + note_count for job in jobs)
-    assert "Proposal metadata was normalized" in (pack / "index.html").read_text()
+    assert (
+        "Metadata adjustments and explicit rendering changes" in (pack / "index.html").read_text()
+    )
     if note_count:
         assert all(
             any("[dialect]: Check dialect" in u for u in job["proposal"]["uncertainties"])
@@ -1575,7 +1578,7 @@ def test_dataset_export_preserves_qasr_and_separates_drafts_from_final(inputs, t
         assert str(table.schema.field("ideal_text").type) == "string"
     provenance = json.loads((output / "provenance.json").read_text())
     assert provenance["corrector"]["served_model"] == "corrector"
-    assert provenance["corrector"]["prompt_version"] == "arabic-reference-proposer-v4"
+    assert provenance["corrector"]["prompt_version"] == "arabic-reference-proposer-v4.1"
     assert provenance["audio_included"] is False
     assert (
         export_dataset(root, output, proposals=proposals)["bundle_sha256"]
@@ -1865,3 +1868,205 @@ def test_launcher_keeps_space_repo_title_and_dataset_independent(tmp_path):
         )
         args = json.loads(proc.stdout)
         assert args[args.index(flag) + 1] == expected
+
+
+@pytest.mark.parametrize(
+    "before,after",
+    [
+        ("قال صلى الله عليه وسلم", "قال ﷺ"),
+        ("قال صَلَّى اللَّهُ عَلَيْهِ وَسَلَّمَ.", "قال ﷺ."),
+        ("صلى\nالله عليه وسلم", "ﷺ"),
+        ("ﷺ", "ﷺ"),
+        ("صلى الله عليه وآله وسلم", "صلى الله عليه وآله وسلم"),
+        ("صلى الله عليه", "صلى الله عليه"),
+        ("قال النبي", "قال النبي"),
+        ("https://example.org/cafe\u0301", "https://example.org/cafe\u0301"),
+        ("ان انا الى اكتب اسم ابن", "ان انا الى اكتب اسم ابن"),
+        ("أن إن أكتب اكتب أحمد أحمدُ", "أن إن أكتب اكتب أحمد أحمدُ"),
+    ],
+)
+def test_explicit_editorial_style_is_bounded_and_idempotent(before, after):
+    from data_processing.arabic_reference.editorial import ideal_style
+
+    assert ideal_style(before) == after
+    assert ideal_style(after) == after
+
+
+def test_rendering_audit_exposes_losses_hidden_by_wording_normalization():
+    from data_processing.arabic_reference.editorial import rendering_audit
+
+    before = "قال أنّه شكّ أنّ ماري ستفعل ذلك."
+    after = "قال أنه شكّ أن ماري ستفعل ذلك."
+    assert format_signature(before) == format_signature(after)
+    audit = rendering_audit(before, after)
+    assert audit["same_words_after_explicit_style"] and audit["removed_shadda"] == 2
+    # Mark relocation is detected even when the total number of marks stays equal.
+    assert rendering_audit("الشّركة", "الشركّة")["removed_shadda"] == 1
+    assert rendering_audit("صَلَّى اللَّهُ عَلَيْهِ وَسَلَّمَ", "ﷺ")["removed_shadda"] == 0
+    # Different words cannot be aligned as if only punctuation had changed.
+    assert not rendering_audit("الخصف", "الخسف")["same_words_after_explicit_style"]
+
+
+@pytest.mark.parametrize(
+    "reference,left,right,flags,allowed",
+    [
+        ("قال انه شك", "قال انه شكّ.", "قال انه شكّ.", [], True),
+        ("قال إنه شكّ", "قال إنه شك.", "قال إنه شك.", [], False),
+        ("ان الجو جميل", "إن الجو جميل.", "إن الجو جميل.", [], False),
+        ("اكتب رسالة", "أكتب رسالة.", "أكتب رسالة.", [], False),
+        ("الخصف", "الخسف", "الخسف", [], False),
+        ("في ذمتك", "في ذمّتك.", "في ذمتك.", [], False),
+        ("غيرواضح", "غيرواضح", "غيرواضح", [], False),
+        ("مرحبا", "مرحبا", "مرحبا", ["duplicate_audio"], False),
+        ("قال صلى الله عليه وسلم", "قال ﷺ.", "قال صلّى الله عليه وسلّم.", [], True),
+    ],
+)
+def test_direct_cleanup_requires_shared_rendering_and_keeps_ambiguous_words_for_llm(
+    reference, left, right, flags, allowed
+):
+    from data_processing.arabic_reference.cleanup import direct_proposal
+
+    row = proposal_row()
+    row.update(
+        text=reference,
+        flags=flags,
+        candidates=[
+            {"name": "first", "text": left, "generation_limit_hit": False},
+            {"name": "second", "text": right, "generation_limit_hit": False},
+        ],
+    )
+    proposal = direct_proposal(row)
+    assert (proposal is not None) == allowed
+    if proposal:
+        parsed = parse_proposal(json.dumps(proposal), "stop", row)
+        assert parsed["proposed_ideal_text"] == proposal["proposed_ideal_text"]
+
+
+def test_full_scan_accounts_for_every_row_and_protects_snapshot(inputs, tmp_path):
+    from data_processing.arabic_reference.cleanup import scan
+
+    root = tmp_path / "full"
+    prepare(inputs, root, full_suite=True)
+    output = tmp_path / "scan"
+    report = scan(root, output)
+    rows = list(read_jsonl(output / "corrected-drafts.jsonl"))
+    direct = list(read_jsonl(output / "direct-proposals.jsonl"))
+    queue = list(read_jsonl(output / "contextual-queue.jsonl"))
+    assert report["selected"] == len(rows) == 18
+    assert len(queue) == 18
+    assert {r["id"] for r in direct} <= {r["id"] for r in queue}
+    assert all(r["contextual_correction_pending"] for r in rows)
+    assert all(r["verified_text"] is None and r["ideal_text"] is None for r in rows)
+    assert scan(root, output) == report
+    with (output / "corrected-drafts.jsonl").open("a") as handle:
+        handle.write("{}\n")
+    with pytest.raises(ValueError, match="changed"):
+        scan(root, output)
+
+
+def test_full_corrector_reviews_every_row_after_initial_cleanup_and_resumes(
+    inputs, tmp_path, server
+):
+    url, state = server
+    rows = list(read_jsonl(inputs[1][1]))
+    rows[0]["pred_text"] = "مرحبا يا أصدقاء"
+    write_jsonl(inputs[1][1], rows)
+    root = tmp_path / "full"
+    prepare(inputs, root, full_suite=True)
+    output = tmp_path / "run"
+    kwargs = {
+        "url": url,
+        "model": "corrector",
+        "initial_cleanup": True,
+        "concurrency": 3,
+        "emit": lambda _: None,
+    }
+    result = propose(root, output, **kwargs)
+    assert result["counts"] == {"proposed": 18}
+    assert result["correction_methods"] == {"llm_after_initial_cleanup": 18}
+    assert result["initial_cleanup_methods"] == {
+        "reference_style_baseline": 1,
+        "agreement_rendering": 17,
+    }
+    assert state["calls"] == 18
+    for request in state["requests"]:
+        payload = json.loads(request["messages"][1]["content"])
+        assert len(payload["candidates"]) == 3
+        assert payload["initial_editorial_draft"]["verified"] is False
+        assert payload["initial_editorial_draft"]["method"] == "initial_editorial_cleanup"
+        assert payload["initial_editorial_draft"]["ideal"]["text"]
+    assert propose(root, output, **kwargs)["resumed"] == 18 and state["calls"] == 18
+    for record in read_jsonl(output / "proposals.jsonl"):
+        assert record["verified_text"] is None and record["ideal_text"] is None
+        assert len(record["attempts"]) == 1 and record["usage"]["prompt_tokens"] == 100
+        assert record["initial_draft"]["requires_llm_review"] is True
+
+
+def test_style_application_is_explicit_and_does_not_rewrite_wording():
+    from data_processing.arabic_reference.editorial import apply_ideal_style
+    from data_processing.arabic_reference.prompts import proposal_checks
+
+    row = proposal_row()
+    row["text"] = "قال صلى الله عليه وسلم"
+    value = proposal_value(row)
+    value.update(proposed_verified_text=row["text"], proposed_ideal_text=row["text"], changes=[])
+    adjustments = []
+    apply_ideal_style(value, adjustments)
+    assert value["proposed_verified_text"] == row["text"]
+    assert value["proposed_ideal_text"] == "قال ﷺ"
+    assert adjustments[0]["type"] == "editorial_style"
+    checks = proposal_checks(value, row, adjustments)
+    assert checks["editorial_style_changes"] == adjustments
+    assert checks["ideal_follows_explicit_style"]
+
+
+def test_editorial_checks_flag_content_only_in_ideal_and_candidate_mark_loss():
+    from data_processing.arabic_reference.prompts import proposal_checks
+
+    row = proposal_row()
+    row["text"] = "الخصف"
+    value = proposal_value(row)
+    value.update(
+        proposed_verified_text="الخصف",
+        proposed_ideal_text="الخسف",
+        changes=[
+            {"kind": "content", "before": "الخصف", "after": "الخسف", "reason": "Disputed word"}
+        ],
+    )
+    assert "declared_content_change_only_in_ideal" in proposal_checks(value, row)["editorial_flags"]
+    row["text"] = "الشّركة"
+    value = proposal_value(row)
+    value.update(proposed_verified_text="الشركة", proposed_ideal_text="الشركة", changes=[])
+    checks = proposal_checks(value, row)
+    assert "candidate_shadda_loss" in checks["editorial_flags"]
+
+
+def test_corrector_applies_salawat_style_after_llm_and_retains_raw_reply(inputs, tmp_path, server):
+    url, state = server
+    phrase = "قال صلّى الله عليه وسلّم"
+    for _, path in inputs:
+        rows = list(read_jsonl(path))
+        for row in rows:
+            row.update(text=phrase, pred_text=phrase)
+        write_jsonl(path, rows)
+    root = tmp_path / "plan"
+    prepare(inputs, root, per_dataset=1)
+
+    def reply(body):
+        value = proposal_value(payload=json.loads(body["messages"][1]["content"]))
+        value.update(proposed_verified_text=phrase, proposed_ideal_text=phrase, changes=[])
+        return value
+
+    state["reply"] = reply
+    output = tmp_path / "corrected"
+    result = propose(
+        root, output, url=url, model="corrector", initial_cleanup=True, emit=lambda _: None
+    )
+    assert state["calls"] == 6
+    assert result["explicit_style_records"] == 6
+    for record in read_jsonl(output / "proposals.jsonl"):
+        assert json.loads(record["raw_response"])["proposed_ideal_text"] == phrase
+        assert record["proposal"]["proposed_verified_text"] == phrase
+        assert record["proposal"]["proposed_ideal_text"] == "قال ﷺ"
+        assert record["proposal_checks"]["editorial_style_changes"]
+        assert record["verified_text"] is None and record["ideal_text"] is None

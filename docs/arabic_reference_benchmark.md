@@ -1,7 +1,48 @@
 # Arabic reference benchmark initiative
 
-Status: policy/prompt v4 implements contextual linguistic editing with independent text-difference auditing. It needs a fresh cluster smoke and manual inspection before scaling. The v3.3 full pilot produced 918 proposed, 136 failed and five unresolved drafts across 1,059 clips; none were audio verified. Of its failures, 32 were truncated replies. The default response allowance is now 4,096 tokens, with shorter instructions and concise edit explanations.
+Status: prompt v4.1 supports full-dataset initial cleanup followed by contextual LLM correction of every clip. The local initial pass has processed all 46,757 rows; the full LLM pass still needs to run on the cluster. Earlier pilot results remain preserved, and the corrector response allowance remains 4,096 tokens.
 This is an evaluation-only initiative. Original benchmark references and training labels remain immutable. Full-suite selection, private Parquet releases, a private static leaderboard Space and additional-model scoring are now implemented. They do not mark drafts as reviewed.
+
+## Full correction route: initial cleanup, then contextual LLM review of every clip
+
+The local initial pass processed all 46,757 rows: 7,776 use a shared, mark-preserving rendering and 38,981 retain a conservative source-style baseline. All 46,757 remain queued for LLM contextual review. The initial draft differs from the original in 10,144 rows (including whitespace/style changes), and 119 drafts contain ﷺ; these are processing counts, not verified accuracy improvements.
+
+Prompt v4.1 incorporates the full scan and the 14-record linguistic audit. The initial pass is followed by the corrector for **all 46,757 clips**, including agreement cases. It does not bypass the LLM based on model agreement. Use the existing served alias `corrector`; the currently selected checkpoint remains the one already running on your node.
+
+1. `plan-full` freezes all original rows, original references and QASR/GQASR candidates.
+2. `scan` reads every row, reports recurrent disagreements, writes `corrected-drafts.jsonl`, and queues every ID for contextual review. It reuses an agreed ASR rendering only when all word forms agree, both ASR renderings match, no risk flag is present and original marks/values are preserved. Other rows start from the original text with explicit rendering cleanup; these baselines are labelled as pending, not completed corrections.
+3. `correct` supplies the three anonymously labelled candidates plus that unverified initial draft to the LLM. Every row is reviewed in full sentence/dialect context. It uses 90 concurrent workers by default and checkpoints each response. Successful rows resume without another request; failed rows can be retried with the same command and configuration.
+4. The saved response retains actual differences, metadata warnings, mark-loss flags and explicit style adjustments. `export-dataset` exports both draft columns and their correction method. Audio verification remains separate.
+
+The contextual rules cover `أ / إ / آ / ؤ / ئ / ء`, `ي / ى`, and `ة / ه`. There is no global replacement table: `ان` can represent `أن` or `إن`; `اكتب` can be a command or `أكتب`; `اسم` and `ابن` retain hamzat al-wasl; `علي` can be a name while `على` is a preposition; `ه` can be a pronoun rather than a misspelling of `ة`. The model must preserve dialect, names, numbers and supported diacritics, and identify unresolved lexical alternatives. It may propose context-supported spelling refinements absent from candidates without inventing different spoken content. Source agreement alone does not establish correctness.
+
+The exact existing phrase `صلى الله عليه وسلم`, including diacritized forms, is rendered as **`ﷺ`** in the ideal draft, both before and after the LLM. The conversion is logged. It never inserts a missing blessing or removes additional words from a longer blessing. Original references and ASR strings are unchanged. Normalized/strict benchmark token counts can differ for this convention; retain the original-reference track alongside editorial comparisons.
+
+Use a fresh root because the prompt, code and run identity changed:
+
+```bash
+git pull --ff-only origin codex/arabic-reference-pilot
+export ARABIC_REF_SOURCE_REPO=/lustrefs/shared/shahin.konadath/workspace/train/stt/v2/qasr_v2
+export ARABIC_REF_ROOT="$ARABIC_REF_SOURCE_REPO/verification/arabic-reference-v4.1-full"
+export LLM_MODEL_NAME=corrector
+export REF_CONCURRENCY=90
+export REF_MAX_TOKENS=4096
+
+bash scripts/corpus/run_arabic_reference.sh test -q &&
+bash scripts/corpus/run_arabic_reference.sh plan-full &&
+bash scripts/corpus/run_arabic_reference.sh scan &&
+bash scripts/corpus/run_arabic_reference.sh doctor &&
+bash scripts/corpus/run_arabic_reference.sh correct
+```
+
+After completion, inspect `proposals/summary.json`, especially `correction_methods`, `initial_cleanup_methods`, `editorial_flag_counts`, failures and unresolved coverage. `candidate_shadda_loss` exposes losses previously hidden by normalized wording checks; `declared_content_change_only_in_ideal` flags inconsistent placement of declared lexical edits. Numeric/identifier changes are flagged separately. These checks expose mechanical risks; they do not certify semantics or acoustic accuracy. No LLM run has been completed merely because local tests or the initial scan pass.
+
+```bash
+bash scripts/corpus/run_arabic_reference.sh export-dataset
+bash scripts/corpus/run_arabic_reference.sh leaderboard
+```
+
+The private publishing commands and configurable Space name/title below remain available. The `run` stage remains the plain LLM route without an initial cleanup draft; use `correct` for this two-stage route. Existing earlier results remain immutable.
 
 ## Proceed through full enhancement, private datasets and leaderboard
 

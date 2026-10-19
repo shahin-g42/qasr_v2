@@ -162,6 +162,9 @@ def export_dataset(
                 "verified_text": final["verified_text"],
                 "ideal_text": final["ideal_text"],
                 "proposal_status": record.get("status", "pending"),
+                "correction_method": record.get(
+                    "correction_method", "llm_contextual" if proposal else None
+                ),
                 "review_status": final["review_status"],
                 "audio_reviewed": final["review_status"] == "verified",
                 "duration_seconds": row["actual_duration"],
@@ -312,7 +315,7 @@ Private research dataset. Scope: **{provenance["selection_scope"]}**. This relea
 |---|---:|---:|---:|
 {table}
 
-`text` is the immutable original reference. `asr_text` is the saved QASR prediction; `gqasr_text` is the GQASR prediction. `candidate_texts_json` retains every named candidate. `verified_text_draft` and `ideal_text_draft` are unverified LLM suggestions. Final `verified_text` and `ideal_text` remain null until an attested listening review is imported. Failed, pending and unresolved rows remain visible. Never substitute a draft or original reference for a missing final value.
+`text` is the immutable original reference. `asr_text` is the saved QASR prediction; `gqasr_text` is the GQASR prediction. `candidate_texts_json` retains every named candidate. `verified_text_draft` and `ideal_text_draft` are unverified suggestions. `correction_method` distinguishes `llm_after_initial_cleanup` from `llm_contextual` editing. Every completed row in the full correction route receives LLM contextual review, including initially agreeing rows. The exact supplied blessing صلى الله عليه وسلم is rendered as ﷺ under the explicit editorial convention; a missing blessing is never inserted. Final `verified_text` and `ideal_text` remain null until an attested listening review is imported. Failed, pending and unresolved rows remain visible. Never substitute a draft or original reference for a missing final value.
 
 The corrector sees anonymous candidate labels in varying order. Its fluency, agreement and edit explanations are not proof of speech. `checks_json` records independently computed text differences; model labels do not establish whether edits preserve meaning. `changes_json`, `uncertainties_json` and `issue_notes_json` retain the unverified editorial evidence. Raw server replies, local cache paths, reviewer identities and host logs are excluded from this distribution.
 

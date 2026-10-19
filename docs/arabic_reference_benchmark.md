@@ -599,3 +599,74 @@ bash -n scripts/corpus/run_arabic_reference.sh
 ```
 
 The tests include a loopback mock HTTP server, crash/resume behavior, invalid model replies, source mismatches, audio verification, review binding and paired scoring. They need no GPU, real corrector, dataset downloads or private audio. The listening page is dependency-free; real browser/audio workflow and real corrector output quality still require the cluster smoke and listening review.
+
+
+## Private v4.4 release with six explicitly speculative drafts
+
+The full v4.3 run has 46,751 proposed and six unresolved records. At the user's
+explicit request, the six remaining SADA clips received assistant-generated best
+guesses from the reference and both ASR candidates, without listening. Their original
+unresolved records stay unchanged. These guesses override the no-invention drafting
+rule only for an explicit speculative overlay, never for an audio-verified reference.
+
+Export includes an overlay only when `--speculative-drafts PATH/drafts.jsonl` or
+`ARABIC_REF_SPECULATIVE_DRAFTS` is supplied. It checks the adjacent manifest, draft
+digests, source run, exact unresolved record, row bindings and candidate texts.
+The six rows carry `speculative=true`, `proposal_status=speculative_draft`,
+`correction_method=assistant_speculative_adjudication`, their confidence, rationale,
+and individual uncertain spans. All final reference columns remain null until listening.
+The other 46,751 rows retain their LLM drafts and provenance without alteration.
+
+```bash
+export ARABIC_REF_ROOT="$PWD/verification/arabic-reference-v4.1-full"
+export ARABIC_REF_PROPOSALS="$ARABIC_REF_ROOT/proposals-revalidated-v4.3"
+export ARABIC_REF_SPECULATIVE_DRAFTS="$ARABIC_REF_ROOT/speculative-six-v4.4/drafts.jsonl"
+export ARABIC_REF_DATASET_BUNDLE="$ARABIC_REF_ROOT/dataset-release-v4.4"
+export ARABIC_REF_RELEASE_ID=v4.4-draft-001
+export HF_DATASET_REPO=shahink/asr_bench
+bash scripts/corpus/run_arabic_reference.sh export-dataset
+bash scripts/corpus/run_arabic_reference.sh publish-dataset
+# After authenticating with a write-capable account:
+bash scripts/corpus/run_arabic_reference.sh publish-dataset --execute
+# For an existing repository, inspect its current head and pass --expected-head SHA.
+```
+
+This is a private annotation release with six dataset configurations plus `all`.
+It contains source locators and audio hashes, without the cluster's audio bytes.
+Candidate-assisted drafts and speculative guesses are not independently verified truth.
+
+
+### Self-contained cluster audio release
+
+Copy the validated `dataset-release-v4.4/` annotation bundle from the Mac to the
+cluster. It includes the six speculative overlays, so the cluster does not need the
+Mac-only sidecar or v4.3 record files. Package against the existing prepared audio cache:
+
+```bash
+export ARABIC_REF_SOURCE_REPO=/lustrefs/shared/shahin.konadath/workspace/train/stt/v2/qasr_v2
+export ARABIC_REF_ROOT="$ARABIC_REF_SOURCE_REPO/verification/arabic-reference-v4.1-full"
+export ARABIC_REF_ANNOTATIONS_BUNDLE="$ARABIC_REF_ROOT/dataset-release-v4.4"
+export ARABIC_REF_DATASET_BUNDLE="$ARABIC_REF_ROOT/dataset-release-v4.4-audio"
+export ARABIC_REF_RELEASE_ID=v4.4-audio-001
+export REF_AUDIO_WORKERS=90
+export HF_DATASET_REPO=shahink/asr_bench
+bash scripts/corpus/run_arabic_reference.sh package-audio
+hf auth login
+bash scripts/corpus/run_arabic_reference.sh publish-dataset
+bash scripts/corpus/run_arabic_reference.sh publish-dataset --execute
+```
+
+No GPU or corrector server is needed. Each `.npy` is bound to the exported audio hash
+and checked for finite mono float32 samples and expected duration. WAV FLOAT encoding
+preserves those exact samples, including values outside [-1, 1]; every encoding is decoded
+and compared before writing. Hugging Face Audio feature metadata enables playback.
+`audio_sha256` remains the NumPy hash and `audio_bytes_sha256` identifies the WAV bytes.
+Original text columns, draft columns, statuses and provenance remain unchanged.
+Each of six dataset configurations and the combined `all` configuration has a `test` split.
+
+Packaging uses at most 90 threads with bounded batches and approximately 256 MiB shards.
+Allow disk space for the completed audio bundle plus a second copy during upload; the
+publisher snapshots large shards to disk to keep upload memory bounded. Failed packaging
+does not publish a partial bundle. A completed matching bundle can be reused; interrupted
+packaging must restart. The final upload is private and returns a Hub commit SHA.
+For an existing destination, inspect it and use its current `--expected-head SHA`.

@@ -17,7 +17,7 @@ MODEL_NAME="${LLM_MODEL_NAME:-corrector}"
 CHECKPOINT_ARGS=()
 if [[ -n "${ARABIC_REF_CHECKPOINT:-}" ]]; then CHECKPOINT_ARGS=(--checkpoint "$ARABIC_REF_CHECKPOINT"); fi
 PROPOSALS="${ARABIC_REF_PROPOSALS:-$ROOT/proposals}"
-COMMAND="${1:?Expected plan|plan-full|scan|doctor|smoke|run|correct|repair|revalidate|status|review-pack|import-reviews|score|export-dataset|leaderboard|publish-dataset|publish-leaderboard|test|llm-print|llm-start}"
+COMMAND="${1:?Expected plan|plan-full|scan|doctor|smoke|run|correct|repair|revalidate|status|review-pack|import-reviews|score|export-dataset|package-audio|leaderboard|publish-dataset|publish-leaderboard|test|llm-print|llm-start}"
 shift
 CLI=("$PY" -m data_processing.arabic_reference)
 case "$COMMAND" in
@@ -60,6 +60,7 @@ case "$COMMAND" in
     if [[ -f "$ROOT/reviewed-v1.jsonl" ]]; then EXTRA+=(--reviewed "$ROOT/reviewed-v1.jsonl"); fi
     if [[ "$COMMAND" == export-dataset ]]; then
       if [[ -f "$PROPOSALS/run.json" ]]; then EXTRA+=(--proposals "$PROPOSALS"); fi
+      if [[ -n "${ARABIC_REF_SPECULATIVE_DRAFTS:-}" ]]; then EXTRA+=(--speculative-drafts "$ARABIC_REF_SPECULATIVE_DRAFTS"); fi
       exec "${CLI[@]}" export-dataset --plan "$ROOT/plan" \
         --output "${ARABIC_REF_DATASET_BUNDLE:-$ROOT/dataset-release}" \
         --release-id "${ARABIC_REF_RELEASE_ID:-v4-draft-001}" ${EXTRA[@]+"${EXTRA[@]}"} "$@"
@@ -69,6 +70,13 @@ case "$COMMAND" in
         --title "${HF_SPACE_TITLE:-Arabic ASR Benchmark}" \
         --release-id "${ARABIC_REF_RELEASE_ID:-v4-board-001}" ${EXTRA[@]+"${EXTRA[@]}"} "$@"
     fi ;;
+  package-audio)
+    exec "${CLI[@]}" package-audio \
+      --annotations "${ARABIC_REF_ANNOTATIONS_BUNDLE:-$ROOT/dataset-release-v4.4}" \
+      --audio-root "$AUDIO_ROOT" \
+      --output "${ARABIC_REF_DATASET_BUNDLE:-$ROOT/dataset-release-v4.4-audio}" \
+      --release-id "${ARABIC_REF_RELEASE_ID:-v4.4-audio-001}" \
+      --workers "${REF_AUDIO_WORKERS:-90}" --shard-mib "${REF_AUDIO_SHARD_MIB:-256}" "$@" ;;
   publish-dataset)
     exec "${CLI[@]}" publish --bundle "${ARABIC_REF_DATASET_BUNDLE:-$ROOT/dataset-release}" \
       --repo-id "${HF_DATASET_REPO:?Set HF_DATASET_REPO to your private dataset ID}" "$@" ;;

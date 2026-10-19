@@ -12,6 +12,7 @@ from .core import DATASETS, digest, load_plan, sha256, write_json
 from .prompts import proposal_checks
 from .review import validated_reviews
 from .runtime import load_record
+from .speculative import load_speculative_drafts
 
 
 def json_text(value):
@@ -149,7 +150,14 @@ def public_source(row):
 
 
 def export_dataset(
-    plan_root, output, *, proposals=None, reviewed=None, datasets=None, release_id="v4-draft-001"
+    plan_root,
+    output,
+    *,
+    proposals=None,
+    speculative_drafts=None,
+    reviewed=None,
+    datasets=None,
+    release_id="v4-draft-001",
 ):
     import pyarrow as pa
     import pyarrow.parquet as pq
@@ -161,6 +169,7 @@ def export_dataset(
         raise ValueError("Choose distinct known dataset names")
     selected = [name for name in DATASETS if name in selected]
     records, identity = load_release_proposals(proposals, plan, rows)
+    speculative, speculation = load_speculative_drafts(speculative_drafts, rows, records, identity)
     reviewed_rows = {r["id"]: r for r in validated_reviews(rows, reviewed)[0]} if reviewed else {}
     output_rows = []
     for row in rows:
@@ -170,10 +179,13 @@ def export_dataset(
         proposal = (
             record.get("proposal") if record.get("status") in {"proposed", "unresolved"} else None
         )
+        draft = speculative.get(row["id"], {})
+        if draft:
+            proposal = draft["proposal"]
         final = reviewed_rows.get(row["id"], row)
         candidates = {c["name"]: c["text"] for c in row["candidates"]}
         checks = (
-            proposal_checks(proposal, row, record.get("validation_adjustments", []))
+            proposal_checks(proposal, row, (draft or record).get("validation_adjustments", []))
             if proposal
             else None
         )
@@ -190,8 +202,13 @@ def export_dataset(
                 "ideal_text_draft": proposal.get("proposed_ideal_text") if proposal else None,
                 "verified_text": final["verified_text"],
                 "ideal_text": final["ideal_text"],
-                "proposal_status": record.get("status", "pending"),
-                "correction_method": record.get(
+                "proposal_status": draft.get("proposal_status", record.get("status", "pending")),
+                "speculative": bool(draft),
+                "speculation_confidence": draft.get("confidence"),
+                "speculative_spans_json": json_text(draft["speculative_spans"]) if draft else None,
+                "speculative_reason": draft.get("judgment"),
+                "speculative_draft_sha256": draft.get("speculative_draft_sha256"),
+                "correction_method": (draft or record).get(
                     "correction_method", "llm_contextual" if proposal else None
                 ),
                 "review_status": final["review_status"],
@@ -221,7 +238,13 @@ def export_dataset(
         )
     if not output_rows:
         raise ValueError("No rows selected for release")
-    string_fields = set(output_rows[0]) - {"duration_seconds", "audio_reviewed", "cohorts", "flags"}
+    string_fields = set(output_rows[0]) - {
+        "duration_seconds",
+        "audio_reviewed",
+        "speculative",
+        "cohorts",
+        "flags",
+    }
     schema = pa.schema(
         [
             (
@@ -231,7 +254,7 @@ def export_dataset(
                 else pa.float64()
                 if name == "duration_seconds"
                 else pa.bool_()
-                if name == "audio_reviewed"
+                if name in {"audio_reviewed", "speculative"}
                 else pa.list_(pa.string()),
             )
             for name in output_rows[0]
@@ -267,6 +290,12 @@ def export_dataset(
         "selected_datasets": selected,
         "counts": counts,
         "audio_included": False,
+        "speculative_drafts": {
+            **speculation,
+            "records_in_release": sum(r["speculative"] for r in output_rows),
+        }
+        if speculation
+        else None,
         "prediction_sources": [
             {k: s[k] for k in ("name", "predictions_sha256")} for s in plan["sources"]
         ],
@@ -310,12 +339,22 @@ def export_dataset(
 
 
 def dataset_card(datasets, provenance):
+    audio = provenance.get("audio_included", False)
+    filename = "test-*.parquet" if audio else "test.parquet"
+    audio_description = (
+        "This release embeds playable 16 kHz mono float32 WAV audio in Parquet shards. "
+        "Every waveform was checked against the prepared-cache hash and decoded back to identical samples. "
+        "`audio_sha256` identifies the original NumPy cache file; `audio_bytes_sha256` identifies the embedded WAV. "
+        "The encoding preserves the benchmark waveform without amplitude clipping or integer quantization."
+        if audio
+        else "This release contains annotation overlays and source locators, without audio bytes."
+    )
     configs = []
     for ds in datasets:
         configs.append(
-            f"  - config_name: {ds}\n    data_files:\n      - split: test\n        path: data/{ds}/test.parquet"
+            f"  - config_name: {ds}\n    data_files:\n      - split: test\n        path: data/{ds}/{filename}"
         )
-    all_paths = "\n".join(f"          - data/{ds}/test.parquet" for ds in datasets)
+    all_paths = "\n".join(f"          - data/{ds}/{filename}" for ds in datasets)
     header = "---\nlanguage:\n  - ar\ntask_categories:\n  - automatic-speech-recognition\ntags:\n  - arabic\n  - evaluation-only\n  - annotation-drafts\nconfigs:\n"
     header += (
         f"  - config_name: all\n    default: true\n    data_files:\n      - split: test\n        path:\n{all_paths}\n"
@@ -324,7 +363,7 @@ def dataset_card(datasets, provenance):
     )
     counts = provenance["counts"]
     table = "\n".join(
-        f"| {ds} | {c['rows']} | {c['proposals'].get('proposed', 0)} | {c['reviews'].get('verified', 0)} |"
+        f"| {ds} | {c['rows']} | {c['proposals'].get('proposed', 0)} | {c['proposals'].get('speculative_draft', 0)} | {c['reviews'].get('verified', 0)} |"
         for ds, c in counts.items()
     )
     sources = "\n".join(
@@ -335,13 +374,15 @@ def dataset_card(datasets, provenance):
         header
         + f"""# Arabic ASR reference annotations — {provenance["release_id"]}
 
-Private research dataset. Scope: **{provenance["selection_scope"]}**. This release contains annotation overlays and source locators, without audio bytes. Original source terms and attribution remain applicable. See each row's pinned `source_locator_json` and `provenance.json`; this package does not grant a new blanket license to the underlying sources.
+Private research dataset. Scope: **{provenance["selection_scope"]}**. {audio_description} Original source terms and attribution remain applicable. See each row's pinned `source_locator_json` and `provenance.json`; this package does not grant a new blanket license to the underlying sources.
 
-| Dataset | Rows | LLM drafts | Audio-reviewed |
-|---|---:|---:|---:|
+| Dataset | Rows | LLM drafts | Speculative drafts | Audio-reviewed |
+|---|---:|---:|---:|---:|
 {table}
 
 `text` is the immutable original reference. `asr_text` is the saved QASR prediction; `gqasr_text` is the GQASR prediction. `candidate_texts_json` retains every named candidate. `verified_text_draft` and `ideal_text_draft` are unverified suggestions. `correction_method` distinguishes `llm_after_initial_cleanup` from `llm_contextual` editing. Every completed row in the full correction route receives LLM contextual review, including initially agreeing rows. The exact supplied blessing صلى الله عليه وسلم is rendered as ﷺ under the explicit editorial convention; a missing blessing is never inserted. Final `verified_text` and `ideal_text` remain null until an attested listening review is imported. Failed, pending and unresolved rows remain visible. Never substitute a draft or original reference for a missing final value.
+
+Optional user-requested guesses are marked `speculative=true`, `proposal_status="speculative_draft"` and `correction_method="assistant_speculative_adjudication"`. Their full wording is in the draft columns, with qualitative confidence, a rationale and uncertain spans in `speculation_confidence`, `speculative_reason` and `speculative_spans_json`. These guesses may invent speech and are not eligible for verified-reference scoring. `proposal_record_sha256` retains the unresolved source record; `speculative_draft_sha256` identifies the overlay. The original proposal run is unchanged.
 
 The corrector sees anonymous candidate labels in varying order. Its fluency, agreement and edit explanations are not proof of speech. `checks_json` records independently computed text differences; model labels do not establish whether edits preserve meaning. `changes_json`, `uncertainties_json` and `issue_notes_json` retain the unverified editorial evidence. Raw server replies, local cache paths, reviewer identities and host logs are excluded from this distribution.
 
@@ -407,24 +448,39 @@ def publish_bundle(root, repo_id, *, execute=False, expected_head=None, api=None
             )
     if not info.private:
         raise ValueError("Private destination could not be verified")
-    # Read verified bytes now: later file mutations cannot change what this commit uploads.
-    payloads = {name: (root / name).read_bytes() for name in files}
+    # Snapshot verified bytes before upload. Large audio shards stay on disk, not in RAM.
     import hashlib
 
-    if any(
-        hashlib.sha256(payloads[name]).hexdigest() != checksum
-        for name, checksum in manifest["files"].items()
-    ):
-        raise ValueError("Release changed before upload")
-    if json.loads(payloads["release.json"]) != manifest:
-        raise ValueError("Release manifest changed before upload")
-    commit = api.create_commit(
-        repo_id,
-        repo_type=manifest["repo_type"],
-        parent_commit=info.sha,
-        operations=[
-            CommitOperationAdd(path_in_repo=name, path_or_fileobj=payloads[name]) for name in files
-        ],
-        commit_message=f"Publish {manifest['release_id']} ({manifest['bundle_sha256'][:12]})",
-    )
+    with tempfile.TemporaryDirectory(prefix=".reference-upload-", dir=root.parent) as temporary:
+        payloads = {}
+        for name in files:
+            path = root / name
+            if path.stat().st_size <= 8 * 1024**2:
+                data = path.read_bytes()
+                checksum = hashlib.sha256(data).hexdigest()
+                payloads[name] = data
+            else:
+                snapshot = Path(temporary) / name
+                snapshot.parent.mkdir(parents=True, exist_ok=True)
+                hasher = hashlib.sha256()
+                with path.open("rb") as incoming, snapshot.open("wb") as outgoing:
+                    for chunk in iter(lambda: incoming.read(1024**2), b""):
+                        hasher.update(chunk)
+                        outgoing.write(chunk)
+                checksum = hasher.hexdigest()
+                payloads[name] = str(snapshot)
+            if name != "release.json" and checksum != manifest["files"][name]:
+                raise ValueError("Release changed before upload")
+        if json.loads(payloads["release.json"]) != manifest:
+            raise ValueError("Release manifest changed before upload")
+        commit = api.create_commit(
+            repo_id,
+            repo_type=manifest["repo_type"],
+            parent_commit=info.sha,
+            operations=[
+                CommitOperationAdd(path_in_repo=name, path_or_fileobj=payloads[name])
+                for name in files
+            ],
+            commit_message=f"Publish {manifest['release_id']} ({manifest['bundle_sha256'][:12]})",
+        )
     return {**result, "executed": True, "commit_sha": commit.oid, "commit_url": commit.commit_url}

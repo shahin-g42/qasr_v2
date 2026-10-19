@@ -2540,3 +2540,335 @@ def test_offline_revalidation_cli_and_inherited_run_chain(
     summary = revalidate_saved(plan, output, tmp_path / "offline-again", emit=lambda _: None)
     assert summary["targeted_failures"] == 0 and summary["carried_forward"] == 6
     assert summary["counts"] == {"proposed": 5, "unresolved": 1}
+
+
+@pytest.fixture
+def speculative_release(plan, tmp_path):
+    from data_processing.arabic_reference.core import write_json
+    from data_processing.arabic_reference.runtime import record_path
+
+    metadata, rows = load_plan(plan)
+    source = tmp_path / "source"
+    identity = {"manifest_digest": metadata["manifest_digest"], "ids": [r["id"] for r in rows]}
+    write_json(source / "run.json", identity)
+    for row in rows:
+        proposal = proposal_value(row)
+        if row == rows[0]:
+            proposal.update(
+                base_candidate=None,
+                proposed_verified_text=None,
+                proposed_ideal_text=None,
+                changes=[],
+            )
+        record = {
+            "id": row["id"],
+            "binding": row["binding"],
+            "run_sha256": digest(identity),
+            "status": "unresolved" if row == rows[0] else "proposed",
+            "proposal": proposal,
+            "verified_text": None,
+            "ideal_text": None,
+        }
+        record["record_sha256"] = digest(record)
+        write_json(record_path(source, row["id"]), record)
+    row = rows[0]
+    record = json.loads(record_path(source, row["id"]).read_text())
+    draft = {
+        "id": row["id"],
+        "binding": row["binding"],
+        "source_run_sha256": digest(identity),
+        "source_record_sha256": record["record_sha256"],
+        "text": row["text"],
+        "asr_text": None,
+        "gqasr_text": None,
+        "proposal_status": "speculative_draft",
+        "user_requested_speculation": True,
+        "correction_method": "assistant_speculative_adjudication",
+        "audio_listened": False,
+        "audio_review_required": True,
+        "include_in_verified_scores": False,
+        "verified_text": None,
+        "ideal_text": None,
+        "verified_text_draft": "مرحبا بكم",
+        "ideal_text_draft": "مرحبًا بكم.",
+        "confidence": "low",
+        "judgment": "User-requested guess without audio",
+        "speculative_spans": [{"chosen": "مرحبا", "reason": "Uncertain"}],
+        "proposal": proposal_value(row),
+        "validation_adjustments": [],
+    }
+    sidecar = tmp_path / "speculative" / "drafts.jsonl"
+    return plan, source, sidecar, draft
+
+
+def save_speculative_fixture(sidecar, draft, *, duplicate=False, corrupt=False):
+    from data_processing.arabic_reference.core import write_json
+
+    draft["speculative_draft_sha256"] = digest(
+        {k: v for k, v in draft.items() if k != "speculative_draft_sha256"}
+    )
+    if corrupt:
+        draft["speculative_draft_sha256"] = "0" * 64
+    write_jsonl(sidecar, [draft, draft] if duplicate else [draft])
+    write_json(
+        sidecar.parent / "manifest.json",
+        {
+            "source_run_sha256": draft["source_run_sha256"],
+            "drafts_sha256": sha256(sidecar),
+            "audio_listened": False,
+            "verified": 0,
+            "records": 1,
+            "ids": [draft["id"]],
+        },
+    )
+
+
+def test_speculative_export_preserves_originals_and_labels_six_case_style_overlay(
+    speculative_release, tmp_path
+):
+    pq = pytest.importorskip("pyarrow.parquet")
+    from data_processing.arabic_reference.release import export_dataset, validate_bundle
+    from data_processing.arabic_reference.runtime import record_path
+
+    plan, source, sidecar, draft = speculative_release
+    save_speculative_fixture(sidecar, draft)
+    original = sha256(record_path(source, draft["id"]))
+    result = export_dataset(plan, tmp_path / "bundle", proposals=source, speculative_drafts=sidecar)
+    assert validate_bundle(tmp_path / "bundle")["bundle_sha256"] == result["bundle_sha256"]
+    rows = [
+        r
+        for p in (tmp_path / "bundle").glob("data/*/*.parquet")
+        for r in pq.read_table(p).to_pylist()
+    ]
+    target = next(r for r in rows if r["id"] == draft["id"])
+    assert len(rows) == 6 and sum(r["speculative"] for r in rows) == 1
+    assert target["ideal_text_draft"] == draft["ideal_text_draft"]
+    assert target["proposal_status"] == "speculative_draft"
+    assert target["correction_method"] == "assistant_speculative_adjudication"
+    assert target["proposal_record_sha256"] == draft["source_record_sha256"]
+    assert target["speculative_draft_sha256"] == draft["speculative_draft_sha256"]
+    assert all(r["ideal_text"] is None and not r["audio_reviewed"] for r in rows)
+    assert all(r["proposal_status"] == "proposed" for r in rows if not r["speculative"])
+    assert sha256(record_path(source, draft["id"])) == original
+    assert str(tmp_path) not in json.dumps(rows)
+    provenance = json.loads((tmp_path / "bundle" / "provenance.json").read_text())
+    assert provenance["speculative_drafts"]["records_in_release"] == 1
+    assert provenance["speculative_drafts"]["audio_listened"] is False
+    # Merely having an adjacent sidecar never activates it on later exports.
+    export_dataset(plan, tmp_path / "without-overlay", proposals=source)
+    untouched = [
+        r
+        for p in (tmp_path / "without-overlay").glob("data/*/*.parquet")
+        for r in pq.read_table(p).to_pylist()
+    ]
+    assert not any(r["speculative"] for r in untouched)
+    assert next(r for r in untouched if r["id"] == draft["id"])["ideal_text_draft"] is None
+
+
+@pytest.mark.parametrize(
+    "mutation",
+    [
+        "binding",
+        "source_record",
+        "source_run",
+        "candidate",
+        "verified",
+        "listened",
+        "score",
+        "text",
+        "duplicate",
+        "hash",
+        "file_hash",
+        "coverage",
+        "missing_source",
+    ],
+)
+def test_speculative_release_rejects_mismatched_or_promoted_guesses(
+    speculative_release, tmp_path, mutation
+):
+    pytest.importorskip("pyarrow")
+    from data_processing.arabic_reference.release import export_dataset
+
+    plan, source, sidecar, draft = speculative_release
+    if mutation == "binding":
+        draft["binding"] = "wrong"
+    if mutation == "source_record":
+        draft["source_record_sha256"] = "wrong"
+    if mutation == "source_run":
+        draft["source_run_sha256"] = "wrong"
+    if mutation == "candidate":
+        draft["asr_text"] = "غير صحيح"
+    if mutation == "verified":
+        draft["ideal_text"] = draft["ideal_text_draft"]
+    if mutation == "listened":
+        draft["audio_listened"] = True
+    if mutation == "score":
+        draft["include_in_verified_scores"] = True
+    if mutation == "text":
+        draft["ideal_text_draft"] = "مختلف"
+    save_speculative_fixture(
+        sidecar, draft, duplicate=mutation == "duplicate", corrupt=mutation == "hash"
+    )
+    if mutation == "file_hash":
+        sidecar.write_text(sidecar.read_text() + "\n")
+    if mutation == "coverage":
+        p = sidecar.parent / "manifest.json"
+        metadata = json.loads(p.read_text())
+        metadata["records"] = 2
+        p.write_text(json.dumps(metadata))
+    with pytest.raises(ValueError):
+        export_dataset(
+            plan,
+            tmp_path / "invalid",
+            proposals=None if mutation == "missing_source" else source,
+            speculative_drafts=sidecar,
+        )
+    assert not (tmp_path / "invalid").exists()
+
+
+def test_audio_bundle_preserves_float_samples_texts_and_hf_configurations(inputs, tmp_path):
+    import hashlib
+    import io
+
+    pq = pytest.importorskip("pyarrow.parquet")
+    sf = pytest.importorskip("soundfile")
+    hf = pytest.importorskip("datasets")
+    from data_processing.arabic_reference.audio_release import package_audio
+    from data_processing.arabic_reference.release import export_dataset, validate_bundle
+
+    # Multiple shards and amplitudes outside [-1, 1] catch lossy PCM16 conversions.
+    values = list(read_jsonl(inputs[0][1]))
+    wave = np.tile(np.array([-1.25, 0.12345679, 1.5, 0], dtype=np.float32), 35000)
+    for row in values:
+        np.save(row["audio"], wave)
+        row["audio_sha256"] = sha256(row["audio"])
+        row["actual_duration"] = len(wave) / 16000
+    for _, path in inputs:
+        write_jsonl(path, values)
+    plan = tmp_path / "full"
+    prepare(inputs, plan, full_suite=True)
+    annotations = tmp_path / "annotations"
+    export_dataset(plan, annotations)
+    original = validate_bundle(annotations)
+    output = tmp_path / "audio-bundle"
+    result = package_audio(
+        annotations, tmp_path / "audio", output, workers=2, shard_mib=1, emit=lambda _: None
+    )
+    assert result["audio_included"] is True
+    assert result["annotations_bundle_sha256"] == original["bundle_sha256"]
+    assert validate_bundle(annotations) == original
+    assert len(list(output.glob("data/*/*.parquet"))) == 18
+    rows = [r for p in output.glob("data/*/*.parquet") for r in pq.read_table(p).to_pylist()]
+    assert len(rows) == 18
+    for row in rows:
+        decoded, rate = sf.read(io.BytesIO(row["audio"]["bytes"]), dtype="float32")
+        assert rate == 16000 and np.array_equal(decoded, wave)
+        assert hashlib.sha256(row["audio"]["bytes"]).hexdigest() == row["audio_bytes_sha256"]
+        assert row["text"] == "مرحبا بكم" and row["ideal_text"] is None
+        assert row["release_id"] == "v4.4-audio-001"
+        assert not row["audio_reviewed"] and not row["speculative"]
+        assert "/" not in row["audio"]["path"]
+    # Exercise the same local README configs and Audio metadata the Hub loader uses.
+    ds = hf.load_dataset(str(output), "all", split="test", cache_dir=str(tmp_path / "hf-cache"))
+    assert len(ds) == 18 and isinstance(ds.features["audio"], hf.Audio)
+    assert ds.features["audio"].sampling_rate == 16000
+    data = ds.cast_column("audio", hf.Audio(decode=False))[0]["audio"]
+    assert data["bytes"]
+    one = hf.load_dataset(str(output), "sada", split="test", cache_dir=str(tmp_path / "hf-cache"))
+    assert len(one) == 3
+    provenance = json.loads((output / "provenance.json").read_text())
+    assert provenance["audio_encoding"]["exact_float32_samples"] is True
+    assert (
+        package_audio(annotations, tmp_path / "audio", output, workers=1, emit=lambda _: None)[
+            "bundle_sha256"
+        ]
+        == result["bundle_sha256"]
+    )
+    with pytest.raises(ValueError, match="different inputs/version"):
+        package_audio(annotations, tmp_path / "audio", output, release_id="different")
+
+
+@pytest.mark.parametrize("mutation", ["hash", "missing", "stereo", "nan", "float64", "duration"])
+def test_audio_release_rejects_wrong_recordings_without_leaving_partial_bundle(
+    plan, tmp_path, mutation
+):
+    pytest.importorskip("datasets")
+    from data_processing.arabic_reference.audio_release import package_audio
+    from data_processing.arabic_reference.release import (
+        export_dataset,
+        finish_bundle,
+        validate_bundle,
+    )
+
+    annotations = tmp_path / "annotations"
+    export_dataset(plan, annotations)
+    row = load_plan(plan)[1][0]
+    audio = tmp_path / "audio" / row["dataset"] / f"{row['ordinal']:06d}.npy"
+    if mutation == "missing":
+        audio.unlink()
+    elif mutation == "hash":
+        np.save(audio, np.zeros(1600, dtype=np.float32))
+    else:
+        # Rebind a deliberately malformed test cache to exercise validation after hashing.
+        import pyarrow as pa
+        import pyarrow.parquet as pq
+
+        wave = np.load(audio)
+        if mutation == "stereo":
+            wave = np.stack([wave, wave], axis=1)
+        if mutation == "nan":
+            wave[0] = np.nan
+        if mutation == "float64":
+            wave = wave.astype(np.float64)
+        np.save(audio, wave)
+        manifest = validate_bundle(annotations)
+        table_path = annotations / "data" / row["dataset"] / "test.parquet"
+        table = pq.read_table(table_path)
+        values = table.to_pylist()
+        values[0]["audio_sha256"] = sha256(audio)
+        if mutation == "duration":
+            values[0]["duration_seconds"] += 1
+        pq.write_table(pa.Table.from_pylist(values, schema=table.schema), table_path)
+        (annotations / "release.json").unlink()
+        rebound = tmp_path / "rebound"
+        finish_bundle(
+            annotations,
+            rebound,
+            {k: v for k, v in manifest.items() if k not in {"files", "bundle_sha256"}},
+        )
+        annotations = rebound
+    with pytest.raises((ValueError, FileNotFoundError)):
+        package_audio(
+            annotations, tmp_path / "audio", tmp_path / "output", workers=1, emit=lambda _: None
+        )
+    assert not (tmp_path / "output").exists()
+
+
+def test_large_audio_upload_uses_verified_disk_snapshot(tmp_path):
+    from data_processing.arabic_reference.release import finish_bundle, publish_bundle
+
+    stage = tmp_path / "stage"
+    stage.mkdir()
+    body = b"x" * (9 * 1024**2)
+    (stage / "large.parquet").write_bytes(body)
+    bundle = tmp_path / "bundle"
+    finish_bundle(stage, bundle, {"repo_type": "dataset", "release_id": "audio-test"})
+    snapshots = []
+
+    class InspectHub(PrivateHubStub):
+        def create_commit(self, repo_id, **kwargs):
+            from pathlib import Path
+
+            operation = next(o for o in kwargs["operations"] if o.path_in_repo == "large.parquet")
+            assert isinstance(operation.path_or_fileobj, str)
+            snapshot = Path(operation.path_or_fileobj)
+            assert snapshot != bundle / "large.parquet"
+            snapshots.append(snapshot)
+            (bundle / "large.parquet").write_bytes(b"Changed after snapshot")
+            assert snapshot.read_bytes() == body
+            return super().create_commit(repo_id, **kwargs)
+
+    result = publish_bundle(
+        bundle, "test/bench", execute=True, expected_head="existing-head", api=InspectHub()
+    )
+    assert result["executed"] is True and snapshots and not snapshots[0].exists()

@@ -82,6 +82,11 @@ def main(argv=None):
         )
         if command == "export-dataset":
             p.add_argument("--proposals", type=Path)
+            p.add_argument(
+                "--speculative-drafts",
+                type=Path,
+                help="Explicit speculative JSONL with its adjacent manifest.json",
+            )
             p.add_argument("--datasets", nargs="+")
         else:
             p.add_argument("--title", default="Arabic ASR Benchmark", help="Space display title")
@@ -91,6 +96,13 @@ def main(argv=None):
                 default=[],
                 help="Additional MODEL=prediction.jsonl on exactly this plan",
             )
+    p = commands.add_parser("package-audio")
+    p.add_argument("--annotations", type=Path, required=True)
+    p.add_argument("--audio-root", type=Path, required=True)
+    p.add_argument("--output", type=Path, required=True)
+    p.add_argument("--release-id", default="v4.4-audio-001")
+    p.add_argument("--workers", type=int, default=16)
+    p.add_argument("--shard-mib", type=int, default=256)
     p = commands.add_parser("publish")
     p.add_argument("--bundle", type=Path, required=True)
     p.add_argument("--repo-id", required=True)
@@ -169,6 +181,7 @@ def main(argv=None):
                 args.plan,
                 args.output,
                 proposals=args.proposals,
+                speculative_drafts=args.speculative_drafts,
                 reviewed=args.reviewed,
                 datasets=args.datasets,
                 release_id=args.release_id,
@@ -189,6 +202,17 @@ def main(argv=None):
                 predictions=inputs,
                 release_id=args.release_id,
                 title=args.title,
+            )
+        elif args.command == "package-audio":
+            from .audio_release import package_audio
+
+            result = package_audio(
+                args.annotations,
+                args.audio_root,
+                args.output,
+                release_id=args.release_id,
+                workers=args.workers,
+                shard_mib=args.shard_mib,
             )
         elif args.command == "publish":
             from .release import publish_bundle

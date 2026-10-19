@@ -15,6 +15,7 @@ from .core import (
     read_jsonl,
     review_issues,
     sha256,
+    text_differences,
     validate_ideal_pair,
     validate_issue_notes,
     write_json,
@@ -73,6 +74,7 @@ def review_pack(plan_root, output, proposals=None, audio_root=None, metadata_onl
                 "candidates": blinded(row),
                 "review_issues": review_issues(row),
                 "proposal": proposal,
+                "proposal_checks": proposals_by_id.get(row["id"], {}).get("proposal_checks"),
                 "validation_adjustments": proposals_by_id.get(row["id"], {}).get(
                     "validation_adjustments", []
                 ),
@@ -119,12 +121,15 @@ def validate_review(review, row):
         "reason",
         "issue_resolutions",
         "ideal_spelling_reason",
+        "ideal_content_preserved",
     }
     if set(review) != required:
         raise ValueError("Review schema mismatch")
     for field in ("id", "binding", "policy_sha256", "audio_sha256"):
         if review[field] != row[field]:
             raise ValueError(f"Review {field} mismatch")
+    if type(review["ideal_content_preserved"]) is not bool:
+        raise ValueError("Ideal content preservation attestation must be boolean")
     if not isinstance(review["ideal_spelling_reason"], str):
         raise ValueError("Ideal spelling explanation must be text")
     for field in ("reviewer_id", "reason"):
@@ -142,6 +147,8 @@ def validate_review(review, row):
     else:
         if not all(isinstance(t, str) and t.strip() for t in (a, b)):
             raise ValueError("Verified texts must be nonempty")
+        if review["ideal_content_preserved"] is not True:
+            raise ValueError("Ideal content preservation attestation required after lexical review")
         validate_ideal_pair(a, b, review["ideal_spelling_reason"])
         if any(MARKED_UNCLEAR_RE.search(t) for t in (a, b)):
             raise ValueError("Marked unclear span cannot be scored as fully verified")
@@ -182,6 +189,9 @@ def import_reviews(plan_root, review_files, output):
                 }
             )
             if review["decision"] == "verified":
+                updated["reviewed_ideal_differences"] = text_differences(
+                    review["verified_text"], review["ideal_text"]
+                )
                 check_duplicate_review(reviewed_hashes, updated)
         updated["reviewed_sha256"] = digest(updated)
         output_rows.append(updated)
@@ -222,6 +232,10 @@ def score(plan_root, reviewed_path, output):
                 row[k] != row["review"][k] for k in ("verified_text", "ideal_text")
             ):
                 raise ValueError("Reviewed text does not match attestation")
+            if row.get("reviewed_ideal_differences") != text_differences(
+                row["verified_text"], row["ideal_text"]
+            ):
+                raise ValueError("Reviewed editorial differences do not match the final texts")
             check_duplicate_review(reviewed_hashes, row)
             eligible.append(row)
     if not eligible:

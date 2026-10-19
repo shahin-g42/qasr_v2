@@ -8,7 +8,7 @@ export PYTHONPATH="$REPO/src:$REPO/gemma_speech/gqasr/src${PYTHONPATH:+:$PYTHONP
 export OMP_NUM_THREADS=1 MKL_NUM_THREADS=1 OPENBLAS_NUM_THREADS=1 PYTHONUNBUFFERED=1
 PY="${PYTHON:-$SOURCE_REPO/gemma_speech/.venv/bin/python}"
 if [[ ! -x "$PY" ]]; then PY="${PYTHON:-python3}"; fi
-ROOT="${ARABIC_REF_ROOT:-$SOURCE_REPO/verification/arabic-reference-pilot-v3}"
+ROOT="${ARABIC_REF_ROOT:-$SOURCE_REPO/verification/arabic-reference-pilot-v4}"
 QASR_RESULTS="${QASR_RESULTS:-$SOURCE_REPO/verification/qasr-stage02-arabic}"
 GQASR_RESULTS="${GQASR_RESULTS:-$SOURCE_REPO/gemma_speech/gqasr/verification/arabic-final-streamed}"
 AUDIO_ROOT="${ARABIC_REF_AUDIO_ROOT:-$SOURCE_REPO/gemma_speech/gqasr/verification/arabic-stream-cache/prepared/audio}"
@@ -28,11 +28,11 @@ case "$COMMAND" in
       --url "$LLM_URL" --model "$MODEL_NAME" ${CHECKPOINT_ARGS[@]+"${CHECKPOINT_ARGS[@]}"} "$@" ;;
   smoke|run)
     EXTRA=(); DEST="$ROOT/proposals"
-    if [[ "$COMMAND" == smoke ]]; then EXTRA=(--smoke); DEST="$ROOT/smoke-v3.3"; fi
+    if [[ "$COMMAND" == smoke ]]; then EXTRA=(--smoke); DEST="$ROOT/smoke-v4"; fi
     exec "${CLI[@]}" propose --plan "$ROOT/plan" --output "$DEST" \
       --url "$LLM_URL" --model "$MODEL_NAME" ${CHECKPOINT_ARGS[@]+"${CHECKPOINT_ARGS[@]}"} \
       --revision "${LLM_REVISION:-unrecorded}" --concurrency "${REF_CONCURRENCY:-16}" \
-      --max-tokens "${REF_MAX_TOKENS:-2048}" ${EXTRA[@]+"${EXTRA[@]}"} "$@" ;;
+      --max-tokens "${REF_MAX_TOKENS:-4096}" ${EXTRA[@]+"${EXTRA[@]}"} "$@" ;;
   review-pack)
     exec "${CLI[@]}" review-pack --plan "$ROOT/plan" --proposals "$ROOT/proposals" \
       --audio-root "$AUDIO_ROOT" --output "$ROOT/listening" "$@" ;;

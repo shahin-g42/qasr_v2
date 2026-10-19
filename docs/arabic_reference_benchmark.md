@@ -1,7 +1,27 @@
 # Arabic reference benchmark initiative
 
-Status: the v3.2 Flash-Next smoke has been inspected. The v3.3 validator audits and removes anchored no-op edit records without changing draft text. Local replay accepts all 14 final replies and all 17 attempts, with all six controls passing. Full draft generation can follow a successful v3.3 cluster smoke; audio review remains pending.
-This is an evaluation-only initiative. No existing benchmark reference or training label is overwritten.
+Status: policy/prompt v4 implements contextual linguistic editing with independent text-difference auditing. It needs a fresh cluster smoke and manual inspection before scaling. The v3.3 full pilot produced 918 proposed, 136 failed and five unresolved drafts across 1,059 clips; none were audio verified. Of its failures, 32 were truncated replies. The default response allowance is now 4,096 tokens, with shorter instructions and concise edit explanations.
+This is an evaluation-only initiative. Original benchmark references and training labels remain immutable.
+
+## V4 linguistic editing and review
+
+The LLM receives **the latest saved QASR stage02 prediction, the GQASR prediction and the original reference**, anonymously labelled in varying order. QASR is already included; no new ASR inference is needed. The plan retains candidate names, exact texts and source-file hashes for provenance, while the prompt hides identities. The original reference has no privileged status.
+
+V4 allows contextual hamza/maddah, ta marbuta, alif maqsura, support-alif, spelling and clitic/vocative spacing proposals. Examples include `و ندمت → وندمت`, `الحلقه القادمه → الحلقة القادمة` and `المسؤلية → المسؤولية`. These require linguistic judgment, not blanket character replacements. Preserve dialect, actual words, repetitions, names, negation and values; fluency is not permission to paraphrase, repair the speaker's grammar or supply missing speech. Preserve useful punctuation and diacritics without guessing full vocalization or case endings.
+
+Draft validation separates response usability from correctness:
+
+- Malformed/truncated responses, invalid schema/base candidates, missing listening uncertainties or required issue notes, marked placeholders and loops still fail. One bounded repair is attempted for complete invalid responses.
+- Unanchored edit explanations, missing edit notes and incorrect formatting labels become explicit `metadata_warning` audit entries. Text is retained unchanged, and raw replies remain saved. An accepted draft is not an accepted correction.
+- `proposal_checks.basis_to_wording` and `proposal_checks.wording_to_ideal` independently record actual normalized-token differences, regardless of the LLM's edit list. These ignore only existing formatting normalization; full literal texts remain available. They identify changes, not whether a change preserves meaning. In particular `فالدنيا → فالدار الآخرة` and `قيمته → قيمتها` remain visible even if the LLM claims “spelling.”
+- Summary counters distinguish `metadata_warning_records`, `wording_change_records` and `ideal_editorial_change_records`. Counts overlap and are not accuracy measurements.
+- Final import still requires human listening and issue resolutions. V4 additionally requires `ideal_content_preserved: true` for a verified review, plus an editorial explanation for non-formatting differences. The reviewer must confirm the same spoken content and dialect; substantive corrections belong in the verified wording first. Numbers and identifiers must remain unchanged between verified and ideal text. The browser clears the content-preservation checkbox when either transcript is edited. Imported `reviewed_ideal_differences` records the final editorial differences.
+
+Offline replay of the 1,059 saved v3.3 final replies under the v4 parser retains 1,021 proposed and five unresolved drafts, with 33 failures (32 truncated replies and one malformed JSON reply). The 103 formerly rejected drafts are reviewable, not verified improvements. The replay reports 162 ideal editorial-change records and 100 records with metadata warnings. Both source prediction checksums and all saved record bindings were checked. This is parser compatibility evidence, not a new-model run or an accuracy result.
+
+No character rule can prove semantic equivalence, and a reviewer attestation is not independent verification. Contextual spelling changes and dialect grammar require real judgment. The listening page displays computed differences and unverified explanations. Its export asks for an editorial note whenever the two text fields differ (including “formatting only” where applicable). Old v3 plans/reviews must not be relabelled as v4; use a new root and fresh review files. No old run is overwritten or upgraded in place.
+
+The policy examples reflect patterns found in the inspected pilot. This pilot has informed development; public model-quality claims still need independent review and a fresh holdout. The historical v3 sections below describe superseded behavior; the V4 section and current run instructions govern new work.
 
 ## Stages and evidence required
 
@@ -21,7 +41,7 @@ The existing benchmark has already informed development; final model-quality cla
 
 Reuse the corrector from `bash scripts/corpus/run_yodas3.sh run`:
 
-- Client model: the served alias `corrector`; it accepts the checkpoint currently behind that alias. The cluster server reported `Qwen/Qwen3.8-27B-FP8`.
+- Client model: the served alias `corrector`; it accepts the checkpoint currently behind that alias. The latest cluster server reported `Qwen/Qwen3.8-Flash-Next-FP8`.
 - Served alias: `corrector`, endpoint `http://localhost:8010/v1`.
 - Existing serving script: `scripts/corpus/serve_yodas3_corrector.sh`. When starting a new server, `LLM_MODEL` selects its weights (the serving script defaults to `Qwen/Qwen3.6-35B-A3B`). It does not constrain client requests to an existing server.
 - Existing default serving configuration: TP=8, context 16,384, vLLM image `v0.26.0-x86_64-cu129`.
@@ -131,7 +151,7 @@ differences. The Casablanca French draft retains a parenthetical annotation that
 duplicate the spoken content. Review the complete audio and all candidates, not just
 issues mentioned by the proposer. Neither agreement nor fluent explanations certify truth.
 
-After the current v3.3 smoke passes, proceed with the 1,059-clip proposal pilot and listening pack.
+That v3.3 smoke subsequently led to the 1,059-clip proposal pilot. New work follows the v4 instructions below.
 All final reference columns remain null until review. Inspect failures, abstentions and
 representative drafts across all datasets before any later expansion beyond this pilot.
 
@@ -229,20 +249,18 @@ From the pilot code checkout, after fetching and fast-forwarding the pilot branc
 
 ```bash
 export ARABIC_REF_SOURCE_REPO=/lustrefs/shared/shahin.konadath/workspace/train/stt/v2/qasr_v2
-export ARABIC_REF_ROOT="$ARABIC_REF_SOURCE_REPO/verification/arabic-reference-pilot-v3-flash-next-r3"
+export ARABIC_REF_ROOT="$ARABIC_REF_SOURCE_REPO/verification/arabic-reference-pilot-v4-flash-next"
 export LLM_MODEL_NAME=corrector
 export REF_CONCURRENCY=90
+export REF_MAX_TOKENS=4096
 bash scripts/corpus/run_arabic_reference.sh test -q &&
 bash scripts/corpus/run_arabic_reference.sh plan &&
 bash scripts/corpus/run_arabic_reference.sh doctor &&
-bash scripts/corpus/run_arabic_reference.sh smoke &&
-bash scripts/corpus/run_arabic_reference.sh run &&
-bash scripts/corpus/run_arabic_reference.sh review-pack
+bash scripts/corpus/run_arabic_reference.sh smoke
 ```
 
-The smoke gate stops this chain if it fails. The new smoke writes to `$ARABIC_REF_ROOT/smoke-v3.3/`. Its start event and summary include
-the absolute output path. Full drafts are in `proposals/`; the listening pack is in
-`listening/`. Return the smoke and full summaries and proposal records for inspection. No serving-model change
+The smoke gate stops this chain if it fails. The new smoke writes to `$ARABIC_REF_ROOT/smoke-v4/`. Its start event and summary include
+the absolute output path. Inspect the smoke drafts and computed differences before using the full-run commands below. Full drafts are in `proposals/`; the listening pack is in `listening/`. Return summaries and records for inspection. No serving-model change
 or restart is needed for these client-side changes.
 
 ## First cluster action: plan, doctor, smoke
@@ -258,7 +276,7 @@ cd ../qasr-reference-pilot
 ```
 
 The launcher now reads the virtual environment, saved predictions and prepared audio from
-`ARABIC_REF_SOURCE_REPO`, and writes results to its `verification/arabic-reference-pilot-v3`.
+`ARABIC_REF_SOURCE_REPO`, and writes results to its `verification/arabic-reference-pilot-v4`.
 It runs the new code from this isolated checkout. If the worktree already exists, reuse it
 and update it deliberately after the previous run; changing code invalidates proposal resume.
 
@@ -267,7 +285,7 @@ following variables (when running directly in the original repository, omit the 
 
 ```bash
 export ARABIC_REF_SOURCE_REPO="${ARABIC_REF_SOURCE_REPO:-$PWD}"
-export ARABIC_REF_ROOT="$ARABIC_REF_SOURCE_REPO/verification/arabic-reference-pilot-v3"
+export ARABIC_REF_ROOT="$ARABIC_REF_SOURCE_REPO/verification/arabic-reference-pilot-v4"
 export QASR_RESULTS="$ARABIC_REF_SOURCE_REPO/verification/qasr-stage02-arabic"
 export GQASR_RESULTS="$ARABIC_REF_SOURCE_REPO/gemma_speech/gqasr/verification/arabic-final-streamed"
 export ARABIC_REF_AUDIO_ROOT="$ARABIC_REF_SOURCE_REPO/gemma_speech/gqasr/verification/arabic-stream-cache/prepared/audio"
@@ -291,7 +309,7 @@ curl -fsS http://localhost:8010/health
 
 Wait for model loading and health before `doctor`. These commands do not stop an existing service; container-name or port conflicts should be resolved by identifying the existing service, not automatically replacing it.
 
-For the current v3 plan, the prior smoke inspection and parser replay support proceeding to the full proposal pilot after the v3.3 smoke gate passes. For a new dataset or plan, inspect the smoke records before scaling. Smoke covers each dataset, the longest request, a heavily flagged case and six wording-agreement controls (14 clips on the supplied plan, not all 1,059). The inspected cluster smoke runs are recorded above; the full pilot will provide the first 90-worker throughput evidence.
+V4 changes the annotation policy and prompt; run and inspect a fresh smoke before the full proposal pilot. For a new dataset or plan, inspect the smoke records before scaling. Smoke covers each dataset, the longest request, a heavily flagged case and six wording-agreement controls (14 clips on the supplied plan, not all 1,059). The inspected cluster smoke runs are recorded above; the previous v3.3 pilot took 334.415 seconds; v4 throughput and output quality must be measured separately.
 
 ## After smoke inspection
 
@@ -302,11 +320,11 @@ bash scripts/corpus/run_arabic_reference.sh status
 bash scripts/corpus/run_arabic_reference.sh review-pack
 ```
 
-Rerunning `run` reuses valid completed records and retries failed ones. Each response is saved atomically before progress advances. Truncated responses, schema errors, empty text, undeclared spelling changes, and unsupported changes to words/values fail explicitly. Outputs, input bindings and run identity are hashed. Changed code, prompt, model identity, decoding settings, or selection require a new output run; there is no force-overwrite switch. Concurrent writers to the same proposal directory are rejected.
+Rerunning `run` reuses valid completed records and retries failed ones. Each response is saved atomically before progress advances. Truncated responses, schema errors and unusable text fail explicitly. Editorial differences and deficient edit explanations are retained with computed differences and audit warnings; draft acceptance never establishes accuracy. Outputs, input bindings and run identity are hashed. Changed code, prompt, model identity, decoding settings, or selection require a new output run; there is no force-overwrite switch. Concurrent writers to the same proposal directory are rejected.
 
 Copy `$ARABIC_REF_ROOT` back from the cluster. Open `listening/index.html` in a browser with its adjacent `audio/` directory. Audio is prepared-cache audio checked against the original hash and converted to 16 kHz mono PCM16 WAV for listening. The original audio hash and review-WAV hash are both retained.
 
-Listen and transcribe before opening the anonymous candidate/LLM-proposal panels. Read the frozen annotation rules in the page. Enter the reviewer ID, explicitly attest listening, choose Verified or Unresolved, record a reason and complete every required issue-resolution note. Adding hamza in the ideal rendering also requires a separate ideal-spelling reason. An unclear-marker note must distinguish an annotation placeholder from words actually spoken; a foreign-script note must explain the language and spelling decision. Save regularly with **Download completed reviews**; use **Resume review file** to continue. The browser keeps edits only in memory until downloaded. Metadata-only packs deliberately cannot supply audio listening evidence.
+Listen and transcribe before opening the anonymous candidate/LLM-proposal panels. Read the frozen annotation rules in the page. Enter the reviewer ID, explicitly attest listening, choose Verified or Unresolved, record a reason and complete every required issue-resolution note. Verified reviews also require the content-preservation attestation and an editorial explanation for spelling or spacing changes. An unclear-marker note must distinguish an annotation placeholder from words actually spoken; a foreign-script note must explain the language and spelling decision. Save regularly with **Download completed reviews**; use **Resume review file** to continue. The browser keeps edits only in memory until downloaded. Metadata-only packs deliberately cannot supply audio listening evidence.
 
 Import downloaded reviews, then compare the models:
 
@@ -338,8 +356,10 @@ On the supplied results, the local plan contains:
 | `text` | Original reference, immutable |
 | `verified_text` | Audio-reviewed, faithful transcription; null until reviewed |
 | `ideal_text` | Polished rendering of verified wording, including approved spelling refinements; null until reviewed |
-| `proposal.base_candidate`, `proposal.changes` | Anonymous basis and literal before/after edit evidence; `ideal_orthography` identifies ideal-only spelling refinements |
-| `review.ideal_spelling_reason` | Required explanation when approving ideal spelling refinements |
+| `proposal.base_candidate`, `proposal.changes` | Anonymous basis and model-claimed edit evidence; validate claims against computed differences and audio |
+| `proposal_checks` | Independently computed changes and metadata warnings, not correctness judgments |
+| `review.ideal_spelling_reason` | Required explanation when approving non-formatting editorial differences |
+| `review.ideal_content_preserved` | Explicit human attestation of the same spoken content and dialect |
 | `proposal.issue_notes`, `review.issue_resolutions` | One explicit note per detected issue; proposal questions and human listening resolutions respectively |
 | `proposal.proposed_verified_text` | Text-only corrector suggestion, never gold |
 | `proposal.proposed_ideal_text` | Text-only polished rendering with declared spelling refinements, never gold |
@@ -350,13 +370,13 @@ On the supplied results, the local plan contains:
 
 ## Frozen pilot policy
 
-The executable policy is in `src/data_processing/arabic_reference/core.py`; the proposer instructions are in `prompts.py`. The policy is copied into every plan and hashed. The exact same policy is embedded in the corrector system prompt and displayed in the listening page. Prompt examples illustrate the earlier error categories; competing language/spelling examples are synthetic and do not supply preferred benchmark answers.
+The executable policy is in `src/data_processing/arabic_reference/core.py`; the proposer instructions are in `prompts.py`. The policy is copied into every plan and hashed. The exact same policy is embedded in the corrector system prompt and displayed in the listening page. Prompt examples illustrate observed error patterns; they do not verify any particular recording. The pilot has already informed development.
 
 - Preserve spoken words, dialect, original language, names, negation, values, hesitations, real repetition and incomplete utterances.
 - Propose orthographic corrections explicitly; do not treat every ه/ة or ى/ي difference as harmless.
 - Do not replace unclear speech with plausible prose, or restore quotations from memory.
-- Polish verified wording with punctuation, whitespace layout, case, conservative Arabic diacritics and explicitly documented/reviewed hamza spelling refinements. Preserve word boundaries and punctuation inside numbers and identifiers. Do not otherwise change base letters, remove foreign accents/Arabic hamza or invent grammatical endings. Punctuation and vowels can change meaning even when the automated check passes; listening review remains necessary.
-- Preserve number words/digits in v3. Value-aware ITN requires a separate validated policy and is deferred.
+- Polish verified wording with punctuation, conservative Arabic diacritics and contextual spelling/spacing refinements. Audit letter and word-boundary changes as editorial decisions; preserve numeric values, identifiers and meaningful foreign accents. Punctuation and vowels can change meaning even when the automated check passes; listening review remains necessary.
+- Preserve number words/digits in v4. Value-aware ITN requires a separate validated policy and is deferred.
 - Both null proposed texts mean unresolved. Automatic agreement/confidence never grants verified status.
 - Human-reviewed duplicates must have identical verified and ideal transcripts; conflicting reviews require adjudication.
 - Unresolved clips stay visible in coverage. They are not silently replaced by the original label or removed from the selection.
@@ -365,18 +385,17 @@ The executable policy is in `src/data_processing/arabic_reference/core.py`; the 
 
 | Earlier finding | Implemented rule and check | Decision requiring listening |
 |---|---|---|
-| Good punctuation/diacritics can inflate strict error | Separate `ideal_text`; permit conservative Arabic vowel marks and sentence punctuation; protect letters, word boundaries and identifiers | Whether punctuation/vowels preserve the intended meaning; no invented case endings |
-| ه/ة, ى/ي and dialect spelling differences | No blanket equivalence; spelling/script/word changes require literal edit evidence; ideal-only hamza refinements are explicitly distinguished from lexical changes | Correct lexical form and dialect spelling; no grammatical modernization |
+| Good punctuation/diacritics can inflate strict error | Separate `ideal_text`; permit conservative Arabic vowel marks and sentence punctuation; audit letter/word-boundary edits and protect numeric values/identifiers at final import | Whether punctuation/vowels preserve the intended meaning; no invented case endings |
+| ه/ة, ى/ي and dialect spelling differences | No blanket equivalence; compute actual spelling/script/word differences independently of model explanations; require editorial review of contextual refinements | Correct lexical form and dialect spelling; no grammatical modernization |
 | `غيرواضح` / `غير واضح` references | Detect possible unclear spans; require proposal and human notes; reject bracketed unclear placeholders as fully verified | Whether the words were spoken or indicate missing speech; unresolved means null final text |
 | English written phonetically in Arabic | Detect Latin candidates and explicitly discuss script disagreement; neither script wins automatically | Spoken language, actual words, established loanwords and uncertain names/spelling |
 | 375-repeat loop and token-limit failures | Flag repetition, caps and clipped inputs; reject loop-shaped proposals and clipped bases; do not automatically collapse repeats | Complete utterance and genuine repetitions; truncated output does not reveal missing words |
 | Same Casablanca audio, different references | Group by prepared-audio hash; require issue notes; reject inconsistent verified **or ideal** texts at import and scoring | Resolve wording from audio; duplicate copies are not independent evidence |
 | Non-Arabic language headers | Treat headers/metadata as fallible; proposal inputs use the already parsed transcript text | Actual spoken language; never translate the transcript because of a header |
-| Negation, values, email/name guesses | Preserve content; formatting rejects examples such as `3.09` → `309`, `-5` → `5`, word merging and altered addresses | Any lexical correction needs acoustic evidence, not plausibility |
+| Negation, values, email/name guesses | Preserve content; draft changes remain visible; final import rejects numeric/identifier changes such as `3.09` → `309`, `-5` → `5` and altered addresses | Any lexical correction needs acoustic evidence, not plausibility |
 | Reference bias toward QASR | Blind candidate identities, retain originals, sample independently of model errors, and score paired reviewed subsets | Independent second review and frozen references before public ranking |
 
-The validators check schema, anchored spans, required notes, formatting/spelling invariants,
-review evidence, source hashes and duplicate consistency. They cannot prove that a
+The validators check schema, required notes, review attestations, protected numeric/identifier values, source hashes and duplicate consistency. Computed differences and metadata warnings expose editorial changes and unanchored explanations without pretending to resolve them. They cannot prove that a
 reason is sound, that every content edit is justified, or that someone actually listened.
 That is why human review, independent audit and cluster prompt-quality inspection are
 separate requirements. Detected issues are conservative heuristics, not an exhaustive

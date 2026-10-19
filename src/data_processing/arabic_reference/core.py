@@ -9,24 +9,25 @@ import os
 import re
 import unicodedata
 from collections import Counter, defaultdict
+from difflib import SequenceMatcher
 from pathlib import Path
 
 DATASETS = ("sada", "commonvoice", "masc_clean", "masc_noisy", "mgb2", "casablanca")
 POLICY = {
-    "version": "arabic-reference-pilot-v3",
+    "version": "arabic-reference-pilot-v4",
     "purpose": "evaluation_only",
     "audio_review_required": True,
     "evidence": "Audio decides spoken content. References, model outputs, language headers and dialect metadata can all be wrong. Fluency, model agreement and lower WER are not proof.",
     "content": "Preserve dialect, code switching, negation, names, values, hesitations, audible repetition and incomplete speech. Never translate, paraphrase, repair grammar or complete quotations/scripture from memory.",
-    "orthography": "Do not globally equate ه/ة, ى/ي, أ/إ/ا or dialect variants. Distinguish spelling refinement from different spoken wording. Declared additions of hamza to bare alif may refine ideal_text after review. Other spelling, clitic-spacing and script decisions require lexical review; never apply blanket substitutions.",
+    "orthography": "A linguistic editor may propose contextual hamza/maddah, ta marbuta, alif maqsura, tanwin support alif, conventional spelling and clitic/vocative spacing refinements in ideal_text. Never apply blanket substitutions or turn dialect into MSA. These are editorial proposals, not proof of the spoken words; names, morphology and ambiguous word choices require explicit review.",
     "foreign_speech": "Arabic-letter phonetic English and Latin-script English are competing hypotheses. Use listening to identify the spoken language and words; script, spelling and hyphenation are editorial decisions, not sounds. Use conventional spelling for confidently identified foreign words, retain Arabic for established Arabic loanwords, and leave uncertain names/spelling unresolved. Neither script is automatically better.",
     "number_policy": "Preserve number words and digits; do not convert between them. Preserve numeric signs, decimal/thousands separators, units, dates, times, email addresses and URLs. Any content correction requires audio evidence.",
-    "formatting": "ideal_text is the polished, faithful rendering of verified wording. Allow punctuation, whitespace layout, case, conservative Arabic vowel marks, and explicitly documented/reviewed bare-alif to hamzated-alif spelling refinements. Preserve word boundaries, letters, numbers and punctuation inside numbers/identifiers. Do not split/join words or change apostrophes in foreign words as formatting.",
+    "formatting": "ideal_text is a polished, faithful rendering of the same spoken content as verified_text. Punctuation, case and conservative vowel marks are formatting. Letter, script and word-boundary changes are separate editorial decisions: retain their actual before/after differences for human review, regardless of the model label. Never silently repair meaning, grammar, negation or a sentence fragment.",
     "diacritics": "Add only justified Arabic vowel marks; leave ambiguous vowels unmarked. Do not invent case endings, standardize dialect grammar or remove meaningful foreign accents/Arabic hamza or maddah.",
     "unclear": "غيرواضح/غير واضح may be an annotation marker or actual spoken words. Listen to distinguish them. Do not fill gaps from context, guess an email/name, or delete uncertain speech to improve WER. Any span remaining unresolved after listening makes the whole clip unresolved in this pilot; no partial-reference scoring.",
     "repetition": "Generation caps, omitted middles and extreme repetition are warnings, not evidence of speech. Do not copy loops, collapse genuine repeats, infer missing words, or treat shorter output as automatically correct. Audio review must establish the complete words.",
     "duplicates": "Identical prepared-audio hashes require consistent verified_text and ideal_text across reviewed rows; conflicting transcripts need adjudication. Original rows remain immutable. Duplicate diagnostics are separate from the sampled pilot.",
-    "verification": "Text-only corrector output is always proposed, never verified. Drafts may retain a complete candidate with uncertainties; they are not final references. Every risk flag needs an explicit proposal note and a human resolution note. Ideal spelling refinements require their own explanation. A human listening attestation is not independent verification.",
+    "verification": "Text-only corrector output is always proposed, never verified. Missing or inaccurate edit explanations are audited as metadata warnings; actual text differences are computed independently. Every risk flag needs a proposal note and a human resolution note. Final ideal spelling edits need an explanation, and every verified review needs explicit attestation that ideal_text preserves spoken content. Human attestations are not independent verification.",
     "fairness": "Hide model identities, listen before revealing candidates, and never optimize references to favor any system. Score original and reviewed references on the same reviewed subset; retain unresolved coverage and keep diagnostics separate.",
     "publication": "Internal pilot; source rights, independent review and reference freeze are required before public release. Evaluation audio and corrected references must not enter training; training cleanup and fresh-holdout evaluation are separate stages.",
 }
@@ -177,25 +178,44 @@ def format_signature(text):
     return " ".join(tokens)
 
 
+def text_differences(before, after):
+    """Observable normalized-token changes, NOT a semantic or orthographic verdict.
+
+    Full literal texts remain in the proposal. Marks/layout alone produce no entries;
+    spelling, token boundaries, numbers and identifiers remain visible here.
+    """
+    left, right = format_signature(before).split(), format_signature(after).split()
+    return [
+        {"before": " ".join(left[a:b]), "after": " ".join(right[c:d])}
+        for tag, a, b, c, d in SequenceMatcher(None, left, right, autojunk=False).get_opcodes()
+        if tag != "equal"
+    ]
+
+
 def ideal_spelling_pairs(before, after):
-    """Narrow pilot spelling allowance; meaning still needs explicit human review."""
-    left, right = format_signature(before), format_signature(after)
-    if len(left) != len(right) or any(
-        a != b and not (a == "ا" and b in "أإ") for a, b in zip(left, right, strict=True)
-    ):
-        raise ValueError(
-            "Ideal spelling edits may only add hamza to bare alif; other word changes require lexical review"
-        )
-    return {(a, b) for a, b in zip(left.split(), right.split(), strict=True) if a != b}
+    """Candidate editorial spans, whose semantic validity must be judged by a reviewer."""
+    return {(d["before"], d["after"]) for d in text_differences(before, after)}
+
+
+def protected_values(text):
+    # Preserve numeric values and identifiers even when broader spelling edits are allowed.
+    return [
+        re.sub(r"\s+", "", m.group().rstrip(".,،;؛!?؟"))
+        for m in PROTECTED_TOKEN_RE.finditer(text)
+        if m.lastgroup in {"number", "identifier"}
+    ]
 
 
 def validate_ideal_pair(before, after, spelling_reason=""):
-    if not format_signature(before):
+    """Final human-reviewed pair. This checks mechanics, never semantic equivalence."""
+    if not format_signature(before) or not format_signature(after):
         raise ValueError("Ideal text requires spoken words")
-    if format_signature(before) == format_signature(after):
-        return set()
+    if protected_values(before) != protected_values(after):
+        raise ValueError(
+            "Ideal rendering must preserve numbers and identifiers; correct spoken content in verified_text first"
+        )
     pairs = ideal_spelling_pairs(before, after)
-    if not isinstance(spelling_reason, str) or not spelling_reason.strip():
+    if pairs and (not isinstance(spelling_reason, str) or not spelling_reason.strip()):
         raise ValueError("Ideal spelling changes require an explicit spelling explanation")
     return pairs
 

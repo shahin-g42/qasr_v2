@@ -105,6 +105,7 @@ def human_review(row, decision="verified"):
         **{k: row[k] for k in ("id", "binding", "policy_sha256", "audio_sha256")},
         "reviewer_id": "reviewer-1",
         "audio_listened": True,
+        "ideal_content_preserved": decision == "verified",
         "decision": decision,
         "verified_text": "مرحبا بكم" if decision == "verified" else None,
         "ideal_text": "مرحبًا بكم." if decision == "verified" else None,
@@ -200,8 +201,17 @@ def test_invalid_proposals_rejected(mutation):
         value["proposed_ideal_text"] = None
     if mutation == "missing_reason":
         value["reason"] = ""
-    with pytest.raises(ValueError):
-        parse_proposal(json.dumps(value), finish, proposal_row())
+    if mutation in {"number", "negation"}:
+        from data_processing.arabic_reference.prompts import proposal_checks
+
+        row = proposal_row()
+        changes = []
+        draft = parse_proposal(json.dumps(value), finish, row, adjustments=changes)
+        assert proposal_checks(draft, row, changes)["wording_to_ideal"]
+        assert any(a["type"] == "metadata_warning" for a in changes)
+    else:
+        with pytest.raises(ValueError):
+            parse_proposal(json.dumps(value), finish, proposal_row())
 
 
 def test_unresolved_proposal_and_safe_formatting():
@@ -478,7 +488,7 @@ def test_launcher_uses_explicit_corrector_not_training_tuning(tmp_path, monkeypa
     assert args[args.index("--model") + 1] == "corrector"
     if stage != "doctor":
         assert args[args.index("--concurrency") + 1] == "12"
-        destination = "smoke-v3.3" if stage == "smoke" else "proposals"
+        destination = "smoke-v4" if stage == "smoke" else "proposals"
         assert args[args.index("--output") + 1] == str(tmp_path / "out" / destination)
     assert "--batch-size" not in args and "--workers-per-gpu" not in args
     # Only an explicit pilot checkpoint pin constrains the running service.
@@ -508,7 +518,7 @@ def test_launcher_uses_explicit_corrector_not_training_tuning(tmp_path, monkeypa
     )
     args = json.loads(proc.stdout)
     assert args[args.index("--output") + 1] == str(
-        tmp_path / "source repo/verification/arabic-reference-pilot-v3/plan"
+        tmp_path / "source repo/verification/arabic-reference-pilot-v4/plan"
     )
     assert (
         "qasr="
@@ -548,8 +558,15 @@ def test_formatting_cannot_change_content_or_meaningful_punctuation(before, afte
     assert format_signature(before) != format_signature(after)
     value = proposal_value()
     value.update(proposed_verified_text=before, proposed_ideal_text=after)
-    with pytest.raises(ValueError, match="Formatting changed"):
-        parse_proposal(json.dumps(value), "stop", proposal_row())
+    from data_processing.arabic_reference.prompts import proposal_checks
+
+    row = proposal_row()
+    adjustments = []
+    parsed = parse_proposal(json.dumps(value), "stop", row, adjustments=adjustments)
+    checks = proposal_checks(parsed, row, adjustments)
+    assert checks["wording_to_ideal"]
+    assert checks["metadata_warnings"]  # A draft is retained, never silently treated as formatting.
+    assert parsed["proposed_ideal_text"] == after
 
 
 @pytest.mark.parametrize(
@@ -627,8 +644,14 @@ def test_proposals_require_auditable_evidence(mutation):
         value.update(
             proposed_verified_text="مرحبا [غير واضح]", proposed_ideal_text="مرحبا [غير واضح]"
         )
-    with pytest.raises(ValueError):
-        parse_proposal(json.dumps(value), "stop", row)
+    if mutation in {"no_format_note", "unanchored_edit", "no_word_note"}:
+        adjustments = []
+        parsed = parse_proposal(json.dumps(value), "stop", row, adjustments=adjustments)
+        assert any(a["type"] == "metadata_warning" for a in adjustments)
+        assert parsed["proposed_verified_text"] == value["proposed_verified_text"]
+    else:
+        with pytest.raises(ValueError):
+            parse_proposal(json.dumps(value), "stop", row)
 
 
 def test_review_requires_issue_resolution_and_allows_spoken_unclear_words():
@@ -759,8 +782,10 @@ def test_declared_ideal_spelling_improvement_is_allowed_and_reviewed(before, aft
     assert parse_proposal(json.dumps(value), "stop", row) == value
     # It must not be silently reclassified as ordinary punctuation/diacritics.
     value["changes"][0]["kind"] = "formatting"
-    with pytest.raises(ValueError, match="spelling explanation"):
-        parse_proposal(json.dumps(value), "stop", row)
+    adjustments = []
+    parsed = parse_proposal(json.dumps(value), "stop", row, adjustments=adjustments)
+    assert parsed["proposed_ideal_text"] == after + "."
+    assert any(a["type"] == "metadata_warning" for a in adjustments)
     review = human_review(row)
     review.update(verified_text=before, ideal_text=after + ".")
     with pytest.raises(ValueError, match="spelling explanation"):
@@ -775,19 +800,24 @@ def test_declared_ideal_spelling_improvement_is_allowed_and_reviewed(before, aft
     "before,after",
     [("لا تذهب", "تذهب"), ("2400", "2250"), ("علي", "على"), ("رحمه", "رحمة"), ("أم", "إم")],
 )
-def test_spelling_explanation_cannot_approve_other_content_changes(plan, before, after):
+def test_spelling_explanation_cannot_replace_content_attestation(plan, before, after):
     from data_processing.arabic_reference.review import validate_review
 
     row = load_plan(plan)[1][0]
     review = human_review(row)
-    review.update(verified_text=before, ideal_text=after, ideal_spelling_reason="Looks better")
+    review.update(
+        verified_text=before,
+        ideal_text=after,
+        ideal_spelling_reason="Looks better",
+        ideal_content_preserved=False,
+    )
     with pytest.raises(ValueError, match="lexical review"):
         validate_review(review, row)
 
 
 def invalid_reply(body):
     value = proposal_value(payload=json.loads(body["messages"][1]["content"]))
-    value["proposed_ideal_text"] = "مرحبأ بكم."
+    value["uncertainties"] = []
     return value
 
 
@@ -805,7 +835,7 @@ def test_validation_feedback_repairs_once_and_preserves_every_response(plan, tmp
     records = list(read_jsonl(tmp_path / "repair/proposals.jsonl"))
     for r in records:
         assert len(r["attempts"]) == 2
-        assert "Formatting changed" in r["attempts"][0]["validation_error"]
+        assert "listening uncertainty" in r["attempts"][0]["validation_error"]
         assert "Validation error:" in r["attempts"][0]["repair_feedback"]
         assert r["raw_response"] == r["attempts"][1]["raw_response"]
         assert r["verified_text"] is None and r["ideal_text"] is None
@@ -964,7 +994,7 @@ def test_mislabelled_diacritics_preserve_transcript_and_record_adjustments(befor
         ("بارت تايم", "part-time"),
     ],
 )
-def test_edit_normalization_cannot_bypass_content_validation(before, after):
+def test_edit_label_cannot_hide_actual_editorial_differences(before, after):
     row = proposal_row()
     row["text"] = before
     value = proposal_value(row)
@@ -980,10 +1010,13 @@ def test_edit_normalization_cannot_bypass_content_validation(before, after):
             }
         ],
     )
+    from data_processing.arabic_reference.prompts import proposal_checks
+
     adjustments = []
-    with pytest.raises(ValueError):
-        parse_proposal(json.dumps(value), "stop", row, adjustments=adjustments)
-    assert adjustments == []
+    parsed = parse_proposal(json.dumps(value), "stop", row, adjustments=adjustments)
+    assert proposal_checks(parsed, row, adjustments)["wording_to_ideal"]
+    assert parsed["changes"][0]["kind"] == "ideal_orthography"
+    assert not any(a["type"] == "edit_category" for a in adjustments)
 
 
 def test_declared_formatting_edits_can_use_prior_formatting_intermediate():
@@ -995,8 +1028,11 @@ def test_declared_formatting_edits_can_use_prior_formatting_intermediate():
     ]
     assert parse_proposal(json.dumps(value), "stop", row) == value
     value["changes"][1]["before"] = "absent intermediate"
-    with pytest.raises(ValueError, match="not anchored"):
-        parse_proposal(json.dumps(value), "stop", row)
+    adjustments = []
+    parse_proposal(json.dumps(value), "stop", row, adjustments=adjustments)
+    assert any(
+        a["type"] == "metadata_warning" and "not anchored" in a["reason"] for a in adjustments
+    )
 
 
 @pytest.mark.parametrize("mode", ["edits", "notes", "both"])
@@ -1132,9 +1168,10 @@ def test_extra_note_cannot_replace_required_note_or_mask_bad_transcript():
     assert adjustments == []
     value["issue_notes"]["duplicate_audio"] = "Check duplicate references"
     value["changes"][0]["before"] = "Absent evidence"
-    with pytest.raises(ValueError, match="not anchored"):
-        parse_proposal(json.dumps(value), "stop", row, adjustments=adjustments)
-    assert adjustments == []  # Normalization is recorded only for a fully valid proposal.
+    parsed = parse_proposal(json.dumps(value), "stop", row, adjustments=adjustments)
+    assert parsed["proposed_verified_text"] == value["proposed_verified_text"]
+    assert [a["type"] for a in adjustments] == ["issue_note_relocation", "metadata_warning"]
+    assert "not anchored" in adjustments[1]["reason"]
 
 
 def test_human_issue_resolutions_still_require_exact_keys(plan):
@@ -1206,17 +1243,25 @@ def test_noop_must_have_nonempty_anchored_spans(span):
         {"kind": "formatting", "before": span, "after": span, "reason": "Claimed retention"}
     ]
     adjustments = []
-    with pytest.raises(ValueError, match=r"not anchored.*change\[0\]"):
-        parse_proposal(json.dumps(value), "stop", row, adjustments=adjustments)
-    assert adjustments == []
+    parsed = parse_proposal(json.dumps(value), "stop", row, adjustments=adjustments)
+    assert parsed["changes"] == value["changes"]
+    assert adjustments[0]["type"] == "metadata_warning"
+    assert "not anchored" in adjustments[0]["reason"]
 
 
 @pytest.mark.parametrize(
     "base,wording,ideal,kind,span,error",
     [
-        ("مرحبا بكم", "مرحبا بكم", "مرحبًا بكم.", "formatting", "بكم", "Unexplained formatting"),
+        ("مرحبا بكم", "مرحبا بكم", "مرحبًا بكم.", "formatting", "بكم", "Rendering differs"),
         ("لا تذهب", "تذهب", "تذهب", "content", "تذهب", "Unexplained word/spelling/script"),
-        ("انا هنا", "انا هنا", "أنا هنا", "ideal_orthography", "هنا", "matching edit evidence"),
+        (
+            "انا هنا",
+            "انا هنا",
+            "أنا هنا",
+            "ideal_orthography",
+            "هنا",
+            "Ideal spelling/content differences",
+        ),
     ],
 )
 def test_noop_cannot_cover_an_actual_unexplained_change(base, wording, ideal, kind, span, error):
@@ -1226,9 +1271,10 @@ def test_noop_cannot_cover_an_actual_unexplained_change(base, wording, ideal, ki
     value.update(proposed_verified_text=wording, proposed_ideal_text=ideal)
     value["changes"] = [{"kind": kind, "before": span, "after": span, "reason": "Retained text"}]
     adjustments = []
-    with pytest.raises(ValueError, match=error):
-        parse_proposal(json.dumps(value), "stop", row, adjustments=adjustments)
-    assert adjustments == []
+    parsed = parse_proposal(json.dumps(value), "stop", row, adjustments=adjustments)
+    assert parsed["changes"] == []
+    assert adjustments[0]["type"] == "no_op_edit_removed"
+    assert any(a["type"] == "metadata_warning" and error in a["reason"] for a in adjustments)
 
 
 def test_noop_removal_keeps_raw_indices_for_actual_edit_adjustments():
@@ -1299,5 +1345,173 @@ def test_noop_requires_presence_in_both_stated_texts(span, missing):
     value["changes"].insert(
         0, {"kind": "formatting", "before": span, "after": span, "reason": "Claimed retention"}
     )
-    with pytest.raises(ValueError, match=rf"change\[0\] {missing} span is absent"):
-        parse_proposal(json.dumps(value), "stop", proposal_row())
+    adjustments = []
+    parse_proposal(json.dumps(value), "stop", proposal_row(), adjustments=adjustments)
+    assert adjustments[0]["type"] == "metadata_warning"
+    assert f"change[0] {missing} span is absent" in adjustments[0]["reason"]
+
+
+@pytest.mark.parametrize(
+    "before,after",
+    [
+        ("و ندمت", "وندمت"),
+        ("ياابو سالم", "يا أبو سالم"),
+        ("الحلقه القادمه", "الحلقة القادمة"),
+        ("لغه برمجه", "لغة برمجة"),
+        ("المسؤلية", "المسؤولية"),
+        ("لابوسريع", "لأبو سريع"),
+        ("اخر كلام", "آخر كلام"),
+        ("مكانً مناسبً", "مكانًا مناسبًا"),
+    ],
+)
+def test_contextual_editorial_drafts_are_audited_and_require_human_review(before, after):
+    from data_processing.arabic_reference.prompts import proposal_checks
+    from data_processing.arabic_reference.review import validate_review
+
+    row = proposal_row()
+    row.update(text=before, binding="b", policy_sha256="p", audio_sha256="a")
+    value = proposal_value(row)
+    value.update(
+        proposed_verified_text=before,
+        proposed_ideal_text=after,
+        changes=[
+            {
+                "kind": "ideal_orthography",
+                "before": before,
+                "after": after,
+                "reason": "Contextual editorial proposal; needs review",
+            }
+        ],
+    )
+    raw = json.dumps(value, ensure_ascii=False)
+    changes = []
+    parsed = parse_proposal(raw, "stop", row, adjustments=changes)
+    assert parsed == value and not changes
+    checks = proposal_checks(parsed, row, changes)
+    assert checks["wording_to_ideal"] and checks["basis_to_wording"] == []
+    review = human_review(row)
+    review.update(verified_text=before, ideal_text=after, ideal_content_preserved=False)
+    with pytest.raises(ValueError, match="attestation"):
+        validate_review(review, row)
+    review["ideal_content_preserved"] = True
+    with pytest.raises(ValueError, match="spelling explanation"):
+        validate_review(review, row)
+    review["ideal_spelling_reason"] = (
+        "Reviewer approved contextual orthography with the same dialect and wording"
+    )
+    validate_review(review, row)
+
+
+@pytest.mark.parametrize(
+    "before,after",
+    [
+        ("3.09", "309"),
+        ("-5", "5"),
+        ("2400", "2250"),
+        ("25%", "25"),
+        ("listener@example.org", "listener@example.com"),
+        ("https://example.org/a", "https://example.org/b"),
+        ("2400", "ألفان وأربعمائة"),
+    ],
+)
+def test_editorial_attestation_does_not_override_protected_values(before, after):
+    from data_processing.arabic_reference.review import validate_review
+
+    row = proposal_row()
+    row.update(binding="b", policy_sha256="p", audio_sha256="a")
+    review = human_review(row)
+    review.update(verified_text=before, ideal_text=after, ideal_spelling_reason="Looks better")
+    with pytest.raises(ValueError, match="preserve numbers and identifiers"):
+        validate_review(review, row)
+
+
+def test_semantic_rewrite_remains_visible_in_saved_records_and_listening_pack(
+    plan, tmp_path, server
+):
+    from data_processing.arabic_reference.review import review_pack
+
+    url, state = server
+
+    def reply(body):
+        value = proposal_value(payload=json.loads(body["messages"][1]["content"]))
+        value.update(
+            proposed_verified_text="فالدنيا معاه",
+            proposed_ideal_text="فالدار الآخرة معاه",
+            changes=[
+                {
+                    "kind": "formatting",
+                    "before": "فالدنيا",
+                    "after": "فالدار الآخرة",
+                    "reason": "Incorrectly claims punctuation only",
+                }
+            ],
+        )
+        return value
+
+    state["reply"] = reply
+    root = tmp_path / "editorial"
+    result = propose(plan, root, url=url, model="corrector", emit=lambda _: None)
+    assert result["counts"] == {"proposed": 6} and result["verified"] == 0
+    assert result["ideal_editorial_change_records"] == 6
+    assert result["wording_change_records"] == 6 and result["metadata_warning_records"] == 6
+    records = list(read_jsonl(root / "proposals.jsonl"))
+    for r in records:
+        assert r["verified_text"] is None and r["ideal_text"] is None
+        assert r["proposal_checks"]["wording_to_ideal"] == [
+            {"before": "فالدنيا", "after": "فالدار الآخرة"}
+        ]
+        assert (
+            json.loads(r["raw_response"])["changes"][0]["reason"]
+            == "Incorrectly claims punctuation only"
+        )
+        assert r["proposal_checks"]["metadata_warnings"]
+    assert propose(plan, root, url=url, model="corrector", emit=lambda _: None)["resumed"] == 6
+    pack = tmp_path / "editorial-review"
+    review_pack(plan, pack, proposals=root, metadata_only=True)
+    jobs = json.loads((pack / "jobs.json").read_text())["jobs"]
+    assert all(j["proposal_checks"]["wording_to_ideal"] for j in jobs)
+    assert "Independently computed differences" in (pack / "index.html").read_text()
+
+
+def test_editorial_attestation_is_required_on_import_and_scoring(plan, tmp_path):
+    pytest.importorskip("rapidfuzz")
+    row = load_plan(plan)[1][0]
+    review = human_review(row)
+    review.update(
+        verified_text="الحلقه", ideal_text="الحلقة", ideal_spelling_reason="Contextual spelling"
+    )
+    path, reviewed = tmp_path / "reviews.jsonl", tmp_path / "reviewed.jsonl"
+    missing = dict(review)
+    missing.pop("ideal_content_preserved")
+    write_jsonl(path, [missing])
+    with pytest.raises(ValueError, match="schema"):
+        import_reviews(plan, [path], reviewed)
+    write_jsonl(path, [review])
+    import_reviews(plan, [path], reviewed)
+    rows = list(read_jsonl(reviewed))
+    target = next(r for r in rows if r["id"] == row["id"])
+    assert target["reviewed_ideal_differences"] == [{"before": "الحلقه", "after": "الحلقة"}]
+    target["review"]["ideal_content_preserved"] = False
+    target["reviewed_sha256"] = digest({k: v for k, v in target.items() if k != "reviewed_sha256"})
+    write_jsonl(reviewed, rows)
+    with pytest.raises(ValueError, match="attestation"):
+        score(plan, reviewed, tmp_path / "score.json")
+
+
+@pytest.mark.parametrize("mutation", ["missing", "different"])
+def test_scoring_rechecks_computed_editorial_differences(plan, tmp_path, mutation):
+    pytest.importorskip("rapidfuzz")
+    row = load_plan(plan)[1][0]
+    path, reviewed = tmp_path / "reviews.jsonl", tmp_path / "reviewed.jsonl"
+    write_jsonl(path, [human_review(row)])
+    import_reviews(plan, [path], reviewed)
+    rows = list(read_jsonl(reviewed))
+    target = next(r for r in rows if r["id"] == row["id"])
+    if mutation == "missing":
+        target.pop("reviewed_ideal_differences")
+    else:
+        target["reviewed_ideal_differences"] = [{"before": "fabricated", "after": "evidence"}]
+    target["reviewed_sha256"] = digest({k: v for k, v in target.items() if k != "reviewed_sha256"})
+    write_jsonl(reviewed, rows)
+    with pytest.raises(ValueError, match="editorial differences"):
+        score(plan, reviewed, tmp_path / "score.json")

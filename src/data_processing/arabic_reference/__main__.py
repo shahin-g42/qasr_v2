@@ -38,7 +38,7 @@ def main(argv=None):
             p.add_argument("--output", type=Path, required=True)
             p.add_argument("--revision", default="unrecorded")
             p.add_argument("--concurrency", type=int, default=16)
-            p.add_argument("--max-tokens", type=int, default=2048)
+            p.add_argument("--max-tokens", type=int, default=4096)
             p.add_argument("--smoke", action="store_true")
     p = commands.add_parser("review-pack")
     p.add_argument("--plan", type=Path, required=True)

@@ -22,7 +22,14 @@ from .core import (
     write_json,
     write_jsonl,
 )
-from .prompts import PROMPT_VERSION, REPAIR_INSTRUCTION, SYSTEM, messages, parse_proposal
+from .prompts import (
+    PROMPT_VERSION,
+    REPAIR_INSTRUCTION,
+    SYSTEM,
+    messages,
+    parse_proposal,
+    proposal_checks,
+)
 
 
 @contextmanager
@@ -175,7 +182,7 @@ def propose(
     checkpoint=None,
     revision="unrecorded",
     concurrency=16,
-    max_tokens=2048,
+    max_tokens=4096,
     timeout=180,
     smoke=False,
     emit=print,
@@ -285,6 +292,9 @@ def propose(
                             adjustments=attempt["validation_adjustments"],
                         )
                         record["validation_adjustments"] = attempt["validation_adjustments"]
+                        record["proposal_checks"] = proposal_checks(
+                            record["proposal"], row, record["validation_adjustments"]
+                        )
                     except ValueError as exc:
                         attempt["validation_error"] = str(exc)
                         if attempt_number == 0 and record["finish_reason"] == "stop":
@@ -375,6 +385,15 @@ def propose(
         )
         summary["removed_no_op_edits"] = sum(
             a.get("type") == "no_op_edit_removed" for a in adjustments
+        )
+        summary["metadata_warning_records"] = sum(
+            bool(r.get("proposal_checks", {}).get("metadata_warnings")) for r in records
+        )
+        summary["wording_change_records"] = sum(
+            bool(r.get("proposal_checks", {}).get("basis_to_wording")) for r in records
+        )
+        summary["ideal_editorial_change_records"] = sum(
+            bool(r.get("proposal_checks", {}).get("wording_to_ideal")) for r in records
         )
         summary["validation_retries"] = sum(len(r.get("attempts", [])) > 1 for r in records)
         summary["failure_counts"] = dict(

@@ -478,7 +478,7 @@ def test_launcher_uses_explicit_corrector_not_training_tuning(tmp_path, monkeypa
     assert args[args.index("--model") + 1] == "corrector"
     if stage != "doctor":
         assert args[args.index("--concurrency") + 1] == "12"
-        destination = "smoke-v3.1" if stage == "smoke" else "proposals"
+        destination = "smoke-v3.2" if stage == "smoke" else "proposals"
         assert args[args.index("--output") + 1] == str(tmp_path / "out" / destination)
     assert "--batch-size" not in args and "--workers-per-gpu" not in args
     # Only an explicit pilot checkpoint pin constrains the running service.
@@ -1000,30 +1000,149 @@ def test_declared_formatting_edits_can_use_prior_formatting_intermediate():
         parse_proposal(json.dumps(value), "stop", row)
 
 
-def test_runtime_audits_formatting_reclassification_without_retry_or_verification(
-    plan, tmp_path, server
+@pytest.mark.parametrize("mode", ["edits", "notes", "both"])
+def test_runtime_audits_metadata_normalization_without_retry_or_verification(
+    plan, tmp_path, server, mode
 ):
     url, state = server
+    edit_count = int(mode != "notes")
+    note_count = 2 if mode != "edits" else 0
 
     def reply(body):
         value = proposal_value(payload=json.loads(body["messages"][1]["content"]))
-        value["changes"][0]["kind"] = "ideal_orthography"
+        if edit_count:
+            value["changes"][0]["kind"] = "ideal_orthography"
+        if note_count:
+            value["issue_notes"].update(duration="Check clipping", dialect="Check dialect")
         return value
 
     state["reply"] = reply
-    output = tmp_path / "labels"
+    output = tmp_path / "normalized"
     result = propose(plan, output, url=url, model="corrector", smoke=True, emit=lambda _: None)
     assert state["calls"] == 6 and result["validation_retries"] == 0
-    assert result["normalized_records"] == 6 and result["normalized_edits"] == 6
+    assert result["normalized_records"] == 6
+    assert result["normalized_edits"] == 6 * edit_count
+    assert result["relocated_issue_notes"] == 6 * note_count
     assert result["smoke_checks"]["passed"] and result["verified"] == 0
     for record in read_jsonl(output / "proposals.jsonl"):
         assert record["validation_adjustments"] == record["attempts"][0]["validation_adjustments"]
-        assert json.loads(record["raw_response"])["changes"][0]["kind"] == "ideal_orthography"
+        raw = json.loads(record["raw_response"])
+        assert raw["changes"][0]["kind"] == ("ideal_orthography" if edit_count else "formatting")
         assert record["proposal"]["changes"][0]["kind"] == "formatting"
-        assert record["proposal"]["proposed_ideal_text"] == "مرحبًا بكم."
+        assert (
+            record["proposal"]["proposed_ideal_text"] == raw["proposed_ideal_text"] == "مرحبًا بكم."
+        )
+        assert record["proposal"]["proposed_verified_text"] == raw["proposed_verified_text"]
         assert record["verified_text"] is None and record["ideal_text"] is None
+        if note_count:
+            assert raw["issue_notes"]["duration"] == "Check clipping"
+            assert "duration" not in record["proposal"]["issue_notes"]
+            assert any(
+                "[duration]: Check clipping" in u for u in record["proposal"]["uncertainties"]
+            )
+    resumed = propose(plan, output, url=url, model="corrector", smoke=True, emit=lambda _: None)
+    assert resumed["resumed"] == 6 and state["calls"] == 6
+    assert resumed["normalized_edits"] == result["normalized_edits"]
+    assert resumed["relocated_issue_notes"] == result["relocated_issue_notes"]
     pack = tmp_path / "listening"
     review_pack(plan, pack, proposals=output, metadata_only=True)
     jobs = json.loads((pack / "jobs.json").read_text())["jobs"]
-    assert all(len(job["validation_adjustments"]) == 1 for job in jobs)
-    assert "Edit labels were corrected" in (pack / "index.html").read_text()
+    assert all(len(job["validation_adjustments"]) == edit_count + note_count for job in jobs)
+    assert "Proposal metadata was normalized" in (pack / "index.html").read_text()
+    if note_count:
+        assert all(
+            any("[dialect]: Check dialect" in u for u in job["proposal"]["uncertainties"])
+            for job in jobs
+        )
+
+
+@pytest.mark.parametrize("required", [False, True])
+@pytest.mark.parametrize("unresolved", [False, True])
+def test_extra_issue_notes_become_audited_uncertainties(required, unresolved):
+    row = proposal_row()
+    if required:
+        row["flags"].append("duplicate_audio")
+    value = proposal_value(row)
+    if unresolved:
+        value.update(
+            base_candidate=None, proposed_verified_text=None, proposed_ideal_text=None, changes=[]
+        )
+    extras = {
+        "duration": "Check the full clip; short duration alone does not establish missing words.",
+        "initial_word_disagreement": "Check initial اي against the candidate that omits it.",
+    }
+    original_notes = dict(value["issue_notes"])
+    value["issue_notes"].update(extras)
+    raw = json.dumps(value, ensure_ascii=False)
+    adjustments = []
+    parsed = parse_proposal(raw, "stop", row, adjustments=adjustments)
+    assert parsed["issue_notes"] == original_notes
+    for key in (
+        "base_candidate",
+        "proposed_verified_text",
+        "proposed_ideal_text",
+        "changes",
+        "reason",
+    ):
+        assert parsed[key] == value[key]
+    assert parsed["uncertainties"][: len(value["uncertainties"])] == value["uncertainties"]
+    assert len(adjustments) == len(extras)
+    for adjustment in adjustments:
+        key = adjustment["issue_key"]
+        assert adjustment["type"] == "issue_note_relocation"
+        assert adjustment["note"] == extras[key]
+        assert (
+            parsed["uncertainties"][adjustment["uncertainty_index"]]
+            == f"Additional unverified model comment [{key}]: {extras[key]}"
+        )
+    assert json.loads(raw) == value  # Raw model reply is unchanged.
+    again = []
+    assert parse_proposal(json.dumps(parsed), "stop", row, adjustments=again) == parsed
+    assert again == []  # Canonical output never duplicates a relocated note.
+
+
+@pytest.mark.parametrize(
+    "notes,error",
+    [
+        ([], "must be an object"),
+        (None, "must be an object"),
+        ({"duration": ""}, "nonempty strings"),
+        ({"duration": "  "}, "nonempty strings"),
+        ({"duration": {"note": "Nested note"}}, "nonempty strings"),
+        ({"duration": None}, "nonempty strings"),
+        ({"": "Question"}, "keys must be nonempty"),
+    ],
+)
+def test_note_relocation_does_not_accept_malformed_notes(notes, error):
+    value = proposal_value()
+    value["issue_notes"] = notes
+    adjustments = []
+    with pytest.raises(ValueError, match=error):
+        parse_proposal(json.dumps(value), "stop", proposal_row(), adjustments=adjustments)
+    assert adjustments == []
+
+
+def test_extra_note_cannot_replace_required_note_or_mask_bad_transcript():
+    row = proposal_row()
+    row["flags"].append("duplicate_audio")
+    value = proposal_value(row)
+    value["issue_notes"] = {"duration": "Check duration"}
+    adjustments = []
+    with pytest.raises(ValueError, match="missing keys: duplicate_audio"):
+        parse_proposal(json.dumps(value), "stop", row, adjustments=adjustments)
+    assert adjustments == []
+    value["issue_notes"]["duplicate_audio"] = "Check duplicate references"
+    value["changes"][0]["before"] = "Absent evidence"
+    with pytest.raises(ValueError, match="not anchored"):
+        parse_proposal(json.dumps(value), "stop", row, adjustments=adjustments)
+    assert adjustments == []  # Normalization is recorded only for a fully valid proposal.
+
+
+def test_human_issue_resolutions_still_require_exact_keys(plan):
+    from data_processing.arabic_reference.review import validate_review
+
+    row = load_plan(plan)[1][0]
+    review = human_review(row)
+    review["issue_resolutions"]["duration"] = "Additional model note is not a required flag"
+    with pytest.raises(ValueError, match="Unexpected review issue note keys: duration"):
+        validate_review(review, row)

@@ -366,7 +366,13 @@ def propose(
             "wall_seconds_this_invocation": round(time.monotonic() - start, 3),
         }
         summary["normalized_records"] = sum(bool(r.get("validation_adjustments")) for r in records)
-        summary["normalized_edits"] = sum(len(r.get("validation_adjustments", [])) for r in records)
+        adjustments = [a for r in records for a in r.get("validation_adjustments", [])]
+        summary["normalized_edits"] = sum(
+            a.get("type", "edit_category") == "edit_category" for a in adjustments
+        )
+        summary["relocated_issue_notes"] = sum(
+            a.get("type") == "issue_note_relocation" for a in adjustments
+        )
         summary["validation_retries"] = sum(len(r.get("attempts", [])) > 1 for r in records)
         summary["failure_counts"] = dict(
             Counter(r["error"] for r in records if r["status"] == "failed")

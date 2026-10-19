@@ -72,11 +72,22 @@ def review_issues(row):
     return {key: ISSUE_DESCRIPTIONS[key] for key in sorted(issues)}
 
 
-def validate_issue_notes(notes, row):
-    if not isinstance(notes, dict) or set(notes) != set(review_issues(row)):
-        raise ValueError("Every review issue requires its own note")
+def validate_issue_notes(notes, row, *, allow_extra=False):
+    if not isinstance(notes, dict):
+        raise ValueError("Review issue notes must be an object")
+    if not all(isinstance(key, str) and key.strip() for key in notes):
+        raise ValueError("Review issue note keys must be nonempty strings")
+    required = set(review_issues(row))
+    missing = required - set(notes)
+    if missing:
+        raise ValueError(
+            "Every review issue requires its own note; missing keys: " + ", ".join(sorted(missing))
+        )
+    unexpected = set(notes) - required
+    if unexpected and not allow_extra:
+        raise ValueError("Unexpected review issue note keys: " + ", ".join(sorted(unexpected)))
     if not all(isinstance(note, str) and note.strip() for note in notes.values()):
-        raise ValueError("Review issue notes must be nonempty")
+        raise ValueError("Review issue notes must be nonempty strings")
 
 
 def digest(value):

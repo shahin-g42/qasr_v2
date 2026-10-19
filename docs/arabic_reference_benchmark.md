@@ -1,6 +1,6 @@
 # Arabic reference benchmark initiative
 
-Status: both cluster smokes have been inspected. Prompt/parser v3.1 fixes the remaining diacritic-label failure; local replay accepts 13 drafts and one abstention with all six agreement controls passing. Full proposal generation can follow a successful v3.1 cluster smoke. Audio review remains pending.
+Status: the Flash-Next smoke has been inspected. Prompt/parser v3.2 preserves additional model notes as unverified uncertainties and clarifies retention of useful diacritics. Local replay accepts all 14 saved final replies without changing transcript strings. Full draft generation can follow a successful v3.2 cluster smoke; audio review remains pending.
 This is an evaluation-only initiative. No existing benchmark reference or training label is overwritten.
 
 ## Stages and evidence required
@@ -131,9 +131,60 @@ differences. The Casablanca French draft retains a parenthetical annotation that
 duplicate the spoken content. Review the complete audio and all candidates, not just
 issues mentioned by the proposer. Neither agreement nor fluent explanations certify truth.
 
-After the v3.1 smoke passes, proceed with the 1,059-clip proposal pilot and listening pack.
+After the current v3.2 smoke passes, proceed with the 1,059-clip proposal pilot and listening pack.
 All final reference columns remain null until review. Inspect failures, abstentions and
 representative drafts across all datasets before any later expansion beyond this pilot.
+
+## Flash-Next smoke findings and v3.2 repair
+
+The Flash-Next v3.1 run returned 12 proposed and two failed in 22.222 seconds, using
+75,281 tokens and six validation retries. All six agreement controls preserved wording.
+Both failures were **extra note categories**, not missing required notes:
+
+- `casablanca:000008` supplied `duration` and `dialect` when `review_issues` was empty.
+- `masc_clean:000074` supplied `initial_word_disagreement` when `review_issues` was empty.
+
+The exact-key validator reported both as "Every review issue requires its own note".
+V3.2 retains extra model comments verbatim in `uncertainties`, with an explicit unverified
+label, and keeps `issue_notes` restricted to the supplied flags. Each relocation is recorded
+in `validation_adjustments` with `type="issue_note_relocation"`, the original key/note and
+the destination uncertainty index. It does not create a detector flag or invent a required
+note. Missing required notes, empty/invalid notes and invalid transcript changes still fail.
+Human `issue_resolutions` still require exactly the supplied keys. The listening page shows
+the adjustments; final reference columns remain null. `normalized_records` counts records
+with any adjustment, `normalized_edits` counts edit-category changes only, and
+`relocated_issue_notes` counts moved comments. Existing edit adjustments now carry
+`type="edit_category"`.
+
+All 14 saved final replies pass local parser replay, preserving both transcript strings:
+seven edit-label corrections across three records, plus three relocated notes across the
+two failed records. All six controls pass. The first Casablanca control reply is also
+recoverable without retry. Three other first attempts still fail for invalid/no-op edit
+spans; those checks are deliberately retained. Source hashes, row bindings and JSONL copies
+were validated. This is replay of saved replies, not a new inference run or audio validation.
+
+Text inspection also found substantive limitations:
+
+- `masc_noisy:000031` strips shadda from `الطّيران` and `الأوروبيّة` for unvocalized styling.
+- `mgb2:003751` strips three shaddas, calling them non-standard or ASR artifacts without
+  evidence. Its explanations invent alternative phrases absent from the candidates.
+- `mgb2:000014` removes marks even though its own explanation says to preserve them.
+- Several agreement cases invent rival words; Common Voice introduces `ظن` and `توماس`.
+- The French Casablanca draft retains parenthetical French alongside phonetic Arabic;
+  listening and editorial review must prevent scoring an annotation as extra speech.
+
+V3.2 explicitly forbids stripping marks merely for unvocalized styling, inferring errors
+from lack of marks, and choosing longer or more fluent text as proof of completeness.
+It reinforces literal candidate comparisons and exact note keys. These are prompt rules;
+parser acceptance does not certify their semantic observance. Human review must still
+check the entire audio and the supplied drafts, including explanations.
+
+The prior 27B smoke used proposer v3 and Flash-Next used v3.1. They share the same 14 cases,
+but this is not a controlled model comparison and neither has adjudicated audio labels.
+Flash-Next drafts the difficult SADA case where 27B abstained; this does not establish
+higher accuracy. The small smoke times are not 90-worker throughput measurements.
+The frozen annotation policy and plan remain v3; use a fresh output root for the new
+proposer run, and retain earlier evidence unchanged.
 
 ## Retry on the cluster
 
@@ -141,7 +192,7 @@ From the pilot code checkout, after fetching and fast-forwarding the pilot branc
 
 ```bash
 export ARABIC_REF_SOURCE_REPO=/lustrefs/shared/shahin.konadath/workspace/train/stt/v2/qasr_v2
-export ARABIC_REF_ROOT="$ARABIC_REF_SOURCE_REPO/verification/arabic-reference-pilot-v3"
+export ARABIC_REF_ROOT="$ARABIC_REF_SOURCE_REPO/verification/arabic-reference-pilot-v3-flash-next-r2"
 export LLM_MODEL_NAME=corrector
 export REF_CONCURRENCY=90
 bash scripts/corpus/run_arabic_reference.sh test -q &&
@@ -152,7 +203,7 @@ bash scripts/corpus/run_arabic_reference.sh run &&
 bash scripts/corpus/run_arabic_reference.sh review-pack
 ```
 
-The smoke gate stops this chain if it fails. The new smoke writes to `$ARABIC_REF_ROOT/smoke-v3.1/`. Its start event and summary include
+The smoke gate stops this chain if it fails. The new smoke writes to `$ARABIC_REF_ROOT/smoke-v3.2/`. Its start event and summary include
 the absolute output path. Full drafts are in `proposals/`; the listening pack is in
 `listening/`. Return the smoke and full summaries and proposal records for inspection. No serving-model change
 or restart is needed for these client-side changes.
@@ -203,7 +254,7 @@ curl -fsS http://localhost:8010/health
 
 Wait for model loading and health before `doctor`. These commands do not stop an existing service; container-name or port conflicts should be resolved by identifying the existing service, not automatically replacing it.
 
-For the current v3 plan, the prior smoke inspection and parser replay support proceeding to the full proposal pilot after the v3.1 smoke gate passes. For a new dataset or plan, inspect the smoke records before scaling. Smoke covers each dataset, the longest request, a heavily flagged case and six wording-agreement controls (14 clips on the supplied plan, not all 1,059). Both cluster smoke runs are recorded above; the full pilot will provide the first 90-worker throughput evidence.
+For the current v3 plan, the prior smoke inspection and parser replay support proceeding to the full proposal pilot after the v3.2 smoke gate passes. For a new dataset or plan, inspect the smoke records before scaling. Smoke covers each dataset, the longest request, a heavily flagged case and six wording-agreement controls (14 clips on the supplied plan, not all 1,059). The inspected cluster smoke runs are recorded above; the full pilot will provide the first 90-worker throughput evidence.
 
 ## After smoke inspection
 

@@ -100,6 +100,7 @@ def main(argv=None):
     dataset_repo = os.environ["HF_DATASET_REPO"]
     release_id = os.environ["ARABIC_REF_BOARD_RELEASE_ID"]
     submissions = os.environ.get("ARABIC_REF_SUBMISSIONS") or None
+    latency_root = os.environ.get("ARABIC_REF_LATENCY_ROOT") or None
     receipt = root / f"publication-{release_id}.json"
     dataset_receipt = Path(os.environ["ARABIC_REF_DATASET_RECEIPT"])
     if dataset_receipt.exists():
@@ -146,6 +147,7 @@ def main(argv=None):
             dataset_repo=dataset_repo,
             dataset_revision=revision,
             submissions=submissions,
+            latency_root=latency_root,
             timing_runs=[(name, os.environ[key]) for name, key in (("qasr", "ARABIC_REF_QASR_RUN"), ("gqasr", "ARABIC_REF_GQASR_RUN")) if os.environ.get(key) and Path(os.environ[key]).is_dir()],
         )
         print(json.dumps(result, indent=2))
@@ -158,6 +160,8 @@ def main(argv=None):
             or bundle["release_id"] != release_id
             or bundle.get("submission_manifest_sha256")
             != (sha256(submissions) if submissions else None)
+            or bundle.get("latency_profile_file_sha256")
+            != (sha256(Path(latency_root) / "profile.json") if latency_root else None)
         ):
             raise ValueError(
                 "Space bundle does not match this dataset or release; build a new version"

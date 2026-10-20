@@ -146,6 +146,9 @@ class QASRRecognizer(Recognizer):
             if sha256(row["audio"]) != row["audio_sha256"]:
                 raise ValueError(f"Prepared audio changed: {row['id']}")
             waves.append(np.load(row["audio"], allow_pickle=False))
+        return self.features_from_audio(waves)
+
+    def features_from_audio(self, waves):
         # No transcript or language hints enter this shared frontend pass.
         batch = self.processor.apply_transcription_request(
             audio=waves, language=None, sampling_rate=16000, return_tensors="pt",

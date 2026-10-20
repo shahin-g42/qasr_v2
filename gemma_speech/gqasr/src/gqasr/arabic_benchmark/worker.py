@@ -40,6 +40,10 @@ class Recognizer:
             if sha256(row["audio"]) != row["audio_sha256"]:
                 raise ValueError(f"Prepared audio changed: {row['id']}")
             waves.append(np.load(row["audio"], allow_pickle=False))
+        return self.features_from_audio(waves)
+
+    def features_from_audio(self, waves):
+        """Process resident waveforms; the latency profiler excludes file I/O."""
         return self.processor.batch(waves)
 
     def infer(self, rows, features, mode, max_new_tokens):

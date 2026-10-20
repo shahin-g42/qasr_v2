@@ -1112,3 +1112,123 @@ bash scripts/corpus/benchmark_public_asr.sh publish
 Use a new release ID when rebuilding an already frozen leaderboard. Do not use `all`
 against completed model directories after inference code changes: that stage invokes
 inference and correctly enforces the old code/protocol identity.
+
+### Fresh GQASR checkpoint and controlled request latency (v4.10)
+
+The new GQASR version is registered as `gqasr-encoder12-b80-step7500`, with the display
+name **GQASR · encoder12_b80 · step 7,500**. Its default artifact is:
+
+```text
+/lustrefs/shared/shahin.konadath/workspace/train/stt/v2/qasr_v2/gemma_speech/gqasr/outputs/encoder12_b80/checkpoint-00007500
+```
+
+The training saver renames its temporary artifact into that directory. Do not append
+`/artifact`. Preflight checks the native configuration, tokenizer/frontend, step provenance,
+safetensors structure and file hashes; smoke inference strictly loads tensor keys/shapes.
+It does not read the pickled optimizer state. Override `GQASR_REFRESH_CHECKPOINT` to relocate
+this same checkpoint. Register a different version name for a different training step.
+
+The fresh run gets its own `gqasr-encoder12-b80-step7500/{smoke,full}` subdirectories.
+Historical GQASR predictions and the released reference drafts remain unchanged. This
+checkpoint did not supply the historical curation candidates, but it shares the model
+lineage; training overlap and candidate-assisted reference bias remain relevant.
+
+#### Run on the cluster
+
+Use the existing public-ASR environment (Transformers 5.19). Finish current inference
+before pulling. Existing public results are reused only for scoring/publication.
+
+```bash
+cd /lustrefs/shared/shahin.konadath/workspace/train/stt/v2/qasr-reference-pilot
+git pull --ff-only origin codex/arabic-reference-pilot
+export PYTHON="$PWD/.venv-public-asr/bin/python"
+export ARABIC_REF_SOURCE_REPO=/lustrefs/shared/shahin.konadath/workspace/train/stt/v2/qasr_v2
+export ARABIC_REF_ROOT="$ARABIC_REF_SOURCE_REPO/verification/arabic-reference-v4.1-full"
+export PUBLIC_BENCH_ROOT="$ARABIC_REF_ROOT/public-benchmarks-w8-b32-20261019-223610"
+export GQASR_REFRESH_CHECKPOINT="$ARABIC_REF_SOURCE_REPO/gemma_speech/gqasr/outputs/encoder12_b80/checkpoint-00007500"
+
+# 8 GPUs, 8 replicas/GPU, batch 32 for fresh accuracy inference.
+# Runs preflight, 32 clips/dataset smoke, then the entire 46,757-clip suite.
+bash scripts/corpus/benchmark_gqasr_refresh.sh all
+
+# Reserve GPU 0 exclusively. Models run sequentially with batch 1/concurrency 1.
+export LATENCY_ROOT="$ARABIC_REF_ROOT/latency-b1-c1-v1"
+export LATENCY_GPU=0
+export LATENCY_PER_DATASET=100
+export LATENCY_REPEATS=3
+export LATENCY_WARMUP=12
+bash scripts/corpus/profile_asr_latency.sh check &&
+bash scripts/corpus/profile_asr_latency.sh run
+```
+
+The latency defaults include QASR, the **new** GQASR, both Qwen models, both Cohere models,
+Whisper and Jais: eight profiles. The historical GQASR remains visible in the accuracy
+leaderboard with latency unavailable. `LATENCY_MODELS` can select a subset; profiling
+historical `gqasr` additionally requires `LATENCY_GQASR_CHECKPOINT` matching its original
+weight hashes. An idle-GPU check refuses other compute processes without stopping them.
+Keep the selected GPU reserved and the CPU otherwise quiet. No GPU clocks or system settings
+are changed. Set `LATENCY_PER_DATASET=0` **before creating the profile** for full-suite
+latency instead of the default 600-clip sample; this takes substantially longer.
+
+#### Measurement contract
+
+| Measurement | Definition |
+|---|---|
+| Request | Resident float32, mono 16 kHz waveform → final decoded transcript; includes frontend work, transfer, generation, decoding and CUDA completion |
+| Configuration | Batch 1, concurrency 1, one resident model, same GPU UUID, BF16, one CPU thread, TF32 disabled |
+| Selection | Duration-stratified midpoint sample, 100 clips per dataset by default; independent of model predictions and errors |
+| Warm-up | First request separately, followed by 12 unscored warm-up requests, then 3 measured passes in identical seeded order for every model |
+| Distribution | Mean, min, median, p90, p95, p99, max and standard deviation; percentiles interpolate at `(n-1)*p`; repetitions are observations, not new unique clips |
+| RTF | Per-request latency/audio duration distribution and duration-weighted aggregate `sum(latency)/sum(audio duration)` |
+| Breakdowns | Overall, each dataset, and 0–5 / 5–10 / 10–20 / 20+ second audio-duration bins |
+| Memory | Peak PyTorch allocated and reserved GiB per request; includes resident model tensors, excludes non-PyTorch/context allocations |
+| Startup | Model constructor/load time and first-request time; checkpoint hashing precedes loading, so the OS cache may already be warm |
+| Errors | Every attempted request retained; failure count beside successful-call distributions. No hidden retry or division by batch size |
+| Output diagnostics | Empty outputs, refusals, generated token counts and token-limit hits where observable; these calls stay in timing summaries |
+| Outside scope | Audio upload, disk reads/checksums, service queues, network time, streaming TTFT and decoder-only GPU kernel time |
+
+The input-preparation and inference/decode split follows the adapter interface. Public
+adapters perform their acoustic preprocessing inside `infer`, while native QASR/GQASR
+perform frontend work in `features_from_audio`. Compare **total request time** across
+models. Native greedy decoding, chunking and token budgets match the corresponding
+accuracy run (Whisper 440, others 768); tokenizer vocabularies and output lengths differ.
+A faster truncated/refused transcript is not evidence of equal quality. GPU temperature,
+power and clocks are observed before/after each model, not locked; runtime versions,
+GPU configuration, sample hashes and code hashes accompany the report.
+
+CUDA work is synchronized around timing boundaries following the
+[PyTorch timing guidance](https://docs.pytorch.org/docs/stable/notes/cuda.html).
+Peak memory uses the [PyTorch allocator statistics](https://docs.pytorch.org/docs/stable/generated/torch.cuda.memory.max_memory_allocated.html),
+and GPU isolation/configuration checks use [NVIDIA SMI](https://docs.nvidia.com/deploy/nvidia-smi/index.html).
+
+Completed models resume only when the full protocol, files, code, runtime and GPU
+identity match. An interrupted model restarts in a fresh process, including warm-up,
+while preserving its previous attempt file. Change `LATENCY_ROOT` after modifying the
+selection, repetition count, model list, hardware, code or runtime. A completed accuracy
+run is required so timing cannot be assigned to another checkpoint under the same label.
+The report validates every scheduled request and recomputes summaries from saved records.
+
+#### Publish the new accuracy and latency together
+
+Once both stages complete:
+
+```bash
+export PUBLIC_MODELS="qwen3-asr-0.6b qwen3-asr-1.7b cohere-arabic cohere-multilingual whisper-large-v3 jais-asr gqasr-encoder12-b80-step7500"
+export ARABIC_REF_LATENCY_ROOT="$LATENCY_ROOT"
+export HF_SPACE_REPO=shahink/asr_ideal_leaderboard  # configurable
+export ARABIC_REF_BOARD_RELEASE_ID=v4.10-latency-001
+unset ARABIC_REF_SPACE_BUNDLE
+bash scripts/corpus/benchmark_public_asr.sh publish
+```
+
+This imports seven additional versions alongside historical QASR/GQASR, with eight fresh
+latency profiles. Publication recomputes paired original/enhanced accuracy from existing
+predictions; it does not rerun inference. The static Space includes `latency.csv`,
+`latency-requests.csv` (every phase, including errors), and `latency.json`, with matching
+file hashes in its immutable release manifest. Reference-score filters do not change
+latency membership. A profile can also be attached when using `publish_arabic_leaderboard.sh`
+by setting `ARABIC_REF_LATENCY_ROOT` and the matching `ARABIC_REF_SUBMISSIONS` file.
+
+Local checks cover sampling, timing boundaries, errors, artifact validation, restart
+semantics and exact checkpoint-to-leaderboard binding. Real H100 inference and performance
+numbers must be produced by the cluster commands above; CPU tests provide no speed claims.

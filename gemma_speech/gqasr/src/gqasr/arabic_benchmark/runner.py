@@ -312,6 +312,8 @@ def _run(cfg, datasets, gpu_ids, workers_per_gpu, batch_size, limit, output, mod
                 "implementation": backend_implementation_identity(backend)}
     if cfg.get("public_model"):
         identity["public_model"] = cfg["public_model"]
+    if cfg.get("benchmark_model"):
+        identity["benchmark_model"] = cfg["benchmark_model"]
     run_id = fingerprint(identity)
     path = output / "run.json"
     if path.exists() and json.loads(path.read_text()) != identity:

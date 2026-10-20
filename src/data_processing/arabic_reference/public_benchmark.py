@@ -17,8 +17,10 @@ from .core import load_plan, sha256
 from .hub_transport import check_hub_transport
 from .leaderboard import additional_predictions
 from .leaderboard_inputs import annotation_drafts
+from . import local_checkpoint
 
 REGISTRY = json.loads(Path(__file__).with_name("public_models.json").read_text())
+REGISTRY[local_checkpoint.NAME] = local_checkpoint.ENTRY
 
 
 def selected_models(value):
@@ -29,6 +31,8 @@ def selected_models(value):
 
 
 def download_model(name, cache, *, api=None, download=None):
+    if name == local_checkpoint.NAME:
+        return local_checkpoint.checkpoint_metadata(local_checkpoint.checkpoint_path())
     from huggingface_hub import HfApi, snapshot_download
 
     entry = REGISTRY[name]
@@ -159,6 +163,8 @@ def workers_per_gpu(name):
 
 
 def model_config(name, cache, work, output):
+    if name == local_checkpoint.NAME:
+        return local_checkpoint.model_config(work, output)
     source = Path(cache) / name / "source.json"
     if not source.is_file():
         raise ValueError(f"Model {name} is not downloaded; run the download stage first")
@@ -208,10 +214,14 @@ def export_submissions(root, names, plan, rows):
         additional_predictions(rows, [(name, prediction)])
         run_file = folder / "run.json"
         identity = json.loads(run_file.read_text())
-        public = identity["public_model"]
-        if identity.get("modes") != ["arabic"] or any(
+        public = identity.get("benchmark_model", identity.get("public_model", {}))
+        local = name == local_checkpoint.NAME
+        fields = ("source_type", "checkpoint_digest", "training_step", "backend", "display_name") if local else ("repository", "revision", "backend", "display_name")
+        if local:
+            local_checkpoint.validate_registration(public, identity)
+        if identity.get("modes") != ["arabic"] or identity.get("backend") != REGISTRY[name]["backend"] or any(
             public.get(k) != REGISTRY[name][k]
-            for k in ("repository", "backend", "display_name", "max_new_tokens")
+            for k in (("backend", "display_name", "max_new_tokens") if local else ("repository", "backend", "display_name", "max_new_tokens"))
         ):
             raise ValueError(f"Public run {name} has unexpected model/decoding provenance")
         if REGISTRY[name].get("revision") and public.get("revision") != REGISTRY[name]["revision"]:
@@ -225,7 +235,7 @@ def export_submissions(root, names, plan, rows):
                 "predictions_sha256": sha256(prediction),
                 "run_file": run_file.relative_to(root).as_posix(),
                 "run_file_sha256": sha256(run_file),
-                **{k: public[k] for k in ("repository", "revision", "backend", "display_name")},
+                **{k: public[k] for k in fields},
             }
         )
     path = root / "submissions.json"
@@ -244,7 +254,7 @@ def write_comparison_report(output):
         "",
         f"Matched clips: **{panel['scored_clips']:,}**. Excluded: **{panel['excluded_clips']}**.",
         "References are frozen candidate-assisted ideal_text_draft values, not audio-verified gold.",
-        "QASR/GQASR predictions are reused from their completed Arabic-mode runs. Public models use fresh inference.",
+        "Historical QASR/GQASR predictions are preserved. Each additional checkpoint is scored from its own completed Arabic-mode run.",
         "All paired original and enhanced scores below use exactly the same eligible clips.",
         "",
         "| Model | Original WER | Enhanced WER | Original CER | Enhanced CER |",
@@ -338,8 +348,9 @@ def main(argv=None):
                     {
                         "event": "public_model_pinned",
                         "name": name,
-                        "repository": info["repository"],
-                        "revision": info["revision"],
+                        "repository": info.get("repository"),
+                        "revision": info.get("revision"),
+                        "checkpoint_digest": info.get("checkpoint_digest"),
                     }
                 )
             )

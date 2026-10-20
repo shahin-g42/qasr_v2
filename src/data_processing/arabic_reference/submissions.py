@@ -9,6 +9,8 @@ from pathlib import Path
 from .core import sha256
 from .benchmark_performance import read_performance
 from .leaderboard_inputs import dataset_pin
+from .latency import source_binding
+from . import local_checkpoint
 
 
 def read_submissions(path, plan):
@@ -33,11 +35,18 @@ def read_submissions(path, plan):
             if sha256(file) != item[f"{field}_sha256"]:
                 raise ValueError(f"Public submission file changed: {name}/{field}")
         run = json.loads((path.parent / item["run_file"]).read_text())
-        public = run.get("public_model", {})
-        for field in ("repository", "revision", "backend", "display_name"):
+        local = item.get("source_type") == "local_checkpoint"
+        public = run.get("benchmark_model" if local else "public_model", {})
+        fields = ("source_type", "checkpoint_digest", "training_step", "backend", "display_name") if local else ("repository", "revision", "backend", "display_name")
+        for field in fields:
             if public.get(field) != item.get(field):
                 raise ValueError(f"Public model provenance mismatch: {name}/{field}")
-        dataset_pin(item["repository"], item["revision"])
+        if local:
+            if name != local_checkpoint.NAME:
+                raise ValueError("Unregistered local checkpoint")
+            local_checkpoint.validate_registration(public, run)
+        else:
+            dataset_pin(item["repository"], item["revision"])
         if run.get("modes") != ["arabic"] or run.get("backend") != item["backend"]:
             raise ValueError("Public run decoding protocol differs from the submission")
         display = item["display_name"]
@@ -51,7 +60,7 @@ def read_submissions(path, plan):
         inputs.append((name, path.parent / item["predictions"]))
         details[name] = {
             k: item[k]
-            for k in ("display_name", "repository", "revision", "backend", "run_file_sha256")
+            for k in (*fields, "run_file_sha256")
         }
         details[name].update(
             performance=read_performance((path.parent / item["run_file"]).parent, item["predictions_sha256"], expected_run=run),
@@ -59,7 +68,8 @@ def read_submissions(path, plan):
             max_new_tokens=run["max_new_tokens"],
             precision=run["precision"],
             postprocessing=public["postprocessing"],
-            model_url=f"https://huggingface.co/{item['repository']}/tree/{item['revision']}",
+            model_url=None if local else f"https://huggingface.co/{item['repository']}/tree/{item['revision']}",
+            latency_binding=source_binding(run),
         )
     if not inputs or sha256(path) != before:
         raise ValueError("Empty or changed public submissions manifest")

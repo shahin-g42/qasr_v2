@@ -217,6 +217,7 @@ def make_public_run(root, source):
             "runtime": {"torch": "test", "transformers": "test"},
             "precision": "bf16",
             "max_new_tokens": 768,
+            "checkpoint": {"model.safetensors": "a" * 64},
         },
     )
     atomic_json(

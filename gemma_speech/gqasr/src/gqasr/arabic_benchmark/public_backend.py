@@ -198,8 +198,15 @@ class PublicRecognizer(Recognizer):
             if abs(len(wave) / 16000 - row["actual_duration"]) > 1 / 16000:
                 raise ValueError(f"Prepared duration mismatch: {row['id']}")
             waves[i] = wave
-        # The common worker can slice this by sample before processor chunk expansion.
-        return {"audio": waves}
+        return self.features_from_audio(waves)
+
+    def features_from_audio(self, waves):
+        import numpy as np
+
+        # Keep an object array even when all clips have the same length.
+        batch = np.empty(len(waves), dtype=object)
+        batch[:] = waves
+        return {"audio": batch}
 
     def infer(self, rows, features, mode, max_new_tokens):
         if mode != "arabic":

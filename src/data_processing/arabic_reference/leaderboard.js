@@ -6,7 +6,7 @@ const count = n => n.toLocaleString('en-US');
 const pct = n => Number.isFinite(n) ? (100 * n).toFixed(2) + '%' : '—';
 const displayModel = name => data.model_details?.[name]?.display_name || (['qasr', 'gqasr'].includes(name) ? name.toUpperCase() : name);
 const names = {sada:'SADA', commonvoice:'Common Voice', masc_clean:'MASC · Clean', masc_noisy:'MASC · Noisy', mgb2:'MGB-2', casablanca:'Casablanca'};
-const palette = ['#74baff', '#e6c27a', '#b4a3ff', '#7ad9e1', '#f5a3c1', '#9fcf9b', '#eaaa80', '#93a9ed'];
+const palette = ['#74baff', '#e6c27a', '#b4a3ff', '#7ad9e1', '#f5a3c1', '#9fcf9b', '#eaaa80', '#93a9ed', '#d2c1a6'];
 const colorOrder = ['qasr', 'gqasr', ...data.models.filter(name => !['qasr', 'gqasr'].includes(name))];
 const modelColor = name => palette[colorOrder.indexOf(name) % palette.length];
 const option = (select, text, value) => { const el = make('option', text); el.value = value; select.append(el); };

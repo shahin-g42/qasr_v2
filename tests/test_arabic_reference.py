@@ -3532,7 +3532,9 @@ def test_cluster_leaderboard_publication_and_receipt_roundtrip(
         receipt = json.loads((tmp_path / "publication-board-test.json").read_text())
         assert receipt["executed"] and receipt["remote_verification"]["status"] == "passed"
         assert receipt["dataset_verification"]["revision"] == "a" * 40
-        assert receipt["remote_verification"]["files_verified"] == 8
+        frozen = json.loads((tmp_path / "space-bundle/release.json").read_text())
+        assert "latency.js" in frozen["files"]
+        assert receipt["remote_verification"]["files_verified"] == len(frozen["files"]) + 1
         if destination == "new":
             assert hub.calls[0][2]["space_sdk"] == "static" and hub.calls[0][2]["private"]
         committed = len(hub.calls)

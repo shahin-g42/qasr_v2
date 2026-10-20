@@ -121,6 +121,7 @@ def build_leaderboard(
     dataset_revision=None,
     submissions=None,
     timing_runs=(),
+    latency_root=None,
 ):
     from gqasr.arabic_benchmark import scoring
 
@@ -148,6 +149,12 @@ def build_leaderboard(
         if source is None or name in performance:
             raise ValueError(f"Unknown or duplicate timing source: {name}")
         performance[name] = read_performance(folder, source["predictions_sha256"], expected_run=source["run"])
+    from .latency import read_latency_profiles, source_binding, write_latency_csv, write_request_csv
+    latency = None
+    if latency_root:
+        bindings = {s["name"]: source_binding(s["run"]) for s in plan["sources"] if (s.get("run") or {}).get("checkpoint")}
+        bindings.update({name: detail["latency_binding"] for name, detail in model_details.items()})
+        latency = read_latency_profiles(latency_root, plan, rows, bindings)
     pin = dataset_pin(dataset_repo, dataset_revision)
     drafts, annotation_rows, annotation_source = (
         annotation_drafts(annotations, plan, rows) if annotations else ([], [], None)
@@ -223,6 +230,7 @@ def build_leaderboard(
         ),
         "model_details": model_details,
         "performance": performance,
+        "latency": latency,
         "submission_manifest_sha256": submission_sha256,
         "dataset_summary": [
             {
@@ -261,6 +269,10 @@ def build_leaderboard(
         stage.mkdir()
         write_json(stage / "leaderboard.json", payload)
         performance_csv(stage / "performance.csv", payload["models"], performance)
+        if latency:
+            write_json(stage / "latency.json", latency)
+            write_latency_csv(stage / "latency.csv", latency)
+            write_request_csv(stage / "latency-requests.csv", latency_root, latency)
         with (stage / "scores.csv").open("w", newline="") as handle:
             fields = [
                 "panel",
@@ -294,7 +306,7 @@ def build_leaderboard(
         values = {"SPACE_TITLE": html.escape(title), "DATA_JSON": encoded}
         rendered = re.sub(r"__(SPACE_TITLE|DATA_JSON)__", lambda m: values[m[1]], template)
         (stage / "index.html").write_text(rendered)
-        for filename in ("leaderboard.css", "leaderboard.js"):
+        for filename in ("leaderboard.css", "leaderboard.js", "latency.js"):
             (stage / filename).write_bytes(Path(__file__).with_name(filename).read_bytes())
         (stage / "README.md").write_text(f"""---
 title: {json.dumps(title, ensure_ascii=True)}
@@ -321,6 +333,10 @@ The page records the immutable dataset revision, annotation bundle, prediction s
 
 The speed table reports mean batch service time when recorded, amortized worker compute per output, and end-to-end throughput including startup and recorded attempts. These are different measurements: compute per output is not request latency. Timing covers the complete source run, including every decoding mode, independently of accuracy filters. Hardware, replicas and batch sizes differ; this is not a controlled speed ranking. Older runs have no individual batch measurements. `performance.csv` exports the timing values and configurations.
 
+When supplied, the separate **single-request latency profile** measures resident 16 kHz waveform to final text, with batch 1, concurrency 1, BF16, one CPU thread and the same reserved GPU. All models receive the same duration-stratified clips, order, warm-up count and repetitions. First request and warm-up are excluded from steady-state percentiles. Network upload, file I/O, server queueing and streaming first-token latency are outside this measurement. Model load is measured separately after checksum validation, so it may benefit from the OS cache. Native decoding/token limits are retained and recorded; partial, empty or refused outputs and failures are visible. Input-preparation and inference phase boundaries vary by adapter; total request time is the comparable measure. GPU clocks are observed, not locked. CPU contention remains a possible source of variation.
+
+`latency.csv` exports dataset/duration summaries, `latency-requests.csv` contains every measured, warm-up and first-request observation, and `latency.json` records distributions, protocol, hardware and provenance. These files appear only after a profile is imported; missing timings are never inferred from throughput. A sampled profile is not a full-suite measurement. Historical GQASR scores stay separate from the fresh step-7,500 checkpoint.
+
 `leaderboard.json` contains metric counts, coverage, examples and provenance. `scores.csv` exports every panel (rates are fractions; multiply by 100 for percentages). `release.json` enumerates exactly the files allowed for upload. Private visibility is enforced by the publisher. This is not an independently audited public ranking or an official ELM rank.
 """)
         return finish_bundle(
@@ -338,5 +354,6 @@ The speed table reports mean batch service time when recorded, amortized worker 
                 if annotation_source
                 else None,
                 "submission_manifest_sha256": submission_sha256,
+                "latency_profile_file_sha256": latency["profile_file_sha256"] if latency else None,
             },
         )

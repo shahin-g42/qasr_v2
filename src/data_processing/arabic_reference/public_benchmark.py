@@ -285,7 +285,12 @@ def write_comparison_report(output):
             + " | ".join("unavailable" if v is None else f"{100 * v:.2f}%" for v in metrics)
             + " |"
         )
-    lines += ["", "## Timing", "", "Full source runs; configurations and decoding modes differ. Compute/output is amortized, not request latency.", "",
+    timing_note = (
+        "Fresh source runs use the shared comparison protocol. Native token limits and output formats are recorded per model."
+        if data.get("comparison_protocol") else
+        "Full source runs; inspect each model's configuration and decoding modes."
+    )
+    lines += ["", "## Timing", "", timing_note + " Compute/output is amortized, not request latency.", "",
               "| Model | Mean batch (s) | Compute/output (s) | Outputs/wall second |", "|---|---:|---:|---:|"]
     for name in data["models"]:
         timing = data.get("performance", {}).get(name, {})
@@ -380,6 +385,8 @@ def main(argv=None):
             ):
                 output = root / name / phase
                 cfg = model_config(name, cache, work, output)
+                if os.environ.get("UNIFORM_BENCH_ROOT"):
+                    cfg["require_idle_gpus"] = True
                 print(
                     json.dumps({"event": "public_model_start", "name": name, "phase": phase}),
                     flush=True,

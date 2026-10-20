@@ -87,6 +87,7 @@ def uniform_fixture(root):
             "selection": "same", "modes": ["arabic"], "precision": "bf16",
             "batch_size": 32, "task_size": 32, "runtime": {"torch": "2.8"},
             "backend": REGISTRY[name]["backend"], "max_new_tokens": 768,
+            "gpu_isolation": "checked_before_during_after",
         }
         if name == "jais-asr":
             run["decoding_options"] = {"diacritics": True, "code_switch": False}
@@ -95,12 +96,12 @@ def uniform_fixture(root):
         write_json(folder / "progress.json", {"event": "benchmark_complete", "completed": 6, "total": 6})
         write_json(folder / "scores.json", {"protocol": run, "performance": {
             "oom_batch_splits": 0,
-            "attempts": [{"gpus": ["0", "1"], "workers_per_gpu": 4, "actual_workers": 8, "batch_size": 32}],
+            "attempts": [{"gpus": ["0", "1"], "workers_per_gpu": 4, "actual_workers": 8, "ready_workers": 8, "batch_size": 32, "status": "complete"}],
         }})
     return names
 
 
-@pytest.mark.parametrize("change", ["none", "batch", "runtime", "workers", "oom", "format", "partial"])
+@pytest.mark.parametrize("change", ["none", "batch", "runtime", "workers", "oom", "format", "partial", "isolation", "interrupted", "not_ready"])
 def test_uniform_validation_blocks_mixed_or_partial_runs(tmp_path, change):
     names = uniform_fixture(tmp_path)
     folder = tmp_path / "jais-asr/full"
@@ -112,6 +113,9 @@ def test_uniform_validation_blocks_mixed_or_partial_runs(tmp_path, change):
     if change == "oom": report["performance"]["oom_batch_splits"] = 1
     if change == "format": run["decoding_options"]["diacritics"] = False
     if change == "partial": write_json(folder / "progress.json", {"event": "benchmark_progress"})
+    if change == "isolation": run.pop("gpu_isolation")
+    if change == "interrupted": report["performance"]["attempts"][0]["status"] = "interrupted"
+    if change == "not_ready": report["performance"]["attempts"][0]["ready_workers"] = 7
     report["protocol"] = run
     write_json(folder / "run.json", run)
     write_json(folder / "scores.json", report)
@@ -121,3 +125,58 @@ def test_uniform_validation_blocks_mixed_or_partial_runs(tmp_path, change):
     else:
         with pytest.raises(ValueError):
             validate_uniform_runs(tmp_path, names, **kw)
+
+
+def test_gpu_isolation_allows_only_this_runs_workers(monkeypatch):
+    from gqasr.arabic_benchmark import runner
+
+    def query(command, **kwargs):
+        assert "--id=0,1" in command
+        return "101\n102\n"
+
+    monkeypatch.setattr(runner.subprocess, "check_output", query)
+    runner.assert_gpu_isolation(["0", "1"], [101, 102])
+    with pytest.raises(ValueError, match="competing compute.*102"):
+        runner.assert_gpu_isolation(["0", "1"], [101])
+    with pytest.raises(ValueError, match="competing compute"):
+        runner.assert_gpu_isolation(["0", "1"])
+
+
+def _isolation_test_worker(slot, gpu, checkpoint, settings, jobs, events, begin, load_slots, log_path):
+    import time
+
+    events.put({"event": "ready", "slot": slot, "gpu": gpu})
+    time.sleep(60)
+
+
+@pytest.mark.parametrize("when", ["before", "during"])
+def test_scheduler_rejects_competing_job_and_cleans_up_own_workers(
+    public_plan, tmp_path, monkeypatch, when
+):
+    import multiprocessing
+    from gqasr.arabic_benchmark import runner, worker
+
+    _, source = public_plan
+    monkeypatch.setattr(runner, "official_rows", lambda *a: source)
+    monkeypatch.setattr(runner, "prepared_rows", lambda *a: source)
+    monkeypatch.setattr(runner, "checkpoint_identity", lambda *a: {"weights": "fixture"})
+    monkeypatch.setattr(worker, "worker_main", _isolation_test_worker)
+    checks = []
+
+    def isolation(gpus, allowed_pids=()):
+        checks.append(list(allowed_pids))
+        if when == "before" or allowed_pids:
+            raise ValueError("competing compute fixture")
+
+    monkeypatch.setattr(runner, "assert_gpu_isolation", isolation)
+    out = tmp_path / "isolated"
+    cfg = {"checkpoint": str(tmp_path), "work_dir": str(tmp_path), "output_dir": str(out),
+           "require_idle_gpus": True, "task_size": 1}
+    with pytest.raises(ValueError, match="competing compute"):
+        runner.run(cfg, gpus="0", workers_per_gpu=1, modes=["arabic"])
+    attempt = json.loads((out / "attempts.json").read_text())[-1]
+    assert attempt["status"] == "interrupted"
+    assert not (out / "scores.json").exists()
+    assert checks[0] == []
+    if when == "during":
+        assert checks[-1] and not {p.pid for p in multiprocessing.active_children()} & set(checks[-1])

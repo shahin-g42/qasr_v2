@@ -1268,11 +1268,18 @@ bash scripts/corpus/benchmark_uniform_asr.sh all
 ```
 
 Stages: `check`, `smoke`, `run`, `latency`, `build`, `publish`, `all`.
-Keep the same exported `UNIFORM_RUN_ID` to continue an interrupted comparison.
+Keep the same exported `UNIFORM_RUN_ID` to continue after completed stages.
 `UNIFORM_WORKERS_PER_GPU` and `UNIFORM_BATCH_SIZE` change the common allocation;
 changing a frozen protocol requires a new run ID. All defaults can be reviewed
 in the generated `protocol.json` before inference. The script never downloads
 replacement model revisions or changes source references.
+
+Each accuracy run checks for competing GPU processes immediately before loading,
+during inference and when inference finishes. Only its own worker processes are
+allowed. A conflict stops benchmark workers without stopping the other job.
+Interrupted accuracy attempts require a fresh comparison directory so resumed
+throughput cannot be mixed with uninterrupted timings. The smoke test also
+requires every requested replica to have loaded successfully.
 
 Before publication, the coordinator verifies common membership, runtime,
 precision, batch size, GPU allocation and output options. OOM batch splitting

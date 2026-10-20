@@ -3,6 +3,7 @@ import importlib.metadata
 import json
 import multiprocessing as mp
 import queue
+import subprocess
 import sys
 import threading
 import time
@@ -269,6 +270,22 @@ def model_load_concurrency(value, slots):
     return min(count, slots)
 
 
+def assert_gpu_isolation(gpu_ids, allowed_pids=()):
+    """Reject competing compute without touching processes outside this runner."""
+    output = subprocess.check_output(
+        ["nvidia-smi", "--id=" + ",".join(gpu_ids), "--query-compute-apps=pid",
+         "--format=csv,noheader,nounits"],
+        text=True, timeout=15,
+    )
+    allowed = {str(pid) for pid in allowed_pids}
+    foreign = {pid.strip() for pid in output.splitlines() if pid.strip()} - allowed
+    if foreign:
+        raise ValueError(
+            f"Benchmark GPUs have competing compute processes: {sorted(foreign)}. "
+            "Reserve idle GPUs and use a new output directory; other jobs were not stopped."
+        )
+
+
 def _run(cfg, datasets, gpu_ids, workers_per_gpu, batch_size, limit, output, modes):
     from .worker import worker_main
 
@@ -316,6 +333,8 @@ def _run(cfg, datasets, gpu_ids, workers_per_gpu, batch_size, limit, output, mod
         identity["benchmark_model"] = cfg["benchmark_model"]
     if cfg.get("decoding_options"):
         identity["decoding_options"] = cfg["decoding_options"]
+    if cfg.get("require_idle_gpus"):
+        identity["gpu_isolation"] = "checked_before_during_after"
     run_id = fingerprint(identity)
     path = output / "run.json"
     if path.exists() and json.loads(path.read_text()) != identity:
@@ -439,6 +458,8 @@ def _run(cfg, datasets, gpu_ids, workers_per_gpu, batch_size, limit, output, mod
     last = 0
     last_completion = None
     try:
+        if cfg.get("require_idle_gpus"):
+            assert_gpu_isolation(gpu_ids)
         for slot in range(slots):
             gpu = gpu_ids[slot % len(gpu_ids)]
             child = ctx.Process(target=worker_main, args=(slot, gpu, cfg["checkpoint"], settings,
@@ -479,6 +500,8 @@ def _run(cfg, datasets, gpu_ids, workers_per_gpu, batch_size, limit, output, mod
                         done.add((row["id"], row["mode"]))
             now = time.monotonic()
             if now - last >= 5:
+                if cfg.get("require_idle_gpus"):
+                    assert_gpu_isolation(gpu_ids, [p.pid for p in children])
                 total = len(expected) * len(modes)
                 progress = {"event": "benchmark_progress", "ready_workers": len(ready), "workers": slots,
                             "loading_workers": slots - len(ready),
@@ -496,6 +519,8 @@ def _run(cfg, datasets, gpu_ids, workers_per_gpu, batch_size, limit, output, mod
             with lock:
                 all_finished = finished == task_ids
             if producer_done.is_set() and all_finished:
+                if cfg.get("require_idle_gpus"):
+                    assert_gpu_isolation(gpu_ids, [p.pid for p in children])
                 success = True
                 attempt["processing_seconds"] = now - inference_started if inference_started else 0
                 attempt["new_predictions"] = len(done) - attempt["resumed_predictions"]

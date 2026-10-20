@@ -35,6 +35,8 @@ def validate_uniform_runs(root, names, *, gpus, workers, batch, diacritics, phas
             raise ValueError(f"Uniform runtime, selection or batching differs: {name}")
         if run["modes"] != ["arabic"] or run["precision"] != "bf16" or run["batch_size"] != batch:
             raise ValueError(f"Uniform decoding policy differs: {name}")
+        if run.get("gpu_isolation") != "checked_before_during_after":
+            raise ValueError(f"Uniform run lacks GPU isolation checks: {name}")
         if run["backend"] != REGISTRY[name]["backend"] or run["max_new_tokens"] != REGISTRY[name]["max_new_tokens"]:
             raise ValueError(f"Unregistered backend or native token limit: {name}")
         expected_options = {"diacritics": diacritics, "code_switch": False} if run["backend"] == "jais" else {}
@@ -50,6 +52,8 @@ def validate_uniform_runs(root, names, *, gpus, workers, batch, diacritics, phas
         if not attempts or any(
             a["gpus"] != gpus or a["workers_per_gpu"] != workers or a["batch_size"] != batch
             or a["actual_workers"] != workers * len(gpus)
+            or a.get("ready_workers") != workers * len(gpus)
+            or a.get("status") != "complete"
             for a in attempts
         ):
             raise ValueError(f"Uniform GPU/worker allocation differs: {name}")

@@ -64,6 +64,10 @@ This uses the unified gemma_speech environment and existing completed index with
 
 If needed, configure `NCCL_SOCKET_IFNAME` and other fabric settings for your network. The scripts do not guess interface names. All nodes must use matching rank/world-size and rendezvous settings.
 
+For a model-free check of GPU communication, use the [NCCL smoke test](NCCL_SMOKE.md).
+It runs bounded barriers, all-reduces and broadcast, with per-rank diagnostics and
+four-node launch commands for the hosts in the October 20 startup log.
+
 ## 5. Train the full ASR model
 
 Wait for a successful bridge run and its `gemma_speech/gqasr/outputs/bridge/final/` artifact, then:

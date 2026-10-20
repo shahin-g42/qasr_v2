@@ -1,0 +1,14 @@
+# Actual training hosts observed in the October 20 NCCL reports, node ranks 0–11.
+# Review this list if the allocation changes. Used only when --hosts-file is given.
+inception-H100-hpc-051.inception.ai
+inception-H100-hpc-020.inception.ai
+inception-H100-hpc-034.inception.ai
+inception-H100-hpc-047.inception.ai
+inception-H100-hpc-007.inception.ai
+inception-H100-hpc-013.inception.ai
+inception-H100-hpc-014.inception.ai
+inception-H100-hpc-041.inception.ai
+inception-H100-hpc-009.inception.ai
+inception-H100-hpc-056.inception.ai
+inception-H100-hpc-029.inception.ai
+inception-H100-hpc-048.inception.ai

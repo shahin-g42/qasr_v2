@@ -4,6 +4,7 @@
 set -euo pipefail
 PROJECT_DIR="${PROJECT_DIR:-$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)}"
 export PROJECT_DIR
+export MASTER_ADDR="${MASTER_ADDR:-inception-H100-hpc-020}"
 cd "$PROJECT_DIR"
 export GQASR_CONFIG="${GQASR_CONFIG:-$PROJECT_DIR/gemma_speech/gqasr/configs/03_encoder12_b40_resume_12node.yaml}"
 CHECKPOINT="${GQASR_RESUME_CHECKPOINT:-$PROJECT_DIR/gemma_speech/gqasr/outputs/encoder12_b80/checkpoint-00007500}"

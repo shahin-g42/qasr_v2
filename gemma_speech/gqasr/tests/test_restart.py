@@ -184,6 +184,7 @@ def test_recovery_launcher_forwards_config_checkpoint_and_rank():
     )
     assert result.returncode == 0, result.stderr
     for expected in ("--node_rank=8", "03_encoder12_b40_resume_12node.yaml",
+                     "--master_addr=inception-H100-hpc-020",
                      "checkpoint-00007500", "--allow-batch-change", "--master_port=29613"):
         assert expected in result.stdout
 

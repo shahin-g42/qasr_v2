@@ -5,7 +5,7 @@
 Use `scripts/resume_gqasr_encoder_12node.sh` for the interrupted encoder run.
 It selects `configs/03_encoder12_b40_resume_12node.yaml`, restores
 `outputs/encoder12_b80/checkpoint-00007500`, and writes to the fresh
-`outputs/encoder12_b40_resume7500` directory. Original checkpoints stay intact.
+`outputs/encoder12_b40_resume7500_master020` directory. Original checkpoints stay intact.
 The existing environment, exported model and SQLite index are reused.
 
 | Setting | Recovery |
@@ -23,7 +23,7 @@ The existing environment, exported model and SQLite index are reused.
 | Optimizer / schedule | Restored AdamW moments and update counter; no restart of warmup |
 | Updates | Next 7,501; stop at 31,446; 23,946 remain |
 | Validation / saving | Every 500 updates and at completion |
-| Tracking | W&B project `gqasr`, run `gqasr-encoder12-b40-resume7500` |
+| Tracking | W&B project `gqasr`, run `gqasr-encoder12-b40-resume7500-master020` |
 
 The global batch is **half** the interrupted batch-80 run. The remaining
 sampled-example budget is therefore halved at the same 23,946 remaining updates;
@@ -83,11 +83,12 @@ are made by this recovery.
 
 ## Launch when ready
 
-From the repository root, pull on the shared checkout. On master 051:
+From the repository root, pull on the shared checkout. On master 020:
 
 ```bash
 git pull origin main
 unset GQASR_CONFIG GQASR_RESUME_CHECKPOINT
+export MASTER_ADDR=inception-H100-hpc-020
 bash scripts/resume_gqasr_encoder_12node.sh 0
 ```
 
@@ -95,8 +96,13 @@ On each remaining node, using its unique rank 1 through 11:
 
 ```bash
 unset GQASR_CONFIG GQASR_RESUME_CHECKPOINT
+export MASTER_ADDR=inception-H100-hpc-020
 bash scripts/resume_gqasr_encoder_12node.sh YOUR_RANK
 ```
+
+Node 020 must use rank 0. If node 051 stays in the allocation, give it the
+previous nonzero rank of node 020; keep all ranks 0–11 unique.
+The fresh output directory preserves the failed attempts.
 
 All nodes must use the same code/configuration. The port is 29613; all eight GPUs
 are visible by default. `GPU_IDS`, `MASTER_ADDR` and `MASTER_PORT` can override

@@ -16,6 +16,11 @@ node('hours').textContent = data.duration_hours.toFixed(2);
 node('sets').textContent = String(data.datasets.length).padStart(2, '0');
 node('models').textContent = String(data.models.length).padStart(2, '0');
 node('release-line').textContent = data.dataset_release ? `${data.release_id} / dataset revision ${data.dataset_release.revision.slice(0, 10)}` : data.release_id;
+if (data.comparison_protocol) {
+  const p = data.comparison_protocol;
+  const note = make('p', `Fresh evaluation · ${p.gpus.length} GPUs · ${p.workers_per_gpu} workers/GPU · batch ${p.batch_size} · BF16 · Arabic hint. Jais diacritics ${p.jais_diacritics ? 'enabled' : 'disabled'}.`, 'coverage');
+  node('ranking').insertBefore(note, node('ranking').children[1]);
+}
 if (data.dataset_release) { node('dataset-link').href = data.dataset_release.url; node('dataset-link').hidden = false; }
 for (const p of data.panels) option(node('panel'), p.label, p.id);
 if (data.panels.some(p => p.id === 'original-full')) node('panel').value = 'original-full';
@@ -25,7 +30,7 @@ for (const model of data.models) { const label = make('span'); label.append(dot(
 for (const text of data.limitations) node('limitations').append(make('li', text));
 node('draft-note').textContent = data.annotation_source ? `${count(data.annotation_source.eligible_clips)} completed, non-speculative drafts are available. ${count(data.annotation_source.excluded_clips)} clips are excluded from the enhanced comparison.` : 'No enhanced draft bundle has been attached to this release.';
 node('review-note').textContent = `${count(data.verified_clips)} of ${count(data.selected_clips)} selected clips have listening attestations. ${data.verified_clips ? 'These are reviewer attestations, not an independent audit.' : 'Audio-reviewed reference scores are not yet available.'}`;
-node('provenance').textContent = JSON.stringify({release_id:data.release_id, dataset_release:data.dataset_release, annotation_source:data.annotation_source, manifest_digest:data.manifest_digest, policy_sha256:data.policy_sha256, scorer_sha256:data.scorer_sha256, builder_sha256:data.builder_sha256, reviewed_manifest_sha256:data.reviewed_manifest_sha256, prediction_sources:data.prediction_sources, model_details:data.model_details, submission_manifest_sha256:data.submission_manifest_sha256}, null, 2);
+node('provenance').textContent = JSON.stringify({release_id:data.release_id, ranking_source:data.ranking_source, comparison_protocol:data.comparison_protocol, dataset_release:data.dataset_release, annotation_source:data.annotation_source, manifest_digest:data.manifest_digest, policy_sha256:data.policy_sha256, scorer_sha256:data.scorer_sha256, builder_sha256:data.builder_sha256, reviewed_manifest_sha256:data.reviewed_manifest_sha256, prediction_sources:data.prediction_sources, reference_curation_sources:data.reference_curation_sources, model_details:data.model_details, submission_manifest_sha256:data.submission_manifest_sha256}, null, 2);
 node('example-sampling').textContent = data.example_sampling + ' Text preview only; listen to the source audio before judging accuracy.';
 
 for (const model of data.models) {
@@ -44,6 +49,9 @@ for (const model of data.models) {
       config.append(make('div', `${c.gpu_count} GPUs · ${c.workers_per_gpu} workers/GPU · batch ${c.batch_size}`), make('div', c.devices.join(', '), 'perf-subtitle'));
     }
     config.append(make('div', `${perf.precision.toUpperCase()} · ${perf.attempt_count} attempt(s) · ${perf.total_attempt_wall_seconds.toFixed(1)} s wall · ${perf.oom_batch_splits} OOM splits`, 'perf-subtitle'));
+    if (data.model_details?.[model]?.decoding_options?.diacritics !== undefined) {
+      config.append(make('div', `Diacritics ${data.model_details[model].decoding_options.diacritics ? 'enabled' : 'disabled'}`, 'perf-subtitle'));
+    }
   } else config.textContent = perf?.reason || 'Attach the source run to include timing.';
   tr.append(config); node('performance-results').append(tr);
 }

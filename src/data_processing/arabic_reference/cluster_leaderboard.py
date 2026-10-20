@@ -101,6 +101,8 @@ def main(argv=None):
     release_id = os.environ["ARABIC_REF_BOARD_RELEASE_ID"]
     submissions = os.environ.get("ARABIC_REF_SUBMISSIONS") or None
     latency_root = os.environ.get("ARABIC_REF_LATENCY_ROOT") or None
+    submissions_only = os.environ.get("ARABIC_REF_SUBMISSIONS_ONLY", "0") == "1"
+    comparison_protocol = os.environ.get("ARABIC_REF_COMPARISON_PROTOCOL") or None
     receipt = root / f"publication-{release_id}.json"
     dataset_receipt = Path(os.environ["ARABIC_REF_DATASET_RECEIPT"])
     if dataset_receipt.exists():
@@ -148,6 +150,8 @@ def main(argv=None):
             dataset_revision=revision,
             submissions=submissions,
             latency_root=latency_root,
+            submissions_only=submissions_only,
+            comparison_protocol=comparison_protocol,
             timing_runs=[(name, os.environ[key]) for name, key in (("qasr", "ARABIC_REF_QASR_RUN"), ("gqasr", "ARABIC_REF_GQASR_RUN")) if os.environ.get(key) and Path(os.environ[key]).is_dir()],
         )
         print(json.dumps(result, indent=2))
@@ -162,6 +166,9 @@ def main(argv=None):
             != (sha256(submissions) if submissions else None)
             or bundle.get("latency_profile_file_sha256")
             != (sha256(Path(latency_root) / "profile.json") if latency_root else None)
+            or (submissions_only and bundle.get("ranking_source") != "fresh_submissions_only")
+            or bundle.get("comparison_protocol_sha256")
+            != (sha256(comparison_protocol) if comparison_protocol else None)
         ):
             raise ValueError(
                 "Space bundle does not match this dataset or release; build a new version"

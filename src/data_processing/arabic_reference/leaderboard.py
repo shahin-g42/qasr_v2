@@ -122,6 +122,8 @@ def build_leaderboard(
     submissions=None,
     timing_runs=(),
     latency_root=None,
+    submissions_only=False,
+    comparison_protocol=None,
 ):
     from gqasr.arabic_benchmark import scoring
 
@@ -141,10 +143,12 @@ def build_leaderboard(
 
         public_predictions, model_details, submission_sha256 = read_submissions(submissions, plan)
         predictions = [*predictions, *public_predictions]
+    if submissions_only and (not submissions or not model_details):
+        raise ValueError("Fresh-only ranking requires complete, provenance-bound submissions")
     from .benchmark_performance import read_performance, performance_csv
 
     performance = {name: detail["performance"] for name, detail in model_details.items()}
-    for name, folder in timing_runs:
+    for name, folder in (() if submissions_only else timing_runs):
         source = next((s for s in plan["sources"] if s["name"] == name), None)
         if source is None or name in performance:
             raise ValueError(f"Unknown or duplicate timing source: {name}")
@@ -161,6 +165,16 @@ def build_leaderboard(
     )
     eligible = validated_reviews(rows, reviewed)[1] if reviewed else []
     additions, sources = additional_predictions(rows, predictions)
+    if submissions_only:
+        if {s["name"] for s in sources} != set(model_details):
+            raise ValueError("Fresh-only ranking cannot include unbound prediction files")
+        # Keep the frozen plan and annotation source untouched. Historical outputs
+        # remain curation provenance, but only fresh runs participate in this release.
+        rows = [{**r, "candidates": []} for r in rows]
+        drafts = [{**r, "candidates": []} for r in drafts]
+        eligible = [{**r, "candidates": []} for r in eligible]
+        if latency and set(latency["models"]) != set(model_details):
+            raise ValueError("Fresh-only latency must cover exactly the ranked models")
     cohorts = sorted({c for r in rows for c in r["cohorts"]})
     panels = []
     for cohort in cohorts:
@@ -215,6 +229,7 @@ def build_leaderboard(
         "schema_version": 2,
         "title": title,
         "release_id": release_id,
+        "ranking_source": "fresh_submissions_only" if submissions_only else "historical_and_submissions",
         "manifest_digest": plan["manifest_digest"],
         "policy_sha256": plan["policy_sha256"],
         "selected_clips": len(rows),
@@ -246,8 +261,11 @@ def build_leaderboard(
         "panels": panels,
         "prediction_sources": [
             {k: s[k] for k in ("name", "predictions_sha256")} for s in plan["sources"]
-        ]
+        ] * (not submissions_only)
         + sources,
+        "reference_curation_sources": [
+            {k: s[k] for k in ("name", "predictions_sha256")} for s in plan["sources"]
+        ],
         "reviewed_manifest_sha256": sha256(reviewed) if reviewed else None,
         "scorer_sha256": sha256(scoring.__file__),
         "builder_sha256": sha256(__file__),
@@ -262,12 +280,19 @@ def build_leaderboard(
             "Training overlap and independent reference review remain unaudited. A fresh holdout is needed for general-quality claims.",
         ],
     }
+    protocol = json.loads(Path(comparison_protocol).read_text()) if comparison_protocol else None
+    if protocol and (not submissions_only or set(protocol["models"]) != set(payload["models"])):
+        raise ValueError("Comparison protocol must describe exactly the fresh ranked models")
+    payload["comparison_protocol"] = protocol
+    payload["comparison_protocol_sha256"] = sha256(comparison_protocol) if comparison_protocol else None
     output = Path(output)
     output.parent.mkdir(parents=True, exist_ok=True)
     with tempfile.TemporaryDirectory(prefix=".reference-board-", dir=output.parent) as temporary:
         stage = Path(temporary) / "bundle"
         stage.mkdir()
         write_json(stage / "leaderboard.json", payload)
+        if protocol:
+            (stage / "protocol.json").write_bytes(Path(comparison_protocol).read_bytes())
         performance_csv(stage / "performance.csv", payload["models"], performance)
         if latency:
             write_json(stage / "latency.json", latency)
@@ -321,6 +346,8 @@ pinned: false
 
 Arabic speech recognition, measured with context. Explore model rankings, six dataset comparisons, paired reference tracks, and Arabic transcript examples in an accessible, responsive static dashboard. No inference server, external scripts, font requests, or tokens are needed by the page.
 
+{"This release ranks fresh predictions only. Historical QASR/GQASR outputs remain reference-curation provenance. The frozen protocol.json records the common accuracy configuration and model output settings, including Jais diacritics." if submissions_only else "This release includes historical source predictions and completed additional model submissions."}
+
 The default ranking uses **original source references**. The optional **enhanced comparison** evaluates `ideal_text_draft` alongside originals on the identical eligible clips, excluding every speculative or incomplete draft. These references were informed by QASR/GQASR outputs; their scores are exploratory agreement measurements, not independent evidence of model accuracy. Final reviewed tracks appear only after listening attestations are imported.
 
 The six-dataset macro gives each dataset equal weight. Within each dataset, WER/CER are total edit distance divided by total reference length; CER includes spaces. Normalized scoring uses the pinned ELM protocol. Strict scoring preserves spelling, punctuation and diacritics and is not an isolated formatting-quality measure. Missing denominators or dataset coverage produce unavailable values, never zeros.
@@ -331,7 +358,7 @@ The page records the immutable dataset revision, annotation bundle, prediction s
 
 {reference_guide_markdown(payload["reference_guide"])}
 
-The speed table reports mean batch service time when recorded, amortized worker compute per output, and end-to-end throughput including startup and recorded attempts. These are different measurements: compute per output is not request latency. Timing covers the complete source run, including every decoding mode, independently of accuracy filters. Hardware, replicas and batch sizes differ; this is not a controlled speed ranking. Older runs have no individual batch measurements. `performance.csv` exports the timing values and configurations.
+The speed table reports mean batch service time when recorded, amortized worker compute per output, and end-to-end throughput including startup and recorded attempts. These are different measurements: compute per output is not request latency. Timing covers the complete source run, including every decoding mode, independently of accuracy filters. Compare the recorded hardware, replicas, batch sizes, output settings and OOM splits. Older runs have no individual batch measurements. `performance.csv` exports the timing values and configurations.
 
 When supplied, the separate **single-request latency profile** measures resident 16 kHz waveform to final text, with batch 1, concurrency 1, BF16, one CPU thread and the same reserved GPU. All models receive the same duration-stratified clips, order, warm-up count and repetitions. First request and warm-up are excluded from steady-state percentiles. Network upload, file I/O, server queueing and streaming first-token latency are outside this measurement. Model load is measured separately after checksum validation, so it may benefit from the OS cache. Native decoding/token limits are retained and recorded; partial, empty or refused outputs and failures are visible. Input-preparation and inference phase boundaries vary by adapter; total request time is the comparable measure. GPU clocks are observed, not locked. CPU contention remains a possible source of variation.
 
@@ -354,6 +381,8 @@ When supplied, the separate **single-request latency profile** measures resident
                 if annotation_source
                 else None,
                 "submission_manifest_sha256": submission_sha256,
+                "ranking_source": payload["ranking_source"],
+                "comparison_protocol_sha256": payload["comparison_protocol_sha256"],
                 "latency_profile_file_sha256": latency["profile_file_sha256"] if latency else None,
             },
         )

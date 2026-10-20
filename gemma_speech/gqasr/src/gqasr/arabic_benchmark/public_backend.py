@@ -126,6 +126,15 @@ def reassemble_chunks(texts, statistics, mapping, sample_count):
 class PublicRecognizer(Recognizer):
     backend = None
 
+    def configure_decoding(self, options):
+        if self.backend != "jais":
+            return super().configure_decoding(options)
+        if not isinstance(options, dict) or set(options) - {"diacritics", "code_switch"}:
+            raise ValueError("Unknown Jais decoding options")
+        if any(type(v) is not bool for v in options.values()):
+            raise ValueError("Jais decoding options must be booleans")
+        self.output_options = {"diacritics": False, "code_switch": False, **options}
+
     def __init__(self, checkpoint, device, precision, memory_fraction=1.0):
         import torch
         import transformers
@@ -245,7 +254,7 @@ class PublicRecognizer(Recognizer):
                 prompt = self.processor.tokenizer.apply_chat_template(
                     [{"role": "user", "content": [{"type": "audio"}]}],
                     tokenize=False, add_generation_prompt=True,
-                    diacritics=False, code_switch=False,
+                    **getattr(self, "output_options", {"diacritics": False, "code_switch": False}),
                 )
                 inputs = self.processor(text=[prompt] * len(waves), audio=waves,
                                         sampling_rate=[16000] * len(waves), padding=True,

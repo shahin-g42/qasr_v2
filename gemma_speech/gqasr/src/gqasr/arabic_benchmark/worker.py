@@ -11,6 +11,10 @@ from .common import atomic_json, sha256
 
 
 class Recognizer:
+    def configure_decoding(self, options):
+        if options:
+            raise ValueError("This backend has no configurable output-format options")
+
     def __init__(self, checkpoint, device, precision, memory_fraction=1.0):
         import torch
 
@@ -118,6 +122,8 @@ def worker_main(slot, gpu, checkpoint, settings, jobs, events, start_event, load
                     recognizer_class = public_class(settings["backend"])
                 recognizer = recognizer_class(checkpoint, "cpu" if gpu == "cpu" else "cuda:0",
                                         settings["precision"], settings["memory_fraction"])
+                if settings.get("decoding_options"):
+                    recognizer.configure_decoding(settings["decoding_options"])
             torch = recognizer.torch
             import transformers
             device_info = "cpu" if gpu == "cpu" else torch.cuda.get_device_name(0)

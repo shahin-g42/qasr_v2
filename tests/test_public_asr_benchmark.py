@@ -472,8 +472,10 @@ def test_all_runs_smoke_then_full_and_publishes_only_after_success(
     assert events[:2] == ["runtime", "audio"]
 
 
-def test_jais_uses_arabic_family_without_references_and_preserves_failures(tmp_path):
+@pytest.mark.parametrize("diacritics", [False, True])
+def test_jais_uses_arabic_family_without_references_and_preserves_failures(tmp_path, diacritics):
     obj = adapter('jais')
+    obj.configure_decoding({"diacritics": diacritics, "code_switch": False})
     rows, calls = samples(tmp_path), {}
     class Processor:
         tokenizer = SimpleNamespace(
@@ -494,6 +496,8 @@ def test_jais_uses_arabic_family_without_references_and_preserves_failures(tmp_p
     obj.model.generate = generate
     result = obj.infer(rows,obj.features(rows),'arabic',2)
     assert calls['messages'] == [{'role':'user','content':[{'type':'audio'}]}]
+    assert calls['template']['diacritics'] is diacritics
+    assert calls['template']['code_switch'] is False
     assert calls['processor']['text'] == ['AUDIO_ONLY']*2
     assert calls['processor']['sampling_rate'] == [16000]*2
     assert np.array_equal(calls['processor']['audio'][0], np.load(rows[0]['audio']))

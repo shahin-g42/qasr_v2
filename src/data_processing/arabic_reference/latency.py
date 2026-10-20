@@ -194,6 +194,7 @@ def source_binding(run):
         "max_new_tokens": run["max_new_tokens"],
         "public_model": run.get("public_model"),
         "benchmark_model": run.get("benchmark_model"),
+        **({"decoding_options": run["decoding_options"]} if run.get("decoding_options") else {}),
     }
 
 

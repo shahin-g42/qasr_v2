@@ -1232,3 +1232,53 @@ by setting `ARABIC_REF_LATENCY_ROOT` and the matching `ARABIC_REF_SUBMISSIONS` f
 Local checks cover sampling, timing boundaries, errors, artifact validation, restart
 semantics and exact checkpoint-to-leaderboard binding. Real H100 inference and performance
 numbers must be produced by the cluster commands above; CPU tests provide no speed claims.
+
+## Fresh uniform comparison (v4.11)
+
+`benchmark_uniform_asr.sh` reruns QASR v81, GQASR step 7,500 and all six public
+baselines using the existing frozen audio and annotations. It creates new
+accuracy, latency and leaderboard directories under one `UNIFORM_RUN_ID`.
+Previously generated predictions are not used as scores in this release;
+the original QASR/GQASR candidates remain reference-curation provenance.
+
+All accuracy runs use the same eight GPUs, four replicas per GPU, batch 32,
+BF16, Arabic hints, greedy decoding and runtime. Four replicas accommodate
+Jais's BF16 weights. The ordinary public launcher retains its previous defaults.
+Jais diacritics are enabled by default for this comparison and are recorded in
+both accuracy and latency identities. Other models use their native output
+format. A setting cannot guarantee equally rich or correct diacritics across
+models; inspect both normalized and strict tracks.
+
+The generation cap remains 768 tokens except for Whisper's native 440-token
+per-chunk limit. Tokenizers, audio encoders and supported chunking differ, so
+identical numerical token limits would not imply identical text allowances.
+Repetitions, empty outputs and token-limit failures remain in the scores.
+
+The latency stage runs each model alone on GPU 0, batch one and concurrency one,
+using the identical 600 duration-stratified clips, 12 warm-up requests and three
+measured repeats. Accuracy and latency use the exact same model/output options.
+It measures waveform-to-final-text latency, excluding uploads and server queues.
+
+```bash
+export PYTHON="$PWD/.venv-public-asr/bin/python"
+export HF_SPACE_REPO="audarai/asr_ideal_leaderboard"  # configure destination
+export UNIFORM_RUN_ID="v4.11-uniform-20261020-001"   # unique per new comparison
+export PUBLIC_JAIS_DIACRITICS=1
+bash scripts/corpus/benchmark_uniform_asr.sh all
+```
+
+Stages: `check`, `smoke`, `run`, `latency`, `build`, `publish`, `all`.
+Keep the same exported `UNIFORM_RUN_ID` to continue an interrupted comparison.
+`UNIFORM_WORKERS_PER_GPU` and `UNIFORM_BATCH_SIZE` change the common allocation;
+changing a frozen protocol requires a new run ID. All defaults can be reviewed
+in the generated `protocol.json` before inference. The script never downloads
+replacement model revisions or changes source references.
+
+Before publication, the coordinator verifies common membership, runtime,
+precision, batch size, GPU allocation and output options. OOM batch splitting
+blocks a controlled throughput release; choose a smaller common allocation and
+rerun into a new directory if it occurs. Submission import then validates every
+prediction and timing task, and the latency importer checks every request and
+its checkpoint binding. The publisher updates only a private static Space and
+verifies the resulting remote commit. `status.json` records the current stage
+or failure; the publication receipt remains under `ARABIC_REF_ROOT`.

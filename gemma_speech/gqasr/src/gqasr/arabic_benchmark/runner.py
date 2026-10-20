@@ -314,6 +314,8 @@ def _run(cfg, datasets, gpu_ids, workers_per_gpu, batch_size, limit, output, mod
         identity["public_model"] = cfg["public_model"]
     if cfg.get("benchmark_model"):
         identity["benchmark_model"] = cfg["benchmark_model"]
+    if cfg.get("decoding_options"):
+        identity["decoding_options"] = cfg["decoding_options"]
     run_id = fingerprint(identity)
     path = output / "run.json"
     if path.exists() and json.loads(path.read_text()) != identity:
@@ -358,7 +360,8 @@ def _run(cfg, datasets, gpu_ids, workers_per_gpu, batch_size, limit, output, mod
                        for index in range(len(gpu_ids))]
     max_workers_on_gpu = max(workers_on_gpus)
     settings = {"backend": backend, "precision": identity["precision"], "max_new_tokens": identity["max_new_tokens"],
-                "batch_size": batch_size, "memory_fraction": 0.90 / max_workers_on_gpu}
+                "batch_size": batch_size, "memory_fraction": 0.90 / max_workers_on_gpu,
+                "decoding_options": identity.get("decoding_options", {})}
     if identity["precision"] not in ("bf16", "fp32") or identity["max_new_tokens"] < 1:
         raise ValueError("Invalid inference precision or token budget")
     children, stop, producer_errors = [], threading.Event(), []

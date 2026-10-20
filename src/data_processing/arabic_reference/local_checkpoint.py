@@ -18,15 +18,42 @@ ENTRY = {
     "max_new_tokens": 768,
 }
 DEFAULT_CHECKPOINT = "/lustrefs/shared/shahin.konadath/workspace/train/stt/v2/qasr_v2/gemma_speech/gqasr/outputs/encoder12_b80/checkpoint-00007500"
+QASR_NAME = "qasr-v81-full-12node"
+ENTRIES = {
+    NAME: ENTRY,
+    QASR_NAME: {
+        "source_type": "local_checkpoint",
+        "backend": "qasr",
+        "display_name": "QASR · v81",
+        "max_new_tokens": 768,
+    },
+}
 
 
-def checkpoint_path():
+def checkpoint_path(name=NAME):
+    if name == QASR_NAME:
+        return Path(os.environ.get(
+            "QASR_REFRESH_CHECKPOINT",
+            "/lustrefs/shared/shahin.konadath/workspace/train/stt/v2/qasr_v2/output/v81/full_12node",
+        ))
+    if name != NAME:
+        raise ValueError("Unregistered local checkpoint")
     return Path(os.environ.get("GQASR_REFRESH_CHECKPOINT", DEFAULT_CHECKPOINT))
 
 
-def checkpoint_metadata(path):
+def checkpoint_metadata(path, name=NAME):
     """Check the inference artifact, never deserialize optimizer/training pickle."""
     path = Path(path)
+    if name == QASR_NAME:
+        files = checkpoint_identity(path, "qasr")
+        return {
+            **ENTRIES[name],
+            "checkpoint_digest": digest(files),
+            "training_step": None,
+            "postprocessing": "native greedy Arabic decoding; preserve repetitions",
+        }
+    if name != NAME:
+        raise ValueError("Unregistered local checkpoint")
     for filename in (
         "config.json",
         "preprocessor_config.json",
@@ -65,29 +92,30 @@ def checkpoint_metadata(path):
     }
 
 
-def model_config(work, output):
-    checkpoint = checkpoint_path()
+def model_config(work, output, name=NAME):
+    checkpoint = checkpoint_path(name)
     return {
-        "backend": "gqasr",
+        "backend": ENTRIES[name]["backend"],
         "checkpoint": str(checkpoint.resolve()),
         "work_dir": str(Path(work).resolve()),
         "output_dir": str(Path(output).resolve()),
         "precision": "bf16",
-        "max_new_tokens": ENTRY["max_new_tokens"],
+        "max_new_tokens": ENTRIES[name]["max_new_tokens"],
         "modes": ["arabic"],
         "task_size": 16,
         "start_when_ready": True,
         "simultaneous_model_loads": os.environ.get("PUBLIC_MODEL_LOAD_CONCURRENCY", "all"),
         "startup_timeout_seconds": 1800,
         "progress_timeout_seconds": 1800,
-        "benchmark_model": checkpoint_metadata(checkpoint),
+        "benchmark_model": checkpoint_metadata(checkpoint, name),
     }
 
 
-def validate_registration(metadata, run):
-    if any(metadata.get(k) != v for k, v in ENTRY.items()):
+def validate_registration(metadata, run, name=NAME):
+    if name not in ENTRIES or any(metadata.get(k) != v for k, v in ENTRIES[name].items()):
         raise ValueError("Fresh GQASR registration differs")
-    if metadata.get("training_step") != 7500 or metadata.get("checkpoint_digest") != digest(
+    step = 7500 if name == NAME else None
+    if metadata.get("training_step") != step or metadata.get("checkpoint_digest") != digest(
         run["checkpoint"]
     ):
         raise ValueError("Fresh GQASR checkpoint identity differs")

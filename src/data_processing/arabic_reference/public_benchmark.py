@@ -20,7 +20,7 @@ from .leaderboard_inputs import annotation_drafts
 from . import local_checkpoint
 
 REGISTRY = json.loads(Path(__file__).with_name("public_models.json").read_text())
-REGISTRY[local_checkpoint.NAME] = local_checkpoint.ENTRY
+REGISTRY.update(local_checkpoint.ENTRIES)
 
 
 def selected_models(value):
@@ -31,8 +31,8 @@ def selected_models(value):
 
 
 def download_model(name, cache, *, api=None, download=None):
-    if name == local_checkpoint.NAME:
-        return local_checkpoint.checkpoint_metadata(local_checkpoint.checkpoint_path())
+    if name in local_checkpoint.ENTRIES:
+        return local_checkpoint.checkpoint_metadata(local_checkpoint.checkpoint_path(name), name)
     from huggingface_hub import HfApi, snapshot_download
 
     entry = REGISTRY[name]
@@ -163,8 +163,8 @@ def workers_per_gpu(name):
 
 
 def model_config(name, cache, work, output):
-    if name == local_checkpoint.NAME:
-        return local_checkpoint.model_config(work, output)
+    if name in local_checkpoint.ENTRIES:
+        return local_checkpoint.model_config(work, output, name)
     source = Path(cache) / name / "source.json"
     if not source.is_file():
         raise ValueError(f"Model {name} is not downloaded; run the download stage first")
@@ -179,6 +179,16 @@ def model_config(name, cache, work, output):
     checkpoint = Path(cache) / name / "snapshot"
     if checkpoint_identity(checkpoint, entry["backend"]) != info["files"]:
         raise ValueError(f"Public checkpoint files changed: {name}")
+    options = {}
+    if entry["backend"] == "jais":
+        value = os.environ.get("PUBLIC_JAIS_DIACRITICS", "0")
+        if value not in ("0", "1"):
+            raise ValueError("PUBLIC_JAIS_DIACRITICS must be 0 or 1")
+        options = {"diacritics": value == "1", "code_switch": False}
+        info["postprocessing"] = (
+            "official tag/refusal parser; preserve repetitions; Arabic family hint; "
+            f"diacritics={str(options['diacritics']).lower()}, code_switch=false"
+        )
     return {
         "backend": entry["backend"],
         "checkpoint": str(checkpoint.resolve()),
@@ -193,6 +203,7 @@ def model_config(name, cache, work, output):
         "startup_timeout_seconds": 1800,
         "progress_timeout_seconds": 1800,
         "public_model": {k: v for k, v in info.items() if k != "files"},
+        "decoding_options": options,
     }
 
 
@@ -215,10 +226,10 @@ def export_submissions(root, names, plan, rows):
         run_file = folder / "run.json"
         identity = json.loads(run_file.read_text())
         public = identity.get("benchmark_model", identity.get("public_model", {}))
-        local = name == local_checkpoint.NAME
+        local = name in local_checkpoint.ENTRIES
         fields = ("source_type", "checkpoint_digest", "training_step", "backend", "display_name") if local else ("repository", "revision", "backend", "display_name")
         if local:
-            local_checkpoint.validate_registration(public, identity)
+            local_checkpoint.validate_registration(public, identity, name)
         if identity.get("modes") != ["arabic"] or identity.get("backend") != REGISTRY[name]["backend"] or any(
             public.get(k) != REGISTRY[name][k]
             for k in (("backend", "display_name", "max_new_tokens") if local else ("repository", "backend", "display_name", "max_new_tokens"))
@@ -254,7 +265,9 @@ def write_comparison_report(output):
         "",
         f"Matched clips: **{panel['scored_clips']:,}**. Excluded: **{panel['excluded_clips']}**.",
         "References are frozen candidate-assisted ideal_text_draft values, not audio-verified gold.",
-        "Historical QASR/GQASR predictions are preserved. Each additional checkpoint is scored from its own completed Arabic-mode run.",
+        ("Only fresh Arabic-mode runs are ranked; historical outputs remain reference-curation provenance."
+         if data.get("ranking_source") == "fresh_submissions_only" else
+         "Historical QASR/GQASR predictions are preserved. Each additional checkpoint is scored from its own completed Arabic-mode run."),
         "All paired original and enhanced scores below use exactly the same eligible clips.",
         "",
         "| Model | Original WER | Enhanced WER | Original CER | Enhanced CER |",

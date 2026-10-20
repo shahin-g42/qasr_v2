@@ -42,9 +42,9 @@ def read_submissions(path, plan):
             if public.get(field) != item.get(field):
                 raise ValueError(f"Public model provenance mismatch: {name}/{field}")
         if local:
-            if name != local_checkpoint.NAME:
+            if name not in local_checkpoint.ENTRIES:
                 raise ValueError("Unregistered local checkpoint")
-            local_checkpoint.validate_registration(public, run)
+            local_checkpoint.validate_registration(public, run, name)
         else:
             dataset_pin(item["repository"], item["revision"])
         if run.get("modes") != ["arabic"] or run.get("backend") != item["backend"]:
@@ -68,6 +68,7 @@ def read_submissions(path, plan):
             max_new_tokens=run["max_new_tokens"],
             precision=run["precision"],
             postprocessing=public["postprocessing"],
+            decoding_options=run.get("decoding_options", {}),
             model_url=None if local else f"https://huggingface.co/{item['repository']}/tree/{item['revision']}",
             latency_binding=source_binding(run),
         )

@@ -123,8 +123,8 @@ def model_sources(plan, names, public_root):
 
 
 def checkpoint_path(name):
-    if name == local_checkpoint.NAME:
-        return local_checkpoint.checkpoint_path()
+    if name in local_checkpoint.ENTRIES:
+        return local_checkpoint.checkpoint_path(name)
     if name in ("qasr", "gqasr"):
         key = f"LATENCY_{name.upper()}_CHECKPOINT"
         value = os.environ.get(key)
@@ -254,6 +254,8 @@ def run_worker(job_path):
     before = telemetry(gpu)
     started = time.perf_counter()
     recognizer = cls(job["checkpoint"], "cuda:0", "bf16", protocol["gpu_memory_fraction"])
+    if manifest["models"][name].get("decoding_options"):
+        recognizer.configure_decoding(manifest["models"][name]["decoding_options"])
     torch.cuda.synchronize()
     load_seconds = time.perf_counter() - started
     if torch.get_num_threads() != 1 or torch.get_num_interop_threads() != 1:

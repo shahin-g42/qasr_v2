@@ -17,7 +17,7 @@ def check_no_code_switch(cfg):
 
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument('--config', default='configs/v8.1/03_hq_8node_b50_no_cs.yaml')
+    parser.add_argument('--config', default='configs/v8.1/03_hq_8node_b20_no_cs.yaml')
     parser.add_argument('--scan', action='store_true')
     parser.add_argument('--smoke-test', action='store_true')
     parser.add_argument('--resume-from-checkpoint')
@@ -38,7 +38,7 @@ def main():
         raise ValueError('Configured duration exceeds processor limit')
     if args.scan:
         scan_coverage(cfg, exact=False)
-    print('Stage 3 preflight passed. Batch 50 GPU memory still requires a cluster smoke test.', flush=True)
+    print('Stage 3 preflight passed. GPU memory still requires a cluster smoke test.', flush=True)
 
 
 if __name__ == '__main__':

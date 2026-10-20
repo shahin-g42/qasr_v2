@@ -6,6 +6,41 @@ This is a proposed polish recipe, not a demonstrated accuracy improvement.
 The supplied late Stage 2 logs show finite training loss/gradients, but contain
 no validation WER/CER. Establish the baseline below before judging Stage 3.
 
+## Batch-20 OOM recovery — current eight-node launch
+
+Batch 50 exhausted H100 80 GB memory on the cluster. Use the new
+`configs/v8.1/03_hq_8node_b20_no_cs.yaml` and
+`scripts/run_v81_phase3_8node_b20.sh` for the replacement run.
+The historical batch-50 config and launcher below are retained, not recommended
+for this hardware/run after the observed OOM.
+
+- Master: inception-H100-hpc-053, port 29584; eight nodes × eight GPUs.
+- Batch 20 per GPU, accumulation 1: global batch 1,280.
+- Quotas ar/en/hi/ml/zh = 10/6/2/1/1, restoring exact 50/30/10/5/5 shares.
+- 49,019 optimizer updates: one weighted epoch, 62,744,320 presentations.
+- Warmup 1,250 steps; evaluation/save every 2,500 steps. These intervals are
+  scaled by 2.5 to preserve their sample counts after reducing the batch.
+- Peak LR remains 4e-6, cosine schedule, other augmentation settings unchanged.
+- 10 DataLoader workers per GPU; code-switch index null and probability 0.
+- Initialize from completed Stage 2 `output/v81/full_12node`, with a fresh
+  optimizer/schedule; output `output/v81/hq_8node_b20_no_cs`.
+
+Stop the failed batch-50 launchers on all nodes and confirm their GPU processes
+have exited before restarting. Do not pass the failed run's checkpoint to this
+new launch. Preflight and then smoke-test on master:
+
+```bash
+bash scripts/run_v81_phase3_8node_b20.sh 0 --preflight
+NNODES=1 bash scripts/run_v81_phase3_8node_b20.sh 0 localhost --smoke-test
+```
+
+Production: use `bash scripts/run_v81_phase3_8node_b20.sh 0` on master 053,
+and the same command with ranks 1, 2, 3, 4, 5, 6, 7 respectively on the seven
+workers. Use one unique rank per node. Batch 20 reduces activation memory but
+the smoke subset cannot guarantee the longest production batches fit; monitor
+the first production updates. The code-switch index refresh is unnecessary
+for this recipe.
+
 ## Eight-node batch-50 alternative (code-switching disabled)
 
 Use `configs/v8.1/03_hq_8node_b50_no_cs.yaml` and

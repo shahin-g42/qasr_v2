@@ -81,7 +81,7 @@ smoke_test: false
 smoke_test_max_steps: 2
 smoke_test_train_samples: 256
 smoke_test_eval_samples: 16
-dataloader_num_workers: 10
+dataloader_num_workers: 8
 dataloader_pin_memory: true
 dataloader_persistent_workers: true
 gradient_checkpointing: true

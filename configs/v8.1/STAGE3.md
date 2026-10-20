@@ -21,7 +21,7 @@ for this hardware/run after the observed OOM.
 - Warmup 1,250 steps; evaluation/save every 2,500 steps. These intervals are
   scaled by 2.5 to preserve their sample counts after reducing the batch.
 - Peak LR remains 4e-6, cosine schedule, other augmentation settings unchanged.
-- 10 DataLoader workers per GPU; code-switch index null and probability 0.
+- 8 DataLoader workers per GPU (64 per node); code-switch index null and probability 0.
 - Initialize from completed Stage 2 `output/v81/full_12node`, with a fresh
   optimizer/schedule; output `output/v81/hq_8node_b20_no_cs`.
 

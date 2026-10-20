@@ -22,7 +22,7 @@ def test_recipe_and_coverage():
     assert cfg.code_switch_index is None and cfg.code_switch_probability == 0
     assert cfg.max_steps == 49019
     assert cfg.expected_world_size * cfg.per_device_train_batch_size * cfg.gradient_accumulation_steps == 1280
-    assert cfg.dataloader_num_workers == 10
+    assert cfg.dataloader_num_workers == 8
     assert cfg.warmup_steps == 1250
     assert cfg.eval_steps == cfg.save_steps == 2500
     assert cfg.gradient_accumulation_steps == 1

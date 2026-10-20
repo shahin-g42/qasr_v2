@@ -6,6 +6,65 @@ This is a proposed polish recipe, not a demonstrated accuracy improvement.
 The supplied late Stage 2 logs show finite training loss/gradients, but contain
 no validation WER/CER. Establish the baseline below before judging Stage 3.
 
+## Eight-node batch-50 alternative (code-switching disabled)
+
+Use `configs/v8.1/03_hq_8node_b50_no_cs.yaml` and
+`scripts/run_v81_phase3_8node_b50.sh`. This separate recipe leaves the
+12-node config unchanged. Master is `inception-H100-hpc-053:29584`.
+
+- 8 nodes × 8 GPUs, batch 50 per GPU, accumulation 1: global batch 3,200.
+- Exact budget: 31,446 optimizer steps (100,627,200 presentations).
+- DataLoader workers: 10 per GPU process, 80 per node, 640 across the job.
+- Code-switch probability 0 and index null: no cs_v1 or refresh dependency.
+- Other augmentations and the Stage 3 4e-6 peak LR / cosine schedule remain.
+- Quotas ar/en/hi/ml/zh = 25/15/5/3/2. Batch 50 cannot give both smaller
+  languages exactly 5%; these integer counts give 50/30/10/6/4 percent.
+- The fixed step budget overrides num_train_epochs and spans approximately
+  1.60 weighted epochs (19,608 steps per epoch from the count snapshot).
+- Same completed Stage 2 initialization; separate output
+  `output/v81/hq_8node_b50_no_cs` and startup logs
+  `output/v81/logs_p3_8node_b50_no_cs`. Do not resume a code-switched run.
+
+From the project root on master 053 after pulling the new files:
+
+```bash
+bash scripts/run_v81_phase3_8node_b50.sh 0 --preflight --scan
+NNODES=1 bash scripts/run_v81_phase3_8node_b50.sh 0 localhost --smoke-test
+```
+
+The full scan is optional and should run only once. It accepts the requested
+multi-epoch budget while rejecting a budget shorter than one full weighted
+epoch. The smoke run uses batch 50 with two DataLoader workers per process
+(the existing smoke cap), writes to the `smoke-test` subdirectory and must
+pass on the cluster before assuming batch 50 fits H100 memory. Local tests
+cannot establish GPU memory feasibility.
+
+Then run one command per machine, ranks 0–7 exactly once:
+
+```bash
+# Master: inception-H100-hpc-053
+bash scripts/run_v81_phase3_8node_b50.sh 0
+# Worker 1
+bash scripts/run_v81_phase3_8node_b50.sh 1
+# Worker 2
+bash scripts/run_v81_phase3_8node_b50.sh 2
+# Worker 3
+bash scripts/run_v81_phase3_8node_b50.sh 3
+# Worker 4
+bash scripts/run_v81_phase3_8node_b50.sh 4
+# Worker 5
+bash scripts/run_v81_phase3_8node_b50.sh 5
+# Worker 6
+bash scripts/run_v81_phase3_8node_b50.sh 6
+# Worker 7
+bash scripts/run_v81_phase3_8node_b50.sh 7
+```
+
+For evaluation use `scripts/eval_v81_phase3.py` with
+`--config configs/v8.1/03_hq_8node_b50_no_cs.yaml`, the desired `--model`,
+and a new `--output-dir`. The sections below describe the original 12-node
+code-switch recipe, not this eight-node alternative.
+
 ## Recipe and evidence
 
 - Initialize weights from the completed `output/v81/full_12node` export.

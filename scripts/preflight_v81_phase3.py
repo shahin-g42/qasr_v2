@@ -32,7 +32,7 @@ def check_stage2_export(model_path: str, output_path: str) -> None:
     print(f"Stage 2 final export: {actual:,}/{target:,} steps complete", flush=True)
 
 
-def scan_coverage(cfg) -> None:
+def scan_coverage(cfg, *, exact=True) -> None:
     # Keep just one manifest's index in memory, not all ~46M records together.
     from qasr.data import JsonlSpeechDataset
 
@@ -50,8 +50,9 @@ def scan_coverage(cfg) -> None:
                   for lang, n in counts.items())
     steps = math.ceil(batches / cfg.gradient_accumulation_steps)
     print(f"Eligible anchors: {dict(counts)}; full weighted epoch: {steps:,} updates", flush=True)
-    if steps != cfg.max_steps:
+    if (exact and steps != cfg.max_steps) or cfg.max_steps < steps:
         raise ValueError(f"Coverage differs: computed={steps}, configured={cfg.max_steps}; review config")
+    print(f'Configured budget: {cfg.max_steps:,} updates ({cfg.max_steps / steps:.3f} weighted epochs)', flush=True)
 
 
 def main() -> None:

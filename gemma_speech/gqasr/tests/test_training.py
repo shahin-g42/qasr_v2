@@ -154,7 +154,11 @@ def test_path_rewrite_and_alias():
 
 
 @pytest.mark.parametrize("augmented", [False, True])
-def test_index_training_resume_and_full_stage(tmp_path, augmented):
+def test_index_training_resume_and_full_stage(tmp_path, augmented, monkeypatch):
+    if augmented:
+        import multiprocessing
+        if "forkserver" in multiprocessing.get_all_start_methods():
+            monkeypatch.setenv("GQASR_WORKER_START_METHOD", "forkserver")
     path, cfg = fixture(tmp_path)
     if augmented:
         cfg["augmentation"] = {

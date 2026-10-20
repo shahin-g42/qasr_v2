@@ -5,7 +5,32 @@
 Keep the existing environment and checkpoint. The recovery wrapper still resumes
 `encoder12_b80/checkpoint-00007500` with batch 20, accumulation 4 and eight data
 workers per GPU. Its new output is
-`encoder12_b20_acc4_resume7500_startupfix`; prior attempts stay intact.
+`encoder12_b20_acc4_resume7500_forkserver`; prior attempts stay intact.
+
+The subsequent node-048 stack dump caught the trainer inside Python's `spawn`
+process launcher after 180 seconds. That dump is diagnostic, not an exception or
+proof that the environment is corrupted. It locates this delay before data
+delivery and model computation, but does not show the child process's stack.
+The earlier readiness gates prevent premature NCCL reductions; they do not make
+worker creation faster.
+
+The recovery wrapper now selects `GQASR_WORKER_START_METHOD=forkserver`.
+A fresh CPU-only server per GPU process imports the data-processing libraries
+once, and its eight workers inherit those imports. This replaces 64 independent
+sets of worker imports per node with eight server imports. Process arguments,
+including the processor and augmentation configuration, are still transferred
+to each worker. No model weights, tokenizer execution, audio reads or CUDA
+initialization occur in the preload module. This uses the
+[PyTorch-supported forkserver method](https://docs.pytorch.org/docs/2.11/generated/torch.nn.parallel.DistributedDataParallel.html)
+and [Python's import preloading](https://docs.python.org/3.14/library/multiprocessing.html#multiprocessing.set_forkserver_preload);
+it never directly forks the CUDA training process. `spawn` remains an explicit
+override; plain `fork` is rejected. Non-recovery launchers retain `spawn`.
+
+Expect `data_workers_starting` with `start_method: forkserver`, followed by eight
+`data_worker_ready` events per rank. Their shared `preload_server_pid` confirms
+that the imports were inherited. A missing preload fails explicitly instead of
+silently falling back to repeated imports. A new trainer process is required
+when changing the worker launch method.
 
 The October 20 reports show all 96 ranks completed the weight broadcast.
 Nodes 009 and 056 enqueued the first loss check at 07:46 UTC; node 051 at
@@ -33,16 +58,25 @@ Expect `training_startup_ready` for each rank, `training_startup_wait` progress
 from rank zero, then `training_startup_all_ready` with 96 ranks at each stage,
 followed by the usual training updates. Startup waits have a
 separate 1,200-second bound (`GQASR_STARTUP_TIMEOUT`). Missing ranks and their
-phases are reported; slow local startup work also dumps Python stacks after
-180 seconds. This covers process spawning, which the normal DataLoader
-batch-delivery timeout does not cover. A permanently stuck node is still an
-error, not silently skipped.
+phases are reported. Slow local startup work dumps Python stacks after 180
+seconds into separate `startup-rank-N-pid-P.log` files under `GQASR_LOG_DIR`,
+so eight ranks no longer interleave their stack traces. `training_startup_trace`
+prints the exact local path. These stack dumps also cover process spawning,
+which the normal DataLoader batch-delivery timeout does not cover. The
+1,200-second bound applies to readiness waits; it cannot interrupt a blocked
+OS process launch or filesystem syscall.
 
 Validation includes a real two-process Gloo regression: delaying one rank beyond
 the unchanged collective timeout fails without readiness and succeeds with it.
-The resumed training-loop test also uses spawned data workers, checks identical
-collective order across ranks, and verifies global loss publication. These CPU
-tests do not establish H100/NCCL throughput or hardware health.
+The resumed training-loop test uses both worker methods, checks identical
+collective order across ranks, and verifies global loss publication. A separate
+test compares eight forkserver workers against spawn using the real SQLite
+dataset, tokenizer, audio frontend and augmentation: batch order, targets,
+features, masks and augmentation diagnostics must match exactly. It also
+checks that every worker inherited one CPU-only server's imports. Exact
+checkpoint-resume tests cover the new worker method. These CPU tests do not
+establish H100/NCCL throughput or prove the cluster startup issue is resolved;
+the next launch must confirm all 96 ranks reach `data_ready`.
 
 ## Inspect the October 20 resume timeout before relaunching
 

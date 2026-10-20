@@ -129,6 +129,7 @@ def training_role(process, root):
     worker = (
         ("-c" in argv and any(marker in option(argv, "-c") for marker in (
             "from multiprocessing.spawn import spawn_main",
+            "from multiprocessing.forkserver import main",
             "from multiprocessing.resource_tracker import main",
             "from joblib.externals.loky.backend.resource_tracker import main",
         )))

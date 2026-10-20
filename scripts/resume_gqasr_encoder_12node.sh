@@ -8,6 +8,12 @@ cd "$PROJECT_DIR"
 export GQASR_CONFIG="${GQASR_CONFIG:-$PROJECT_DIR/gemma_speech/gqasr/configs/03_encoder12_b20_acc4_12node.yaml}"
 CHECKPOINT="${GQASR_RESUME_CHECKPOINT:-$PROJECT_DIR/gemma_speech/gqasr/outputs/encoder12_b80/checkpoint-00007500}"
 export GQASR_LOG_DIR="${GQASR_LOG_DIR:-/tmp/gqasr-${USER:-user}-logs}"
+# A fresh, CPU-only server preloads the data imports once per GPU process,
+# instead of every one of the 64 data workers importing from Lustre independently.
+export GQASR_WORKER_START_METHOD="${GQASR_WORKER_START_METHOD:-forkserver}"
+[[ "$GQASR_WORKER_START_METHOD" == forkserver || "$GQASR_WORKER_START_METHOD" == spawn ]] || {
+  echo 'GQASR_WORKER_START_METHOD must be forkserver or spawn.' >&2; exit 2;
+}
 # Conda/base environments can already export OPENBLAS_NUM_THREADS=32. A fallback
 # default leaves 64 data workers spawning thousands of threads on a 96-core node.
 # Use one explicit budget for this launch, before Python/NumPy import.
@@ -37,6 +43,6 @@ if [[ "${DRY_RUN:-0}" != 1 ]]; then
   }
   mkdir -p "$GQASR_LOG_DIR"
 fi
-echo "Recovery: checkpoint=$CHECKPOINT config=$GQASR_CONFIG logs=$GQASR_LOG_DIR cpu_threads=$CPU_THREADS"
+echo "Recovery: checkpoint=$CHECKPOINT config=$GQASR_CONFIG logs=$GQASR_LOG_DIR cpu_threads=$CPU_THREADS workers_start=$GQASR_WORKER_START_METHOD"
 exec bash "$PROJECT_DIR/scripts/run_gqasr_12node.sh" "$@" \
   --stage encoder --resume "$CHECKPOINT" --allow-microbatch-change

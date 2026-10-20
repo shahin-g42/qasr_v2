@@ -71,7 +71,13 @@ def worker(rank, config_path, rendezvous, checkpoint):
     }))
 
 
-def test_resumed_loss_logging_has_same_collective_order_on_every_rank(tmp_path, monkeypatch):
+@pytest.mark.parametrize("worker_start_method", ["spawn", "forkserver"])
+def test_resumed_loss_logging_has_same_collective_order_on_every_rank(
+    tmp_path, monkeypatch, worker_start_method,
+):
+    if worker_start_method not in mp.get_all_start_methods():
+        pytest.skip(f"{worker_start_method} unavailable")
+    monkeypatch.setenv("GQASR_WORKER_START_METHOD", worker_start_method)
     monkeypatch.setattr(torch.cuda, "is_available", lambda: False)
     path, cfg = fixture(tmp_path)
     cfg.update(batch_size=1, accumulation_steps=4, language_batch_counts={"ar": 4},

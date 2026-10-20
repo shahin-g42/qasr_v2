@@ -4,12 +4,48 @@ from collections import deque
 from contextlib import contextmanager
 import faulthandler
 import json
+import multiprocessing
 import os
+from pathlib import Path
 import socket
+import sys
 import time
 
 import torch
 import torch.distributed as dist
+
+
+def worker_context(workers):
+    """Use a fresh CPU forkserver when requested; never fork the CUDA trainer."""
+    if not workers:
+        return None
+    method = os.environ.get("GQASR_WORKER_START_METHOD", "spawn")
+    if method not in {"spawn", "forkserver"}:
+        raise ValueError("GQASR_WORKER_START_METHOD must be spawn or forkserver")
+    if method not in multiprocessing.get_all_start_methods():
+        raise ValueError(f"DataLoader start method {method!r} is unavailable on this platform")
+    if method == "forkserver":
+        # Exclude __main__: the server only imports the CPU data pipeline, not
+        # the CLI/trainer. Imports are amortized across this rank's workers.
+        multiprocessing.set_forkserver_preload(["gqasr.worker_preload"])
+    return multiprocessing.get_context(method)
+
+
+def worker_ready(worker_id):
+    """Report completion of deserialization, before the first batch is read."""
+    if torch.cuda.is_initialized():
+        raise RuntimeError("CPU data worker unexpectedly initialized CUDA")
+    method = multiprocessing.get_start_method()
+    preload = sys.modules.get("gqasr.worker_preload")
+    server_pid = getattr(preload, "PRELOAD_PID", None)
+    if method == "forkserver" and (server_pid is None or server_pid == os.getpid()):
+        raise RuntimeError("DataLoader forkserver preload was not inherited; "
+                           "start a fresh trainer process")
+    print(json.dumps({
+        "event": "data_worker_ready", "rank": int(os.environ.get("RANK", "0")),
+        "worker": worker_id, "pid": os.getpid(), "start_method": method,
+        "preload_server_pid": server_pid,
+    }), flush=True)
 
 
 class Startup:
@@ -35,17 +71,30 @@ class Startup:
         self.active = True
         self.phase = "created"
         self.started = time.monotonic()
+        self.trace_file = None
 
     def __enter__(self):
+        directory = os.environ.get("GQASR_LOG_DIR")
+        if directory:
+            path = Path(directory) / f"startup-rank-{self.rt.rank}-pid-{os.getpid()}.log"
+            path.parent.mkdir(parents=True, exist_ok=True)
+            self.trace_file = path.open("a", buffering=1)
+            print(json.dumps({"event": "training_startup_trace", "rank": self.rt.rank,
+                              "hostname": socket.gethostname(), "path": str(path)}), flush=True)
         # This catches time inside Process.start()/pickle and native reads,
         # which DataLoader's batch-delivery timeout does not cover.
-        faulthandler.dump_traceback_later(180, repeat=True)
+        self.arm_trace()
         return self
+
+    def arm_trace(self):
+        faulthandler.dump_traceback_later(180, repeat=True, file=self.trace_file)
 
     def mark(self, phase):
         if not self.active:
             return
         self.phase = phase
+        if self.trace_file is not None:
+            self.trace_file.write(f"phase={phase} elapsed={time.monotonic() - self.started:.2f}s\n")
         if self.store is not None:
             self.store.set(f"phase/{self.rt.rank}", phase)
 
@@ -69,7 +118,7 @@ class Startup:
                           "hostname": socket.gethostname(), "stage": stage,
                           "elapsed_seconds": elapsed}), flush=True)
         if self.store is None:
-            faulthandler.dump_traceback_later(180, repeat=True)
+            self.arm_trace()
             return
         keys = [f"{stage}/{rank}" for rank in range(self.rt.world)]
         self.store.set(keys[self.rt.rank], "ready")
@@ -81,7 +130,7 @@ class Startup:
                 if self.rt.main:
                     print(json.dumps({"event": "training_startup_all_ready", "stage": stage,
                                       "ready_ranks": self.rt.world}), flush=True)
-                faulthandler.dump_traceback_later(180, repeat=True)
+                self.arm_trace()
                 return
             now = time.monotonic()
             if now - started >= self.timeout:
@@ -99,6 +148,9 @@ class Startup:
     def finish(self):
         self.active = False
         faulthandler.cancel_dump_traceback_later()
+        if self.trace_file is not None:
+            self.trace_file.close()
+            self.trace_file = None
 
     def __exit__(self, exc_type, exc, traceback):
         if exc is not None and self.active and self.store is not None:
@@ -118,6 +170,12 @@ def prepared_batches(loader, startup, accumulation):
     iterator = None
     try:
         startup.mark("dataloader_spawn")
+        print(json.dumps({
+            "event": "data_workers_starting", "rank": startup.rt.rank,
+            "workers": loader.num_workers,
+            "start_method": (loader.multiprocessing_context.get_start_method()
+                             if loader.num_workers else None),
+        }), flush=True)
         iterator = iter(loader)
         startup.mark("dataloader_first_batches")
         # At least one actual batch per worker exercises imports, SQLite, audio

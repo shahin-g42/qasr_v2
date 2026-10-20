@@ -5,6 +5,7 @@ import json
 import os
 from pathlib import Path
 import subprocess
+import sys
 import time
 from types import SimpleNamespace
 
@@ -14,7 +15,10 @@ import torch.distributed as dist
 import torch.multiprocessing as mp
 from torch.utils.data import DataLoader, Dataset
 
-from gqasr.startup import Startup, prepared_batches, first_update_ready
+from gqasr.data import Collator, ManifestIndex, StratifiedUpdateSampler
+from gqasr.startup import (
+    Startup, prepared_batches, first_update_ready, worker_context, worker_ready,
+)
 
 
 ROOT = Path(__file__).resolve().parents[3]
@@ -50,6 +54,7 @@ def test_actual_spawned_workers_are_warmed_without_losing_or_reordering_batches(
 def test_worker_read_failure_shuts_down_children():
     class FailingLoader:
         num_workers = 2
+        multiprocessing_context = mp.get_context("spawn")
         def __len__(self):
             return 4
         def __iter__(self):
@@ -65,6 +70,90 @@ def test_worker_read_failure_shuts_down_children():
             with prepared_batches(loader, startup, accumulation=4):
                 pytest.fail("must not enter training")
     assert loader.closed
+
+
+class InspectingCollator(Collator):
+    def __call__(self, rows):
+        batch, rows = super().__call__(rows)
+        preload = sys.modules.get("gqasr.worker_preload")
+        return batch, rows, {
+            "pid": os.getpid(), "preload_pid": getattr(preload, "PRELOAD_PID", None),
+            "cuda_initialized": torch.cuda.is_initialized(),
+            "modeling_imported": "gqasr.modeling" in sys.modules,
+        }
+
+
+def test_forkserver_eight_workers_match_spawn_augmented_batches(tmp_path, monkeypatch):
+    from test_training import fixture
+    from gqasr.processing import GQASRProcessor
+
+    if "forkserver" not in mp.get_all_start_methods():
+        pytest.skip("forkserver unavailable")
+    for key in ("OMP_NUM_THREADS", "OPENBLAS_NUM_THREADS", "MKL_NUM_THREADS"):
+        monkeypatch.setenv(key, "1")
+    _, cfg = fixture(tmp_path)
+    cfg["augmentation"] = {
+        "spec_augment": {"enabled": True, "p": 1.0},
+        "speed_perturb": {"enabled": True, "p": 1.0, "rate_range": [0.85, 1.15]},
+        "noise_injection": {"enabled": True, "p": 1.0},
+        "codec_augment": {"enabled": True, "p": 1.0},
+    }
+    processor = GQASRProcessor(cfg["base_model"])
+    processor.target("مرحبا", "ar")  # Parent tokenizer is already in use.
+    dataset = ManifestIndex(cfg["index_path"], "train")
+    outputs = {}
+    for method, workers in (("spawn", 2), ("forkserver", 8)):
+        monkeypatch.setenv("GQASR_WORKER_START_METHOD", method)
+        sampler = StratifiedUpdateSampler(
+            dataset.counts, {"ar": 8}, 2, 5, start=1, augmentation_seeds=True,
+        )
+        loader = DataLoader(
+            dataset, batch_sampler=sampler, collate_fn=InspectingCollator(processor, cfg, True),
+            num_workers=workers, multiprocessing_context=worker_context(workers),
+            worker_init_fn=worker_ready, persistent_workers=True, prefetch_factor=1,
+            timeout=60, generator=torch.Generator().manual_seed(42),
+        )
+        rng = torch.get_rng_state().clone()
+        with Startup(runtime()) as startup:
+            with prepared_batches(loader, startup, accumulation=4) as batches:
+                outputs[method] = list(batches)
+        assert torch.equal(rng, torch.get_rng_state())
+        assert len({meta["pid"] for _, _, meta in outputs[method]}) == workers
+        assert not any(meta["cuda_initialized"] for _, _, meta in outputs[method])
+    inherited = [meta for _, _, meta in outputs["forkserver"]]
+    assert len({meta["preload_pid"] for meta in inherited}) == 1
+    assert all(meta["preload_pid"] not in (None, meta["pid"], os.getpid()) for meta in inherited)
+    assert not any(meta["modeling_imported"] for meta in inherited)
+    for (expected, rows, _), (actual, actual_rows, _) in zip(
+        outputs["spawn"], outputs["forkserver"], strict=True
+    ):
+        assert rows == actual_rows
+        for key in expected:
+            torch.testing.assert_close(expected[key], actual[key], rtol=0, atol=0)
+    assert any(row["augmentation_audit"]["waveform_changed"]
+               for _, rows, _ in outputs["forkserver"] for row in rows)
+    assert any(row["augmentation_audit"]["specaugment_changed"]
+               for _, rows, _ in outputs["forkserver"] for row in rows)
+
+
+def test_plain_fork_is_rejected_and_zero_workers_need_no_context(monkeypatch):
+    monkeypatch.setenv("GQASR_WORKER_START_METHOD", "fork")
+    assert worker_context(0) is None
+    with pytest.raises(ValueError, match="spawn or forkserver"):
+        worker_context(8)
+
+
+def test_startup_traces_are_separated_by_rank(tmp_path, monkeypatch):
+    monkeypatch.setenv("GQASR_LOG_DIR", str(tmp_path))
+    with Startup(runtime(rank=7)) as startup:
+        startup.mark("dataloader_spawn")
+        startup.wait("data_ready")
+        handle = startup.trace_file
+        startup.finish()
+        assert handle.closed
+    paths = list(tmp_path.glob("startup-rank-7-pid-*.log"))
+    assert len(paths) == 1
+    assert "phase=dataloader_spawn" in paths[0].read_text()
 
 
 def test_missing_rank_reports_phase_and_startup_failure():
@@ -145,12 +234,14 @@ def test_recovery_launcher_replaces_inherited_thread_oversubscription(tmp_path):
     envdir = tmp_path / "env/bin"
     envdir.mkdir(parents=True)
     python = envdir / "python"
-    python.write_text('#!/bin/bash\nprintf "%s %s %s %s\\n" "$OMP_NUM_THREADS" '
-                      '"$MKL_NUM_THREADS" "$OPENBLAS_NUM_THREADS" "$NUMBA_NUM_THREADS"\n')
+    python.write_text('#!/bin/bash\nprintf "%s %s %s %s %s\\n" "$OMP_NUM_THREADS" '
+                      '"$MKL_NUM_THREADS" "$OPENBLAS_NUM_THREADS" "$NUMBA_NUM_THREADS" '
+                      '"$GQASR_WORKER_START_METHOD"\n')
     python.chmod(0o755)
     env = dict(os.environ, GEMMA_SPEECH_ENV=str(envdir.parent),
                OMP_NUM_THREADS="24", OPENBLAS_NUM_THREADS="32", MKL_NUM_THREADS="32")
     env.pop("GQASR_CPU_THREADS", None)
+    env.pop("GQASR_WORKER_START_METHOD", None)
     result = subprocess.run(["bash", str(ROOT / "scripts/resume_gqasr_encoder_12node.sh"), "check"],
                             env=env, capture_output=True, text=True, check=True)
-    assert result.stdout.strip() == "1 1 1 1"
+    assert result.stdout.strip() == "1 1 1 1 forkserver"

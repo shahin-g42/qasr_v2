@@ -47,6 +47,15 @@ def test_own_process_ancestors_and_unrelated_shell_children_are_protected():
     assert cleanup.select_processes({p.pid: p for p in (parent, own, other)}, ROOT, 101) == {}
 
 
+def test_forkserver_orphan_requires_project_and_distributed_provenance():
+    server = process(argv=("python3", "-c", "from multiprocessing.forkserver import main; main()"),
+                     config=str(ROOT / "cfg.yaml"), distributed=True)
+    assert cleanup.training_role(server, ROOT) == "inherited training worker"
+    assert cleanup.training_role(replace(server, config=""), ROOT) is None
+    assert cleanup.training_role(replace(server, distributed=False), ROOT) is None
+    assert cleanup.training_role(replace(server, config="/another/repo/cfg.yaml"), ROOT) is None
+
+
 @pytest.mark.parametrize("script,args,expected", [
     ("scripts/run_gqasr_12node.sh", ("9",), True),
     ("scripts/run_gqasr_12node.sh", ("9", "--preflight"), False),

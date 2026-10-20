@@ -26,7 +26,7 @@ from .processing import GQASRProcessor
 from .tracking import Tracker
 from .resume import validate_resume
 from .performance import BatchTimer
-from .startup import Startup, prepared_batches, first_update_ready
+from .startup import Startup, prepared_batches, first_update_ready, worker_context, worker_ready
 
 
 def schedule(step, cfg):
@@ -239,7 +239,8 @@ def _train(cfg, rt, resume, tracker=None, allow_microbatch_change=False):
             batch_sampler=sampler,
             collate_fn=collator,
             num_workers=cfg["workers"],
-            multiprocessing_context="spawn" if cfg["workers"] else None,
+            multiprocessing_context=worker_context(cfg["workers"]),
+            worker_init_fn=worker_ready if cfg["workers"] else None,
             pin_memory=rt.device.type == "cuda",
             persistent_workers=cfg["workers"] > 0,
             prefetch_factor=cfg.get("prefetch_factor", 2) if cfg["workers"] else None,

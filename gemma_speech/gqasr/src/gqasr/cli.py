@@ -129,6 +129,8 @@ def main():
     p.add_argument("--resume")
     p.add_argument("--allow-microbatch-change", action="store_true",
                    help="Restore optimizer/schedule with new microbatches but identical quotas/effective batch")
+    p.add_argument("--allow-batch-change", action="store_true",
+                   help="Restore optimizer/schedule with a different effective batch and identical language proportions")
     p = sub.add_parser("verify-base")
     p.add_argument("--model", required=True)
     p.add_argument("--report")

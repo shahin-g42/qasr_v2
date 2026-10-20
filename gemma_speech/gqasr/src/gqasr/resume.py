@@ -3,21 +3,32 @@
 from .tracking import training_config
 
 
-def validate_resume(saved, cfg, metadata, allow_microbatch_change=False):
+def validate_resume(saved, cfg, metadata, allow_microbatch_change=False, allow_batch_change=False):
     old, new = training_config(saved["config"]), training_config(cfg)
     changes = {k: {"from": old.get(k), "to": new.get(k)}
                for k in old.keys() | new.keys() if old.get(k) != new.get(k)}
     if saved["index_metadata"] != metadata:
         raise ValueError("resume requires identical index metadata; do not rescan for this restart")
     allowed = {"batch_size", "accumulation_steps"} if allow_microbatch_change else set()
+    if allow_batch_change:
+        allowed |= {"batch_size", "accumulation_steps", "language_batch_counts"}
     unexpected = changes.keys() - allowed
     if unexpected:
         raise ValueError(f"resume config mismatch: {sorted(unexpected)}; "
-                         "batch/accumulation changes require --allow-microbatch-change")
+                         "regrouping requires --allow-microbatch-change; "
+                         "effective-batch changes require --allow-batch-change")
     old_batch = old["batch_size"] * old["accumulation_steps"]
     new_batch = new["batch_size"] * new["accumulation_steps"]
-    if old_batch != new_batch:
+    if old_batch != new_batch and not allow_batch_change:
         raise ValueError("microbatch continuation must preserve the effective batch per rank")
+    if allow_batch_change:
+        old_quotas, new_quotas = old["language_batch_counts"], new["language_batch_counts"]
+        if (old_quotas.keys() != new_quotas.keys()
+                or sum(old_quotas.values()) != old_batch
+                or sum(new_quotas.values()) != new_batch
+                or any(old_quotas[k] * new_batch != new_quotas[k] * old_batch
+                       for k in old_quotas)):
+            raise ValueError("batch continuation must preserve language proportions and valid quotas")
     if not 0 <= saved["step"] < cfg["max_steps"]:
         raise ValueError("resume checkpoint must precede max_steps")
     if len(saved["rng"]) != cfg["expected_world_size"]:
@@ -28,6 +39,11 @@ def validate_resume(saved, cfg, metadata, allow_microbatch_change=False):
         "next_update": saved["step"] + 1,
         "remaining_updates": cfg["max_steps"] - saved["step"],
         "microbatch_changed": bool(changes),
+        "effective_batch_changed": old_batch != new_batch,
+        "global_batch": {
+            "from": old_batch * cfg["expected_world_size"],
+            "to": new_batch * cfg["expected_world_size"],
+        },
         "changes": changes,
         "optimizer_restored": True,
         "schedule_restarted": False,
@@ -36,7 +52,7 @@ def validate_resume(saved, cfg, metadata, allow_microbatch_change=False):
     }
 
 
-def check_checkpoint(config, checkpoint, allow_microbatch_change=False):
+def check_checkpoint(config, checkpoint, allow_microbatch_change=False, allow_batch_change=False):
     """CPU-only readability, compatibility and finiteness check; no writes."""
     import hashlib
     import json
@@ -57,7 +73,7 @@ def check_checkpoint(config, checkpoint, allow_microbatch_change=False):
     print(json.dumps({"event": "resume_check", "stage": "reading_optimizer_state"}), flush=True)
     saved = torch.load(Path(checkpoint) / "training_state.pt", map_location="cpu", weights_only=True)
     metadata = ManifestIndex(cfg["index_path"], "train").metadata
-    result = validate_resume(saved, cfg, metadata, allow_microbatch_change)
+    result = validate_resume(saved, cfg, metadata, allow_microbatch_change, allow_batch_change)
     if metadata["data_contract"] != data_contract(cfg):
         raise ValueError("index/config data contract mismatch")
     processor = GQASRProcessor(cfg["base_model"])
@@ -99,6 +115,7 @@ def main():
     parser.add_argument("--config", required=True)
     parser.add_argument("--checkpoint", required=True)
     parser.add_argument("--allow-microbatch-change", action="store_true")
+    parser.add_argument("--allow-batch-change", action="store_true")
     print(json.dumps(check_checkpoint(**vars(parser.parse_args())), indent=2))
 
 

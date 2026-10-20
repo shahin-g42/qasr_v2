@@ -71,16 +71,13 @@ def worker(rank, config_path, rendezvous, checkpoint):
     }))
 
 
-@pytest.mark.parametrize("worker_start_method", ["spawn", "forkserver"])
+@pytest.mark.parametrize("accumulation", [1, 4])
 def test_resumed_loss_logging_has_same_collective_order_on_every_rank(
-    tmp_path, monkeypatch, worker_start_method,
+    tmp_path, monkeypatch, accumulation,
 ):
-    if worker_start_method not in mp.get_all_start_methods():
-        pytest.skip(f"{worker_start_method} unavailable")
-    monkeypatch.setenv("GQASR_WORKER_START_METHOD", worker_start_method)
     monkeypatch.setattr(torch.cuda, "is_available", lambda: False)
     path, cfg = fixture(tmp_path)
-    cfg.update(batch_size=1, accumulation_steps=4, language_batch_counts={"ar": 4},
+    cfg.update(batch_size=1, accumulation_steps=accumulation, language_batch_counts={"ar": accumulation},
                expected_world_size=2, acoustic_layers=2, decoder_layers=2,
                train_embeddings=True, max_steps=7505, logging_steps=5,
                eval_steps=500, save_steps=500, report_to="wandb",
@@ -119,7 +116,7 @@ def test_resumed_loss_logging_has_same_collective_order_on_every_rank(
                for rank in range(2)]
     assert reports[0]["events"] == reports[1]["events"]
     for report in reports:
-        assert report["updates"] == 5 and len(report["losses"]) == 20
+        assert report["updates"] == 5 and len(report["losses"]) == 5 * accumulation
         # Loss-finiteness and gradient-norm checks: one int32 MIN each,
         # on every update, before the update. Logging: two float32 SUM
         # values once, after update 7505. DDP gradient buckets run in C++.
@@ -130,6 +127,6 @@ def test_resumed_loss_logging_has_same_collective_order_on_every_rank(
     assert reports[1]["published"] == []
     publication = reports[0]["published"]
     assert len(publication) == 1 and publication[0]["step"] == 7505
-    assert publication[0]["loss_microbatches"] == 40
-    expected_loss = sum(sum(report["losses"]) for report in reports) / 40
+    assert publication[0]["loss_microbatches"] == 10 * accumulation
+    expected_loss = sum(sum(report["losses"]) for report in reports) / (10 * accumulation)
     assert publication[0]["loss"] == pytest.approx(expected_loss, rel=1e-6)

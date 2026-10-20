@@ -89,7 +89,8 @@ def test_invalid_loader_options(tmp_path, key, value):
         load_config(path)
 
 
-def test_optimizer_moments_schedule_and_step_survive_rebatch(tmp_path, monkeypatch):
+@pytest.mark.parametrize("smaller_batch", [False, True])
+def test_optimizer_moments_schedule_and_step_survive_rebatch(tmp_path, monkeypatch, smaller_batch):
     path, cfg = fixture(tmp_path)
     cfg.update(batch_size=2, accumulation_steps=1, max_steps=3, logging_steps=1,
                acoustic_layers=2, decoder_layers=2, train_embeddings=True)
@@ -99,8 +100,12 @@ def test_optimizer_moments_schedule_and_step_survive_rebatch(tmp_path, monkeypat
     saved = torch.load(checkpoint / "training_state.pt", weights_only=True)
     cfg.update(batch_size=1, accumulation_steps=2, workers=1, prefetch_factor=1,
                dataloader_timeout=60, output_dir=str(tmp_path / "resumed"))
+    permission = {"allow_microbatch_change": True}
+    if smaller_batch:
+        cfg.update(accumulation_steps=1, language_batch_counts={"ar": 1}, prefetch_factor=2)
+        permission = {"allow_batch_change": True}
     path.write_text(yaml.safe_dump(cfg))
-    assert check_checkpoint(path, checkpoint, True)["passed"]
+    assert check_checkpoint(path, checkpoint, **permission)["passed"]
     with pytest.raises(ValueError, match="allow-microbatch-change"):
         train(path, checkpoint)
     observed = []
@@ -111,7 +116,7 @@ def test_optimizer_moments_schedule_and_step_survive_rebatch(tmp_path, monkeypat
         return original_step(optimizer, *args, **kwargs)
 
     monkeypatch.setattr(torch.optim.AdamW, "step", capture_step)
-    train(path, checkpoint, allow_microbatch_change=True)
+    train(path, checkpoint, **permission)
     assert len(observed) == 2
     # Inspect immediately before the first resumed update: every Adam moment and
     # per-parameter step must match the saved checkpoint, not a fresh optimizer.
@@ -125,9 +130,11 @@ def test_optimizer_moments_schedule_and_step_survive_rebatch(tmp_path, monkeypat
     assert all(value["step"].item() == 3 for value in final["optimizer"]["state"].values())
     record = json.loads((tmp_path / "resumed/resume.json").read_text())
     assert record["microbatch_changed"] and record["completed_updates"] == 1
+    assert record["effective_batch_changed"] == smaller_batch
+    assert record["global_batch"] == {"from": 2, "to": 1 if smaller_batch else 2}
     rows = [json.loads(line) for line in (tmp_path / "resumed/metrics.jsonl").read_text().splitlines()]
     assert [row["step"] for row in rows] == [2, 3]
-    assert all(row["loss_microbatches"] == 2 for row in rows)
+    assert all(row["loss_microbatches"] == cfg["accumulation_steps"] for row in rows)
     assert all(row["performance"]["rank0_data_wait_seconds_per_update"] >= 0 for row in rows)
     # Existing checkpoints must never be overwritten by recovery.
     assert torch.load(checkpoint / "training_state.pt", weights_only=True)["step"] == 1
@@ -176,9 +183,47 @@ def test_recovery_launcher_forwards_config_checkpoint_and_rank():
         env=env, capture_output=True, text=True,
     )
     assert result.returncode == 0, result.stderr
-    for expected in ("--node_rank=8", "03_encoder12_b20_acc4_12node.yaml",
-                     "checkpoint-00007500", "--allow-microbatch-change", "--master_port=29613"):
+    for expected in ("--node_rank=8", "03_encoder12_b40_resume_12node.yaml",
+                     "checkpoint-00007500", "--allow-batch-change", "--master_port=29613"):
         assert expected in result.stdout
+
+
+def test_batch40_recovery_preserves_language_mix_and_schedule():
+    saved, _ = saved_recipe()
+    cfg = load_config(CONFIGS / "03_encoder12_b40_resume_12node.yaml")
+    with pytest.raises(ValueError):
+        validate_resume(saved, cfg, {"x": 1}, allow_microbatch_change=True)
+    result = validate_resume(saved, cfg, {"x": 1}, allow_batch_change=True)
+    assert result["global_batch"] == {"from": 7680, "to": 3840}
+    assert result["next_update"] == 7501 and result["remaining_updates"] == 23946
+    assert result["optimizer_restored"] and not result["schedule_restarted"]
+    assert set(result["changes"]) == {"batch_size", "language_batch_counts"}
+    assert cfg["batch_size"] == 40 and cfg["accumulation_steps"] == 1
+    assert cfg["workers"] == 8 and cfg["prefetch_factor"] == 2
+    assert cfg["dataloader_timeout"] == 0
+    assert not cfg["online_code_switching"]
+    assert cfg["language_batch_counts"] == {"ar": 20, "en": 12, "hi": 4, "ml": 2, "zh": 2}
+
+
+@pytest.mark.parametrize("key,value", [
+    ("language_batch_counts", {"ar": 19, "en": 13, "hi": 4, "ml": 2, "zh": 2}),
+    ("language_batch_counts", {"ar": 20, "en": 12, "hi": 4, "ml": 4}),
+    ("language_batch_counts", {"ar": 40, "en": 24, "hi": 8, "ml": 4, "zh": 4}),
+    ("learning_rate", 1e-3), ("max_steps", 33000), ("acoustic_layers", 0),
+    ("expected_world_size", 8), ("training_data_seed", 999),
+    ("augmentation", False), ("online_code_switching", True),
+])
+def test_batch_permission_rejects_unrelated_recipe_drift(key, value):
+    saved, _ = saved_recipe()
+    cfg = load_config(CONFIGS / "03_encoder12_b40_resume_12node.yaml")
+    cfg[key] = value
+    with pytest.raises(ValueError):
+        validate_resume(saved, cfg, {"x": 1}, allow_batch_change=True)
+
+
+def test_batch_change_requires_resume():
+    with pytest.raises(ValueError, match="requires? --resume"):
+        train("not-read.yaml", allow_batch_change=True)
 
 
 def distributed_train_worker(rank, config, rendezvous, poison):

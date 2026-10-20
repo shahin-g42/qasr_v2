@@ -1278,8 +1278,10 @@ Each accuracy run checks for competing GPU processes immediately before loading,
 during inference and when inference finishes. Only its own worker processes are
 allowed. A conflict stops benchmark workers without stopping the other job.
 Interrupted accuracy attempts require a fresh comparison directory so resumed
-throughput cannot be mixed with uninterrupted timings. The smoke test also
-requires every requested replica to have loaded successfully.
+throughput cannot be mixed with uninterrupted timings. The smoke test waits for
+every requested replica before processing, so a fast first replica cannot finish
+the short selection before the others load. Full accuracy runs continue to start
+each replica as soon as it is ready. Both policies are recorded and validated.
 
 Before publication, the coordinator verifies common membership, runtime,
 precision, batch size, GPU allocation and output options. OOM batch splitting

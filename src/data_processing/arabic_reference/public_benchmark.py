@@ -350,6 +350,7 @@ def main(argv=None):
                 "model_workers_per_gpu": {name: workers_per_gpu(name) for name in names},
                 "model_load_concurrency": os.environ.get("PUBLIC_MODEL_LOAD_CONCURRENCY", "all"),
                 "start_policy": "as_ready",
+                "smoke_start_policy": "all_ready" if os.environ.get("UNIFORM_BENCH_ROOT") else "as_ready",
                 "reference": "ideal_text_draft; paired original scores; speculative drafts excluded",
             },
             indent=2,
@@ -387,6 +388,9 @@ def main(argv=None):
                 cfg = model_config(name, cache, work, output)
                 if os.environ.get("UNIFORM_BENCH_ROOT"):
                     cfg["require_idle_gpus"] = True
+                    # A short smoke may finish before slower replicas load. Hold
+                    # its work until all replicas occupy their memory share.
+                    cfg["start_when_ready"] = phase != "smoke"
                 print(
                     json.dumps({"event": "public_model_start", "name": name, "phase": phase}),
                     flush=True,

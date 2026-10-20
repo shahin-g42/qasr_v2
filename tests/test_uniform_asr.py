@@ -80,7 +80,7 @@ def test_invalid_format_options_fail_closed(kind, options):
         adapter(kind).configure_decoding(options)
 
 
-def uniform_fixture(root):
+def uniform_fixture(root, phase="full"):
     names = [local_checkpoint.QASR_NAME, "jais-asr"]
     for name in names:
         run = {
@@ -91,20 +91,22 @@ def uniform_fixture(root):
         }
         if name == "jais-asr":
             run["decoding_options"] = {"diacritics": True, "code_switch": False}
-        folder = root / name / "full"
+        folder = root / name / phase
         write_json(folder / "run.json", run)
         write_json(folder / "progress.json", {"event": "benchmark_complete", "completed": 6, "total": 6})
         write_json(folder / "scores.json", {"protocol": run, "performance": {
             "oom_batch_splits": 0,
-            "attempts": [{"gpus": ["0", "1"], "workers_per_gpu": 4, "actual_workers": 8, "ready_workers": 8, "batch_size": 32, "status": "complete"}],
+            "attempts": [{"gpus": ["0", "1"], "workers_per_gpu": 4, "actual_workers": 8, "ready_workers": 8, "batch_size": 32, "status": "complete",
+                          "start_policy": "all_ready" if phase == "smoke" else "as_ready"}],
         }})
     return names
 
 
-@pytest.mark.parametrize("change", ["none", "batch", "runtime", "workers", "oom", "format", "partial", "isolation", "interrupted", "not_ready"])
-def test_uniform_validation_blocks_mixed_or_partial_runs(tmp_path, change):
-    names = uniform_fixture(tmp_path)
-    folder = tmp_path / "jais-asr/full"
+@pytest.mark.parametrize("phase", ["smoke", "full"])
+@pytest.mark.parametrize("change", ["none", "batch", "runtime", "workers", "oom", "format", "partial", "isolation", "interrupted", "not_ready", "start_policy"])
+def test_uniform_validation_blocks_mixed_or_partial_runs(tmp_path, change, phase):
+    names = uniform_fixture(tmp_path, phase)
+    folder = tmp_path / "jais-asr" / phase
     run = json.loads((folder / "run.json").read_text())
     report = json.loads((folder / "scores.json").read_text())
     if change == "batch": run["batch_size"] = 16
@@ -116,10 +118,11 @@ def test_uniform_validation_blocks_mixed_or_partial_runs(tmp_path, change):
     if change == "isolation": run.pop("gpu_isolation")
     if change == "interrupted": report["performance"]["attempts"][0]["status"] = "interrupted"
     if change == "not_ready": report["performance"]["attempts"][0]["ready_workers"] = 7
+    if change == "start_policy": report["performance"]["attempts"][0]["start_policy"] = "as_ready" if phase == "smoke" else "all_ready"
     report["protocol"] = run
     write_json(folder / "run.json", run)
     write_json(folder / "scores.json", report)
-    kw = dict(gpus=["0", "1"], workers=4, batch=32, diacritics=True)
+    kw = dict(gpus=["0", "1"], workers=4, batch=32, diacritics=True, phase=phase)
     if change == "none":
         assert set(validate_uniform_runs(tmp_path, names, **kw)["run_identities"]) == set(names)
     else:

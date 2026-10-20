@@ -403,8 +403,9 @@ def test_invalid_model_selection_is_explicit(value):
 
 
 @pytest.mark.parametrize("fail_inference", [False, True])
+@pytest.mark.parametrize("uniform", [False, True])
 def test_all_runs_smoke_then_full_and_publishes_only_after_success(
-    public_plan, tmp_path, monkeypatch, fail_inference
+    public_plan, tmp_path, monkeypatch, fail_inference, uniform
 ):
     from data_processing.arabic_reference import cluster_leaderboard
     from data_processing.arabic_reference import public_benchmark as module
@@ -421,10 +422,15 @@ def test_all_runs_smoke_then_full_and_publishes_only_after_success(
         "PUBLIC_GPUS": "0,1,2,3,4,5,6,7",
         "PUBLIC_WORKERS_PER_GPU": "1",
         "PUBLIC_BATCH_SIZE": "16",
+        "PUBLIC_SMOKE_PER_DATASET": "32",
         "ARABIC_REF_SPACE_BUNDLE": str(tmp_path / "board"),
     }
     for key, value in environment.items():
         monkeypatch.setenv(key, value)
+    if uniform:
+        monkeypatch.setenv("UNIFORM_BENCH_ROOT", str(tmp_path))
+    else:
+        monkeypatch.delenv("UNIFORM_BENCH_ROOT", raising=False)
     monkeypatch.setattr(module, "annotation_drafts", lambda *args: None)
     monkeypatch.setattr(module, "check_runtime", lambda *args: events.append("runtime") or {})
     monkeypatch.setattr(module, "bind_prepared", lambda *args, **kw: events.append("audio"))
@@ -434,11 +440,13 @@ def test_all_runs_smoke_then_full_and_publishes_only_after_success(
         lambda name, cache: events.append(("download", name))
         or {"repository": REGISTRY[name]["repository"], "revision": "a" * 40},
     )
-    monkeypatch.setattr(module, "model_config", lambda name, *args: {"name": name})
+    monkeypatch.setattr(module, "model_config", lambda name, *args: {"name": name, "start_when_ready": True})
 
     def run(cfg, **kwargs):
         assert kwargs["modes"] == ["arabic"] and kwargs["workers_per_gpu"] == 1
         assert kwargs["batch_size"] == 16 and kwargs["gpus"] == environment["PUBLIC_GPUS"]
+        assert cfg["start_when_ready"] == (not uniform or kwargs["limit_per_dataset"] == 0)
+        assert bool(cfg.get("require_idle_gpus")) == uniform
         events.append((cfg["name"], kwargs["limit_per_dataset"]))
         if fail_inference:
             raise ValueError("Failed GPU smoke run")

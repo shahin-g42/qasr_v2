@@ -54,6 +54,7 @@ def validate_uniform_runs(root, names, *, gpus, workers, batch, diacritics, phas
             or a["actual_workers"] != workers * len(gpus)
             or a.get("ready_workers") != workers * len(gpus)
             or a.get("status") != "complete"
+            or a.get("start_policy") != ("all_ready" if phase == "smoke" else "as_ready")
             for a in attempts
         ):
             raise ValueError(f"Uniform GPU/worker allocation differs: {name}")
@@ -85,6 +86,8 @@ def main(argv=None):
         "workers_per_gpu": workers,
         "batch_size": batch,
         "smoke_per_dataset": int(os.environ["PUBLIC_SMOKE_PER_DATASET"]),
+        "smoke_start_policy": "all_ready",
+        "accuracy_start_policy": "as_ready",
         "jais_diacritics": value == "1",
         "precision": "bf16",
         "mode": "arabic",

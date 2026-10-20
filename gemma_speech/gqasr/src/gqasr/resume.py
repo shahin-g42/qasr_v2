@@ -3,7 +3,7 @@
 from .tracking import training_config
 
 
-def validate_resume(saved, cfg, metadata, allow_microbatch_change=False, allow_batch_change=False):
+def validate_resume(saved, cfg, metadata, allow_microbatch_change=False, allow_batch_change=False, allow_world_size_change=False):
     old, new = training_config(saved["config"]), training_config(cfg)
     changes = {k: {"from": old.get(k), "to": new.get(k)}
                for k in old.keys() | new.keys() if old.get(k) != new.get(k)}
@@ -12,11 +12,14 @@ def validate_resume(saved, cfg, metadata, allow_microbatch_change=False, allow_b
     allowed = {"batch_size", "accumulation_steps"} if allow_microbatch_change else set()
     if allow_batch_change:
         allowed |= {"batch_size", "accumulation_steps", "language_batch_counts"}
+    if allow_world_size_change:
+        allowed.add("expected_world_size")
     unexpected = changes.keys() - allowed
     if unexpected:
         raise ValueError(f"resume config mismatch: {sorted(unexpected)}; "
                          "regrouping requires --allow-microbatch-change; "
-                         "effective-batch changes require --allow-batch-change")
+                         "effective-batch changes require --allow-batch-change; "
+                         "topology changes require --allow-world-size-change")
     old_batch = old["batch_size"] * old["accumulation_steps"]
     new_batch = new["batch_size"] * new["accumulation_steps"]
     if old_batch != new_batch and not allow_batch_change:
@@ -31,17 +34,20 @@ def validate_resume(saved, cfg, metadata, allow_microbatch_change=False, allow_b
             raise ValueError("batch continuation must preserve language proportions and valid quotas")
     if not 0 <= saved["step"] < cfg["max_steps"]:
         raise ValueError("resume checkpoint must precede max_steps")
-    if len(saved["rng"]) != cfg["expected_world_size"]:
-        raise ValueError("resume requires RNG state for every rank in the same world size")
+    old_world, new_world = old["expected_world_size"], cfg["expected_world_size"]
+    if len(saved["rng"]) != old_world:
+        raise ValueError("resume requires RNG state for every rank in the saved world size")
     return {
         "event": "training_resume",
         "completed_updates": saved["step"],
         "next_update": saved["step"] + 1,
         "remaining_updates": cfg["max_steps"] - saved["step"],
         "microbatch_changed": bool(changes),
-        "effective_batch_changed": old_batch != new_batch,
+        "effective_batch_changed": old_batch * old_world != new_batch * new_world,
+        "world_size_changed": old_world != new_world,
+        "rng_policy": "reseed_for_new_world" if old_world != new_world else "restore_saved_per_rank",
         "global_batch": {
-            "from": old_batch * cfg["expected_world_size"],
+            "from": old_batch * old_world,
             "to": new_batch * cfg["expected_world_size"],
         },
         "changes": changes,
@@ -52,7 +58,7 @@ def validate_resume(saved, cfg, metadata, allow_microbatch_change=False, allow_b
     }
 
 
-def check_checkpoint(config, checkpoint, allow_microbatch_change=False, allow_batch_change=False):
+def check_checkpoint(config, checkpoint, allow_microbatch_change=False, allow_batch_change=False, allow_world_size_change=False):
     """CPU-only readability, compatibility and finiteness check; no writes."""
     import hashlib
     import json
@@ -73,7 +79,7 @@ def check_checkpoint(config, checkpoint, allow_microbatch_change=False, allow_ba
     print(json.dumps({"event": "resume_check", "stage": "reading_optimizer_state"}), flush=True)
     saved = torch.load(Path(checkpoint) / "training_state.pt", map_location="cpu", weights_only=True)
     metadata = ManifestIndex(cfg["index_path"], "train").metadata
-    result = validate_resume(saved, cfg, metadata, allow_microbatch_change, allow_batch_change)
+    result = validate_resume(saved, cfg, metadata, allow_microbatch_change, allow_batch_change, allow_world_size_change)
     if metadata["data_contract"] != data_contract(cfg):
         raise ValueError("index/config data contract mismatch")
     processor = GQASRProcessor(cfg["base_model"])
@@ -116,7 +122,21 @@ def main():
     parser.add_argument("--checkpoint", required=True)
     parser.add_argument("--allow-microbatch-change", action="store_true")
     parser.add_argument("--allow-batch-change", action="store_true")
+    parser.add_argument("--allow-world-size-change", action="store_true")
     print(json.dumps(check_checkpoint(**vars(parser.parse_args())), indent=2))
+
+
+def restore_rng(saved, cfg, rt):
+    """Restore exact rank state only at the original world size."""
+    import torch
+    if saved["config"]["expected_world_size"] != rt.world:
+        # All new logical ranks get reproducible, distinct streams. Do not
+        # pretend an old rank's state is an exact replay in a new topology.
+        torch.manual_seed(cfg["seed"] + saved["step"] * rt.world + rt.rank)
+    else:
+        torch.set_rng_state(saved["rng"][rt.rank]["cpu"])
+        if rt.device.type == "cuda":
+            torch.cuda.set_rng_state(saved["rng"][rt.rank]["cuda"], rt.device)
 
 
 if __name__ == "__main__":

@@ -1,9 +1,9 @@
 #!/usr/bin/env bash
-# Run once on each node: rank 0 on 051, unique ranks 1..11 elsewhere.
+# Twelve-node stage launcher; the recovery wrapper also selects four nodes.
 # Uses gemma_speech/.venv; does not activate the original QASR conda environment.
 set -euo pipefail
 usage() {
-  echo "Usage: $0 NODE_RANK [MASTER_ADDR] [--stage bridge|full|encoder] [--preflight] [--resume CHECKPOINT] [--allow-microbatch-change|--allow-batch-change]" >&2
+  echo "Usage: $0 NODE_RANK [MASTER_ADDR] [--stage bridge|full|encoder] [--preflight] [--resume CHECKPOINT] [--allow-microbatch-change|--allow-batch-change] [--allow-world-size-change]" >&2
 }
 [[ $# -ge 1 && "$1" =~ ^[0-9]+$ ]] || { usage; exit 2; }
 export NODE_RANK=$((10#$1))
@@ -24,6 +24,7 @@ while [[ $# -gt 0 ]]; do
     --preflight) PREFLIGHT=1; shift ;;
     --allow-microbatch-change) TRAIN_ARGS+=(--allow-microbatch-change); shift ;;
     --allow-batch-change) TRAIN_ARGS+=(--allow-batch-change); shift ;;
+    --allow-world-size-change) TRAIN_ARGS+=(--allow-world-size-change); shift ;;
     --resume)
       [[ $# -ge 2 && "$2" != --* ]] || { usage; exit 2; }
       TRAIN_ARGS+=(--resume "$2"); shift 2 ;;
@@ -33,11 +34,13 @@ done
 [[ "$STAGE" == bridge || "$STAGE" == full || "$STAGE" == encoder ]] || { echo 'Stage must be bridge, full or encoder' >&2; exit 2; }
 export NNODES="${NNODES:-12}"
 export NPROC_PER_NODE="${NPROC_PER_NODE:-8}"
-[[ "$NNODES" == 12 && "$NPROC_PER_NODE" == 8 ]] || {
-  echo 'This launcher requires 12 nodes x 8 GPUs; use torchrun_node.sh with a matching custom config for other sizes.' >&2
+LAUNCH_NODES="${GQASR_LAUNCH_NNODES:-12}"
+[[ "$LAUNCH_NODES" == 4 || "$LAUNCH_NODES" == 12 ]] || { echo "Supported node counts: 4 or 12" >&2; exit 2; }
+[[ "$NNODES" == "$LAUNCH_NODES" && "$NPROC_PER_NODE" == 8 ]] || {
+  echo "This launcher requires $LAUNCH_NODES nodes x 8 GPUs; use a matching config for other sizes." >&2
   exit 2
 }
-(( NODE_RANK < 12 )) || { echo 'NODE_RANK must be 0 through 11' >&2; exit 2; }
+(( NODE_RANK < LAUNCH_NODES )) || { echo "NODE_RANK must be 0 through $((LAUNCH_NODES - 1))" >&2; exit 2; }
 [[ -n "$MASTER_ADDR" ]] || { echo 'MASTER_ADDR must not be empty' >&2; exit 2; }
 if [[ "$STAGE" == bridge ]]; then
   DEFAULT_PORT=29611
@@ -68,7 +71,7 @@ export CUDA_DEVICE_MAX_CONNECTIONS="${CUDA_DEVICE_MAX_CONNECTIONS:-1}"
 export GQASR_CUDA_VISIBLE_DEVICES="${GPU_IDS:-0,1,2,3,4,5,6,7}"
 export CUDA_VISIBLE_DEVICES="$GQASR_CUDA_VISIBLE_DEVICES"
 echo "GPU visibility: CUDA_VISIBLE_DEVICES=$CUDA_VISIBLE_DEVICES (override with GPU_IDS)"
-echo "GQASR $STAGE: rank=$NODE_RANK/12 master=$MASTER_ADDR:$MASTER_PORT config=$GQASR_CONFIG"
+echo "GQASR $STAGE: rank=$NODE_RANK/$LAUNCH_NODES master=$MASTER_ADDR:$MASTER_PORT config=$GQASR_CONFIG"
 if [[ "${DRY_RUN:-0}" == 1 ]]; then
   if (( PREFLIGHT )); then
     printf 'gqasr preflight --config %q\n' "$GQASR_CONFIG"

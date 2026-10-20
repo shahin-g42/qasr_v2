@@ -24,7 +24,7 @@ from .modeling import GQASRForSpeechRecognition
 from .optimization import build_optimizer, training_scope
 from .processing import GQASRProcessor
 from .tracking import Tracker
-from .resume import validate_resume
+from .resume import validate_resume, restore_rng
 from .performance import BatchTimer
 from .rank_status import RankStatus
 
@@ -115,9 +115,9 @@ def save_checkpoint(model, optimizer, cfg, metadata, step, output, rng, final=Fa
         shutil.rmtree(old)
 
 
-def train(config, resume=None, allow_microbatch_change=False, allow_batch_change=False):
-    if (allow_microbatch_change or allow_batch_change) and not resume:
-        raise ValueError("batch-change flags require --resume")
+def train(config, resume=None, allow_microbatch_change=False, allow_batch_change=False, allow_world_size_change=False):
+    if (allow_microbatch_change or allow_batch_change or allow_world_size_change) and not resume:
+        raise ValueError("batch/world-size-change flags require --resume")
     cfg = load_config(config)
     status = RankStatus()
     status.mark("joining")
@@ -131,7 +131,7 @@ def train(config, resume=None, allow_microbatch_change=False, allow_batch_change
     tracker = Tracker(cfg, main=rt.main, resume=resume)
     exit_code = 1
     try:
-        _train(cfg, rt, resume, tracker, allow_microbatch_change, allow_batch_change, status)
+        _train(cfg, rt, resume, tracker, allow_microbatch_change, allow_batch_change, status, allow_world_size_change)
         exit_code = 0
     finally:
         status.close()
@@ -139,7 +139,7 @@ def train(config, resume=None, allow_microbatch_change=False, allow_batch_change
         rt.close()
 
 
-def _train(cfg, rt, resume, tracker=None, allow_microbatch_change=False, allow_batch_change=False, status=None):
+def _train(cfg, rt, resume, tracker=None, allow_microbatch_change=False, allow_batch_change=False, status=None, allow_world_size_change=False):
     mark = status.mark if status is not None else lambda phase: None
     if rt.world != cfg["expected_world_size"]:
         raise ValueError(f"config expects {cfg['expected_world_size']} ranks; launched {rt.world}")
@@ -181,7 +181,7 @@ def _train(cfg, rt, resume, tracker=None, allow_microbatch_change=False, allow_b
         )
 
         resume_record = validate_resume(
-            saved, cfg, dataset.metadata, allow_microbatch_change, allow_batch_change
+            saved, cfg, dataset.metadata, allow_microbatch_change, allow_batch_change, allow_world_size_change
         )
         resume_record["checkpoint"] = str(Path(resume).resolve())
         group_names = [group["name"] for group in optimizer.param_groups]
@@ -189,9 +189,7 @@ def _train(cfg, rt, resume, tracker=None, allow_microbatch_change=False, allow_b
         for group, name in zip(optimizer.param_groups, group_names, strict=True):
             group["name"] = name
         step = saved["step"]
-        torch.set_rng_state(saved["rng"][rt.rank]["cpu"])
-        if rt.device.type == "cuda":
-            torch.cuda.set_rng_state(saved["rng"][rt.rank]["cuda"], rt.device)
+        restore_rng(saved, cfg, rt)
         del saved
     output = Path(cfg["output_dir"])
     if rt.main:

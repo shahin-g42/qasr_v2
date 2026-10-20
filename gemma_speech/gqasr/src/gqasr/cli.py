@@ -131,6 +131,8 @@ def main():
                    help="Restore optimizer/schedule with new microbatches but identical quotas/effective batch")
     p.add_argument("--allow-batch-change", action="store_true",
                    help="Restore optimizer/schedule with a different effective batch and identical language proportions")
+    p.add_argument("--allow-world-size-change", action="store_true",
+                   help="Keep optimizer/schedule but reseed rank RNG for a new world size")
     p = sub.add_parser("verify-base")
     p.add_argument("--model", required=True)
     p.add_argument("--report")

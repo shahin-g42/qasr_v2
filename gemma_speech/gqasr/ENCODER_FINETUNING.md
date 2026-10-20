@@ -1,6 +1,59 @@
-# GQASR encoder continuation on 12 nodes
+# GQASR encoder continuation
 
-## Current recovery: batch 40 from update 7,500
+
+## Default recovery: four nodes, batch 120
+
+`scripts/resume_gqasr_encoder.sh` now defaults to four nodes (32 GPUs), master
+`inception-H100-hpc-020`, and `03_encoder12_b120_resume_4node.yaml`. It resumes
+`encoder12_b80/checkpoint-00007500` into the fresh
+`encoder12_b120_4node_resume7500` output directory. The explicit
+`resume_gqasr_encoder_12node.sh` remains available for the earlier topology.
+
+| Setting | Four-node recovery |
+|---|---|
+| GPUs / ranks | 32; four nodes with eight GPUs each |
+| Batch / accumulation | 120 per GPU / 1 |
+| Global batch | 3,840, same as 40 × 96 GPUs |
+| Language quota per GPU/update | ar=60, en=36, hi=12, ml=6, zh=6 |
+| Workers / prefetch | 8 per GPU / 2; 64 workers per node, 256 total |
+| Learning rates and schedule | Unchanged from the batch-40 recovery plan |
+| Next / final update | 7,501 / 31,446; 23,946 remain |
+| Validation / saving | Every 500 updates and at completion |
+| Code-switching / gradient checkpointing | Disabled / enabled |
+
+The checkpoint itself used global batch 7,680. This plan therefore has half
+that checkpoint's global batch, while matching the subsequently requested
+batch-40 plan. No LR multiplication or schedule restart is applied. The remaining
+sampled-anchor budget is 91,952,640; this is sampling with replacement, not epochs.
+AdamW moments and update count are restored. `--allow-world-size-change` explicitly
+permits the new topology; all saved rank RNG states must still be present.
+New ranks receive deterministic RNG seeds derived from the training seed, saved
+update and new rank/world size. Sampling and RNG streams change with topology;
+`resume.json` records this. Index, trainable layers, augmentation, language
+proportions and LR/schedule compatibility checks remain enforced.
+
+Batch 120 has not been measured on the H100s. Checkpointing stays enabled.
+Nominal prefetch capacity is 1,920 examples per GPU; actual shared-memory usage
+depends on lengths. Fewer nodes reduce inter-node participants but do not guarantee
+higher throughput, and larger padded batches can increase peak memory.
+
+Run on each of the **four** selected nodes only:
+
+```bash
+git pull origin main
+unset GQASR_CONFIG GQASR_RESUME_CHECKPOINT GQASR_LAUNCH_NNODES
+export GEMMA_SPEECH_ENV="$PWD/gemma_speech/.venv2"
+export MASTER_ADDR=inception-H100-hpc-020
+```
+
+On 020: `bash scripts/resume_gqasr_encoder.sh 0`.
+On the other three nodes: the same command with unique ranks `1`, `2`, `3`.
+The generic recovery wrapper overrides an inherited `NNODES` with four. All nodes
+must use the same checkout and environment. An optional CPU checkpoint check is
+`bash scripts/resume_gqasr_encoder.sh check`. Setup and code updates never launch
+training automatically. No download, export or index rebuild is required.
+
+## Previous recovery: batch 40 on 12 nodes
 
 Use `scripts/resume_gqasr_encoder_12node.sh` for the interrupted encoder run.
 It selects `configs/03_encoder12_b40_resume_12node.yaml`, restores
@@ -33,10 +86,11 @@ hi=4, ml=2, zh=2, preserving the original proportions. Chinese remains included.
 Sampling is with replacement, not an exact epoch traversal. Lower batch size
 does not by itself guarantee better throughput or quality.
 
-The recovery wrapper passes `--allow-batch-change`. This permits only a batch /
-accumulation change with proportional language quotas; it still rejects changes
-to the index, tokenizer, trainable layers, seeds, augmentations, world size and
-schedule. It records old/new global batches and all recipe changes in
+The recovery wrapper passes `--allow-batch-change` and `--allow-world-size-change`.
+These permit batch / accumulation changes with proportional language quotas and
+an explicitly configured world size; the legacy config still uses 96 ranks.
+Changes to the index, tokenizer, trainable layers, seeds, augmentations and
+schedule remain rejected. It records old/new global batches and all recipe changes in
 `resume.json`. Optimizer state and per-rank RNG are restored. Different grouping
 and quotas change subsequent draws, token weighting and augmentation seeds;
 this is a continuation, not an identical replay of the batch-80 run.

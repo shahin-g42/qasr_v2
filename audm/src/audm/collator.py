@@ -1,0 +1,89 @@
+"""QASR augmentations and code-switching, adapted to each AUD audio contract."""
+
+import numpy as np
+import torch
+from qasr.collator import QASRDataCollator
+
+
+def spectral_mask_waveform(wave, augmenter):
+    """Raw-audio counterpart of SpecAugment: mask STFT bins, preserve phase, reconstruct.
+
+    This is waveform spectral masking, not Moonshine's native training recipe.
+    It is used only in training; no mel frontend is inserted into Moonshine.
+    """
+    tensor = torch.as_tensor(wave, dtype=torch.float32)
+    window = torch.hann_window(400)
+    spectrum = torch.stft(
+        tensor, n_fft=400, hop_length=160, window=window, pad_mode="constant", return_complex=True
+    )
+    mask = augmenter.augment_features(
+        torch.ones(1, spectrum.shape[1], spectrum.shape[0]),
+        torch.ones(1, spectrum.shape[1], dtype=torch.bool),
+    )[0].T
+    result = torch.istft(
+        spectrum * mask, n_fft=400, hop_length=160, window=window, length=len(wave)
+    )
+    return result.numpy().astype(np.float32, copy=False)
+
+
+class AUDDataCollator(QASRDataCollator):
+    def _validate_audio_contract(self, batch, batch_size):
+        mask = batch["input_features_mask"]
+        if mask.shape[0] != batch_size:
+            raise RuntimeError("Audio was split into extra supervised examples")
+        expected = self.processor.audio_token_lengths(mask)
+        actual = batch["input_ids"].eq(self.processor.audio_token_id).sum(-1)
+        if not torch.equal(actual, expected.to(actual.device)):
+            raise RuntimeError(
+                f"Audio token lengths differ: {actual.tolist()} vs {expected.tolist()}"
+            )
+        if batch["input_ids"].shape[1] > self.processor.config.text_config.max_position_embeddings:
+            raise ValueError("Audio and text exceed decoder context; segment the recording")
+
+    def __call__(self, features):
+        if not features:
+            raise ValueError("Empty training batch")
+        audits = []
+        if self.code_switcher is not None:
+            mixed = [self.code_switcher.augment(f, self.code_switch_probability) for f in features]
+            features, audits = [m[0] for m in mixed], [m[1] for m in mixed]
+        if self.audit_callback is not None:
+            self.audit_callback(features, audits)
+        # Keep the stage-02/index contract: this limit applies to transcript
+        # tokens. Language markers and EOS are additional supervised tokens.
+        if any(
+            len(self.processor.tokenizer.encode(f["text"], add_special_tokens=False))
+            > self.max_target_length
+            for f in features
+        ):
+            raise ValueError("Transcript exceeds max_target_length")
+        waves = [self._load_waveform(f) for f in features]
+        augmenter = self.augmenter
+        if augmenter is not None and augmenter.has_waveform_augmentation:
+            waves = [
+                augmenter.augment_waveform(
+                    w,
+                    min_audio_seconds=self.min_audio_seconds,
+                    max_audio_seconds=self.max_audio_seconds,
+                )
+                for w in waves
+            ]
+        variant = self.processor.config.variant
+        if variant == "audflash" and augmenter is not None and augmenter.has_spec_augmentation:
+            waves = [spectral_mask_waveform(w, augmenter) for w in waves]
+        batch = dict(
+            self.processor.prepare_training_batch(
+                audio=waves,
+                text=[f["text"] for f in features],
+                language=[f.get("language") or self.language for f in features],
+            )
+        )
+        if variant != "audflash" and augmenter is not None and augmenter.has_spec_augmentation:
+            mel = batch["input_features"]
+            if variant == "audturbo":
+                mel = mel.transpose(1, 2)
+            mel = augmenter.augment_features(mel, batch["input_features_mask"])
+            batch["input_features"] = mel.transpose(1, 2) if variant == "audturbo" else mel
+        self._validate_audio_contract(batch, len(features))
+        allowed = set(self.processor.model_input_names) | {"labels"}
+        return {k: v for k, v in batch.items() if k in allowed}

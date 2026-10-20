@@ -1,0 +1,39 @@
+# 12 nodes x 8 GPUs. Quotas apply over 4 microbatches: 5 x 4 = 20 examples/GPU/update.
+data_recipe: ../../configs/v8.1/02_full_12node.yaml
+stage: full
+training:
+  per_device_train_batch_size: 5
+  per_device_eval_batch_size: 1
+  gradient_accumulation_steps: 4
+  num_train_epochs: 1.0
+  max_steps: -1
+  learning_rate: 2.0e-05
+  llm_lr_factor: 0.5
+  embed_lr_factor: 0.25
+  weight_decay: 0.01
+  warmup_steps: 500
+  lr_scheduler_type: cosine
+  label_smoothing: 0.1
+  logging_steps: 10
+  eval_steps: 1000
+  save_steps: 1000
+  save_total_limit: 4
+  eval_log_samples: 2
+  eval_generation_max_new_tokens: 768
+  eval_wer_samples_per_language: 100
+  dataloader_num_workers: 4
+  dataloader_persistent_workers: true
+  dataloader_pin_memory: true
+  gradient_checkpointing: true
+  bf16: true
+  fp16: false
+  tf32: true
+  attn_implementation: sdpa
+  deepspeed: deepspeed_zero2.json
+  expected_world_size: 96
+  report_to: wandb
+  wandb_project: audm
+  seed: 42
+  data_seed: 42
+  ctc_loss_weight: 0.0
+  run_name: audflash-full-12node

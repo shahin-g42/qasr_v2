@@ -339,7 +339,7 @@ def test_download_pins_revision_and_reuses_only_unchanged_snapshot(tmp_path, lay
         download_model("qwen3-asr-0.6b", tmp_path, api=api, download=download)
 
 
-@pytest.mark.parametrize("kind", backend.BACKENDS)
+@pytest.mark.parametrize("kind", ("hf-qwen", "cohere", "whisper"))
 @pytest.mark.parametrize("layout", ["separate", "combined"])
 def test_checkpoint_accepts_native_frontend_layouts_without_rewriting(tmp_path, kind, layout):
     (tmp_path / "config.json").write_text(json.dumps({"model_type": backend.MODEL_TYPES[kind]}))
@@ -449,6 +449,7 @@ def test_all_runs_smoke_then_full_and_publishes_only_after_success(
     )
     monkeypatch.setattr(cluster_leaderboard, "main", lambda args: events.append(("board", args)))
     monkeypatch.setattr(module, "write_comparison_report", lambda *args: events.append("report"))
+    monkeypatch.setenv("ARABIC_REF_SUBMISSIONS", "")
     if fail_inference:
         with pytest.raises(ValueError, match="Failed GPU smoke"):
             module.main(["all"])
@@ -468,3 +469,54 @@ def test_all_runs_smoke_then_full_and_publishes_only_after_success(
 
         assert os.environ["ARABIC_REF_SUBMISSIONS"] == str(submissions)
     assert events[:2] == ["runtime", "audio"]
+
+
+def test_jais_uses_arabic_family_without_references_and_preserves_failures(tmp_path):
+    obj = adapter('jais')
+    rows, calls = samples(tmp_path), {}
+    class Processor:
+        tokenizer = SimpleNamespace(
+            apply_chat_template=lambda messages, **kw: calls.update(messages=messages, template=kw) or 'AUDIO_ONLY',
+            decode=lambda ids, **kw: '[msa]نحن نحن',
+        )
+        def __call__(self, **kw):
+            calls['processor'] = kw
+            return Batch(input_ids=torch.ones((2,3),dtype=torch.long))
+        def post_process_transcription(self, output, **kw):
+            assert kw == {'input_lengths':3}
+            return [SimpleNamespace(text='نحن نحن',language='msa',refused=False,truncated=False),
+                    SimpleNamespace(text='',language=None,refused=True,truncated=True)]
+    obj.processor = Processor()
+    def generate(**kw):
+        calls['generate'] = kw
+        return torch.tensor([[1,1,1,7,9],[1,1,1,7,7]])
+    obj.model.generate = generate
+    result = obj.infer(rows,obj.features(rows),'arabic',2)
+    assert calls['messages'] == [{'role':'user','content':[{'type':'audio'}]}]
+    assert calls['processor']['text'] == ['AUDIO_ONLY']*2
+    assert calls['processor']['sampling_rate'] == [16000]*2
+    assert np.array_equal(calls['processor']['audio'][0], np.load(rows[0]['audio']))
+    assert calls['generate']['language'] == 'ar' and calls['generate']['do_sample'] is False
+    assert result[0]['pred_text'] == 'نحن نحن' and result[0]['predicted_language'] == 'msa'
+    assert result[1]['pred_text'] == '' and result[1]['refused'] and result[1]['generation_limit_hit']
+    assert result[0]['eos_seen']
+
+
+def test_jais_code_is_pinned_and_unreviewed_code_is_rejected(tmp_path):
+    assert REGISTRY['jais-asr']['repository'] == 'IFM/Jais-ASR'
+    assert len(REGISTRY['jais-asr']['revision']) == 40
+    with pytest.raises(ValueError,match='reviewed'): backend.validate_jais_code(tmp_path)
+    (tmp_path/'modeling_jais_asr.py').write_text('print("unreviewed")')
+    with pytest.raises(ValueError,match='reviewed'): backend.validate_jais_code(tmp_path)
+
+
+def test_jais_worker_default_is_separate_from_general_default(monkeypatch):
+    from data_processing.arabic_reference.public_benchmark import workers_per_gpu
+    monkeypatch.setenv('PUBLIC_WORKERS_PER_GPU','8')
+    monkeypatch.delenv('PUBLIC_JAIS_WORKERS_PER_GPU',raising=False)
+    assert workers_per_gpu('jais-asr') == 4
+    assert workers_per_gpu('qwen3-asr-1.7b') == 8
+    monkeypatch.setenv('PUBLIC_JAIS_WORKERS_PER_GPU','2')
+    assert workers_per_gpu('jais-asr') == 2
+    monkeypatch.setenv('PUBLIC_JAIS_WORKERS_PER_GPU','0')
+    with pytest.raises(ValueError,match='positive'): workers_per_gpu('jais-asr')

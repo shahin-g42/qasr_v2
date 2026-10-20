@@ -1,0 +1,8 @@
+{
+  "processing_jais_asr.py": "0ea4437f533649773484b58bc99d4b7e065427a2e4bdde872b7444c2deb1f7b7",
+  "postprocess.py": "bf7eeba91553da3b770db1d86c7d5a3cc1257f34a9dcbd52ba3202dbcb568b74",
+  "pipeline_jais_asr.py": "315421c8ea4636fb627ab4590cb7fad844e2dc4761626aef8c358190422434bb",
+  "language.py": "44df8ba232be7a9884f270c729dbaedd0bdaf49a0e10ce30d19462e15e61abcf",
+  "modeling_jais_asr.py": "68732327e3638c4e5009b2cce7888094bea465b3ed2c4409d5050f71f1ce820d",
+  "configuration_jais_asr.py": "cf25f76b2a709db8c0df921274f86a8ce0f5d0b00371a94ac379c1d4f18a2b3b"
+}

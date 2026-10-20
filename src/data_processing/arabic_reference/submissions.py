@@ -7,6 +7,7 @@ import re
 from pathlib import Path
 
 from .core import sha256
+from .benchmark_performance import read_performance
 from .leaderboard_inputs import dataset_pin
 
 
@@ -53,6 +54,7 @@ def read_submissions(path, plan):
             for k in ("display_name", "repository", "revision", "backend", "run_file_sha256")
         }
         details[name].update(
+            performance=read_performance((path.parent / item["run_file"]).parent, item["predictions_sha256"], expected_run=run),
             runtime=run["runtime"],
             max_new_tokens=run["max_new_tokens"],
             precision=run["precision"],

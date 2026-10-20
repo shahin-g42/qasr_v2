@@ -109,7 +109,7 @@ def worker_main(slot, gpu, checkpoint, settings, jobs, events, start_event, load
                 if settings.get("backend", "gqasr") == "qasr":
                     from .qasr_backend import QASRRecognizer
                     recognizer_class = QASRRecognizer
-                if settings.get("backend") in ("hf-qwen", "cohere", "whisper"):
+                if settings.get("backend") in ("hf-qwen", "cohere", "whisper", "jais"):
                     from .public_backend import recognizer_class as public_class
                     recognizer_class = public_class(settings["backend"])
                 recognizer = recognizer_class(checkpoint, "cpu" if gpu == "cpu" else "cuda:0",
@@ -129,6 +129,7 @@ def worker_main(slot, gpu, checkpoint, settings, jobs, events, start_event, load
                     batches = [rows[i:i + settings["batch_size"]] for i in range(0, len(rows), settings["batch_size"])]
                     pending = prefetch.submit(recognizer.features, batches[0])
                     predictions, retries, inference_seconds = [], 0, 0.0
+                    inference_batches = []
                     for i, batch in enumerate(batches):
                         features = pending.result()
                         if i + 1 < len(batches):
@@ -147,10 +148,14 @@ def worker_main(slot, gpu, checkpoint, settings, jobs, events, start_event, load
                             )
                             if gpu != "cpu":
                                 torch.cuda.synchronize()
-                            inference_seconds += time.monotonic() - before
+                            batch_seconds = time.monotonic() - before
+                            inference_seconds += batch_seconds
+                            inference_batches.append({"mode": mode, "ids": [r["id"] for r in mode_rows],
+                                                      "seconds": batch_seconds, "oom_batch_splits": retry})
                             predictions.extend(pred)
                             retries += retry
                     stats = {"wall_seconds": time.monotonic() - started, "inference_seconds": inference_seconds,
+                             "inference_batches": inference_batches,
                              "unique_audio_seconds": sum(r["actual_duration"] for r in rows),
                              "audio_seconds": sum(r["actual_duration"] * len(modes_by_id[r["id"]]) for r in rows),
                              "oom_batch_splits": retries,

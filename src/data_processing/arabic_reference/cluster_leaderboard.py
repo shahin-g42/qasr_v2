@@ -146,6 +146,7 @@ def main(argv=None):
             dataset_repo=dataset_repo,
             dataset_revision=revision,
             submissions=submissions,
+            timing_runs=[(name, os.environ[key]) for name, key in (("qasr", "ARABIC_REF_QASR_RUN"), ("gqasr", "ARABIC_REF_GQASR_RUN")) if os.environ.get(key) and Path(os.environ[key]).is_dir()],
         )
         print(json.dumps(result, indent=2))
     if args.stage in {"publish", "verify", "all"}:

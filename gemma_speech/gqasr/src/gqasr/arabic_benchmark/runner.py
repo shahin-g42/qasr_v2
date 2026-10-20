@@ -22,7 +22,7 @@ from .scoring import aggregate
 
 
 def checkpoint_identity(path, backend="gqasr"):
-    if backend in ("hf-qwen", "cohere", "whisper"):
+    if backend in ("hf-qwen", "cohere", "whisper", "jais"):
         from .public_backend import checkpoint_identity as public_identity
         return public_identity(path, backend)
     if backend == "qasr":
@@ -211,9 +211,20 @@ def report(output, expected, identity, elapsed, attempts):
                    "oom_batch_splits": sum(r["stats"]["oom_batch_splits"] for r in records),
                    "peak_worker_allocated_gib": max((r["stats"]["peak_allocated_gib"] for r in records), default=0),
                    "peak_worker_reserved_gib": max((r["stats"]["peak_reserved_gib"] for r in records), default=0)}
+    output_count = sum(len(r["predictions"]) for r in records)
+    batch_records = [b for r in records for b in r["stats"].get("inference_batches", [])]
+    all_batches_measured = bool(records) and all("inference_batches" in r["stats"] for r in records)
+    performance["completed_outputs"] = output_count
+    performance["mean_batch_seconds"] = (sum(b["seconds"] for b in batch_records) / len(batch_records)
+                                          if all_batches_measured and batch_records else None)
+    performance["amortized_compute_seconds_per_output"] = (performance["sum_worker_inference_seconds"] / output_count
+                                                            if output_count else None)
     total_wall = performance["total_attempt_wall_seconds"]
     performance["end_to_end_audio_seconds_per_wall_second"] = performance["audio_seconds_processed"] / total_wall if total_wall else None
+    performance["outputs_per_wall_second"] = output_count / total_wall if total_wall else None
     lines += ["## Performance", "", "```json", json.dumps(performance, indent=2), "```", "",
+              "Mean batch time measures synchronized worker inference calls, including OOM retries. Amortized compute per output is not request latency. "
+              "Older task records without batch measurements report that value as null.\n\n"
               "This is concurrent H100-node throughput, including model startup and prepared-audio reads. "
               "It is not directly comparable to the paper's single A100, batch-one, warmed-up RTF.", "",
               "With as-ready startup, processing time begins when the first worker is released and overlaps "
@@ -287,7 +298,7 @@ def _run(cfg, datasets, gpu_ids, workers_per_gpu, batch_size, limit, output, mod
         raise ValueError(f"Prepared manifests omit {len(missing_prepared)} selected official samples")
     expected = [prepared_by_id[row["id"]] for row in expected]
     backend = cfg.get("backend", "gqasr")
-    if backend not in ("gqasr", "qasr", "hf-qwen", "cohere", "whisper"):
+    if backend not in ("gqasr", "qasr", "hf-qwen", "cohere", "whisper", "jais"):
         raise ValueError("Unsupported Arabic benchmark backend")
     identities = checkpoint_identity(cfg["checkpoint"], backend)
     identity = {"version": 1, "backend": backend, "catalog": CATALOG, "checkpoint": identities,

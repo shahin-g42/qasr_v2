@@ -43,11 +43,13 @@ def download_model(name, cache, *, api=None, download=None):
             raise ValueError(
                 "Cached public model metadata changed; select a new PUBLIC_MODEL_CACHE"
             )
+        if entry.get("revision") and info.get("revision") != entry["revision"]:
+            raise ValueError("Cached Jais revision differs from the reviewed release")
         if checkpoint_identity(root / "snapshot", entry["backend"]) != info["files"]:
             raise ValueError(f"Cached public checkpoint changed: {name}")
         return info
     api, download = api or HfApi(), download or snapshot_download
-    revision = api.model_info(entry["repository"]).sha
+    revision = entry.get("revision") or api.model_info(entry["repository"]).sha
     if not isinstance(revision, str) or not re.fullmatch(r"[0-9a-f]{40}", revision):
         raise ValueError("Hub did not return an immutable public checkpoint revision")
     snapshot = root / "snapshot"
@@ -63,7 +65,7 @@ def download_model(name, cache, *, api=None, download=None):
         ),
         flush=True,
     )
-    # Native Transformers implementations only; no remote Python files are executed.
+    # Jais alone uses hash-verified custom code from an immutable reviewed revision.
     download(
         entry["repository"],
         revision=revision,
@@ -75,6 +77,7 @@ def download_model(name, cache, *, api=None, download=None):
             "*.txt",
             "*.jinja",
             "chat_templates/*",
+            *(["configuration_jais_asr.py", "modeling_jais_asr.py", "processing_jais_asr.py", "pipeline_jais_asr.py", "language.py", "postprocess.py"] if entry["backend"] == "jais" else []),
         ],
         max_workers=8,
     )
@@ -83,6 +86,7 @@ def download_model(name, cache, *, api=None, download=None):
         "revision": revision,
         "files": checkpoint_identity(snapshot, entry["backend"]),
         "postprocessing": {
+            "jais": "official tag/refusal parser; preserve repetitions; Arabic family hint; default diacritics=false, code_switch=false",
             "hf-qwen": "raw token parsing; preserve repetitions; strip protocol delimiters",
             "cohere": "native Arabic punctuation prompt; reassemble all native audio chunks",
             "whisper": "native HF pipeline; 30s chunks with 5s overlap; token-cap diagnostics unavailable",
@@ -147,6 +151,13 @@ def check_runtime(gpus):
     }
 
 
+def workers_per_gpu(name):
+    value = int(os.environ.get("PUBLIC_JAIS_WORKERS_PER_GPU", "4") if name == "jais-asr" else os.environ.get("PUBLIC_WORKERS_PER_GPU", "8"))
+    if value < 1:
+        raise ValueError("Workers per GPU must be positive")
+    return value
+
+
 def model_config(name, cache, work, output):
     source = Path(cache) / name / "source.json"
     if not source.is_file():
@@ -157,6 +168,8 @@ def model_config(name, cache, work, output):
         info.get(k) != entry[k] for k in ("repository", "backend", "display_name", "max_new_tokens")
     ):
         raise ValueError(f"Public model registration differs: {name}")
+    if entry.get("revision") and info.get("revision") != entry["revision"]:
+        raise ValueError("Jais revision differs from the reviewed release")
     checkpoint = Path(cache) / name / "snapshot"
     if checkpoint_identity(checkpoint, entry["backend"]) != info["files"]:
         raise ValueError(f"Public checkpoint files changed: {name}")
@@ -201,6 +214,8 @@ def export_submissions(root, names, plan, rows):
             for k in ("repository", "backend", "display_name", "max_new_tokens")
         ):
             raise ValueError(f"Public run {name} has unexpected model/decoding provenance")
+        if REGISTRY[name].get("revision") and public.get("revision") != REGISTRY[name]["revision"]:
+            raise ValueError("Submitted Jais revision differs from the reviewed checkpoint")
         models.append(
             {
                 "name": name,
@@ -247,6 +262,12 @@ def write_comparison_report(output):
             + " | ".join("unavailable" if v is None else f"{100 * v:.2f}%" for v in metrics)
             + " |"
         )
+    lines += ["", "## Timing", "", "Full source runs; configurations and decoding modes differ. Compute/output is amortized, not request latency.", "",
+              "| Model | Mean batch (s) | Compute/output (s) | Outputs/wall second |", "|---|---:|---:|---:|"]
+    for name in data["models"]:
+        timing = data.get("performance", {}).get(name, {})
+        values = [timing.get(k) for k in ("mean_batch_seconds", "amortized_compute_seconds_per_output", "outputs_per_wall_second")]
+        lines.append(f"| {name} | " + " | ".join("unavailable" if v is None else f"{v:.3f}" for v in values) + " |")
     # Keep review/report artifacts outside the immutable upload bundle.
     destination = root.parent / f"{root.name}-comparison.md"
     destination.write_text("\n".join(lines) + "\n")
@@ -298,6 +319,7 @@ def main(argv=None):
                 "gpus": gpus,
                 "workers_per_gpu": int(os.environ["PUBLIC_WORKERS_PER_GPU"]),
                 "batch_size": int(os.environ["PUBLIC_BATCH_SIZE"]),
+                "model_workers_per_gpu": {name: workers_per_gpu(name) for name in names},
                 "model_load_concurrency": os.environ.get("PUBLIC_MODEL_LOAD_CONCURRENCY", "all"),
                 "start_policy": "as_ready",
                 "reference": "ideal_text_draft; paired original scores; speculative drafts excluded",
@@ -341,7 +363,7 @@ def main(argv=None):
                 run(
                     cfg,
                     gpus=gpus,
-                    workers_per_gpu=int(os.environ["PUBLIC_WORKERS_PER_GPU"]),
+                    workers_per_gpu=workers_per_gpu(name),
                     batch_size=int(os.environ["PUBLIC_BATCH_SIZE"]),
                     limit_per_dataset=32 if phase == "smoke" else 0,
                     modes=["arabic"],

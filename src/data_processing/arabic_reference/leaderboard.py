@@ -120,6 +120,7 @@ def build_leaderboard(
     dataset_repo=None,
     dataset_revision=None,
     submissions=None,
+    timing_runs=(),
 ):
     from gqasr.arabic_benchmark import scoring
 
@@ -139,6 +140,14 @@ def build_leaderboard(
 
         public_predictions, model_details, submission_sha256 = read_submissions(submissions, plan)
         predictions = [*predictions, *public_predictions]
+    from .benchmark_performance import read_performance, performance_csv
+
+    performance = {name: detail["performance"] for name, detail in model_details.items()}
+    for name, folder in timing_runs:
+        source = next((s for s in plan["sources"] if s["name"] == name), None)
+        if source is None or name in performance:
+            raise ValueError(f"Unknown or duplicate timing source: {name}")
+        performance[name] = read_performance(folder, source["predictions_sha256"], expected_run=source["run"])
     pin = dataset_pin(dataset_repo, dataset_revision)
     drafts, annotation_rows, annotation_source = (
         annotation_drafts(annotations, plan, rows) if annotations else ([], [], None)
@@ -213,6 +222,7 @@ def build_leaderboard(
             {c["name"] for r in rows for c in [*r["candidates"], *additions.get(r["id"], [])]}
         ),
         "model_details": model_details,
+        "performance": performance,
         "submission_manifest_sha256": submission_sha256,
         "dataset_summary": [
             {
@@ -250,6 +260,7 @@ def build_leaderboard(
         stage = Path(temporary) / "bundle"
         stage.mkdir()
         write_json(stage / "leaderboard.json", payload)
+        performance_csv(stage / "performance.csv", payload["models"], performance)
         with (stage / "scores.csv").open("w", newline="") as handle:
             fields = [
                 "panel",
@@ -288,8 +299,8 @@ def build_leaderboard(
         (stage / "README.md").write_text(f"""---
 title: {json.dumps(title, ensure_ascii=True)}
 emoji: 🎙️
-colorFrom: green
-colorTo: gray
+colorFrom: blue
+colorTo: yellow
 sdk: static
 app_file: index.html
 pinned: false
@@ -307,6 +318,8 @@ Dataset: {pin["url"] if pin else "No published dataset revision supplied."}
 The page records the immutable dataset revision, annotation bundle, prediction sources, reference policy and scorer hashes. The transcript browser uses stable ID hashes; the separate editorial guide uses explicitly curated, exact-text-bound examples. Full-set ranking retains the original dataset membership, including any duplicate audio; enhanced coverage and exclusions are explicit.
 
 {reference_guide_markdown(payload["reference_guide"])}
+
+The speed table reports mean batch service time when recorded, amortized worker compute per output, and end-to-end throughput including startup and recorded attempts. These are different measurements: compute per output is not request latency. Timing covers the complete source run, including every decoding mode, independently of accuracy filters. Hardware, replicas and batch sizes differ; this is not a controlled speed ranking. Older runs have no individual batch measurements. `performance.csv` exports the timing values and configurations.
 
 `leaderboard.json` contains metric counts, coverage, examples and provenance. `scores.csv` exports every panel (rates are fractions; multiply by 100 for percentages). `release.json` enumerates exactly the files allowed for upload. Private visibility is enforced by the publisher. This is not an independently audited public ranking or an official ELM rank.
 """)

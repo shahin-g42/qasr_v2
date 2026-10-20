@@ -6,7 +6,7 @@ const count = n => n.toLocaleString('en-US');
 const pct = n => Number.isFinite(n) ? (100 * n).toFixed(2) + '%' : '—';
 const displayModel = name => data.model_details?.[name]?.display_name || (['qasr', 'gqasr'].includes(name) ? name.toUpperCase() : name);
 const names = {sada:'SADA', commonvoice:'Common Voice', masc_clean:'MASC · Clean', masc_noisy:'MASC · Noisy', mgb2:'MGB-2', casablanca:'Casablanca'};
-const palette = ['#256555', '#a57b58', '#6b73a3', '#996082', '#527c91', '#7c7c38', '#ac604e', '#476f9c'];
+const palette = ['#74baff', '#e6c27a', '#b4a3ff', '#7ad9e1', '#f5a3c1', '#9fcf9b', '#eaaa80', '#93a9ed'];
 const colorOrder = ['qasr', 'gqasr', ...data.models.filter(name => !['qasr', 'gqasr'].includes(name))];
 const modelColor = name => palette[colorOrder.indexOf(name) % palette.length];
 const option = (select, text, value) => { const el = make('option', text); el.value = value; select.append(el); };
@@ -27,6 +27,26 @@ node('draft-note').textContent = data.annotation_source ? `${count(data.annotati
 node('review-note').textContent = `${count(data.verified_clips)} of ${count(data.selected_clips)} selected clips have listening attestations. ${data.verified_clips ? 'These are reviewer attestations, not an independent audit.' : 'Audio-reviewed reference scores are not yet available.'}`;
 node('provenance').textContent = JSON.stringify({release_id:data.release_id, dataset_release:data.dataset_release, annotation_source:data.annotation_source, manifest_digest:data.manifest_digest, policy_sha256:data.policy_sha256, scorer_sha256:data.scorer_sha256, builder_sha256:data.builder_sha256, reviewed_manifest_sha256:data.reviewed_manifest_sha256, prediction_sources:data.prediction_sources, model_details:data.model_details, submission_manifest_sha256:data.submission_manifest_sha256}, null, 2);
 node('example-sampling').textContent = data.example_sampling + ' Text preview only; listen to the source audio before judging accuracy.';
+
+for (const model of data.models) {
+  const perf = data.performance?.[model];
+  const tr = make('tr');
+  const label = make('td', undefined, 'performance-model');
+  const title = make('div', undefined, 'model-name'); title.append(dot(model), make('span', displayModel(model)));
+  label.append(title, make('div', perf?.status === 'available' ? `${count(perf.clips)} clips · ${perf.modes.join(' + ')} modes · ${count(perf.outputs)} outputs` : 'Timing files not supplied', 'perf-subtitle')); tr.append(label);
+  const available = perf?.status === 'available';
+  for (const [value, unit, missing] of [[perf?.mean_batch_seconds, ' s', 'Not recorded'], [perf?.amortized_compute_seconds_per_output, ' s', 'Unavailable'], [perf?.outputs_per_wall_second, '', 'Unavailable']]) {
+    const td = make('td', Number.isFinite(value) ? value.toFixed(3) + unit : missing, 'num'); tr.append(td);
+  }
+  const config = make('td', undefined, 'perf-config');
+  if (available) {
+    for (const c of perf.configurations) {
+      config.append(make('div', `${c.gpu_count} GPUs · ${c.workers_per_gpu} workers/GPU · batch ${c.batch_size}`), make('div', c.devices.join(', '), 'perf-subtitle'));
+    }
+    config.append(make('div', `${perf.precision.toUpperCase()} · ${perf.attempt_count} attempt(s) · ${perf.total_attempt_wall_seconds.toFixed(1)} s wall · ${perf.oom_batch_splits} OOM splits`, 'perf-subtitle'));
+  } else config.textContent = perf?.reason || 'Attach the source run to include timing.';
+  tr.append(config); node('performance-results').append(tr);
+}
 
 const guide = data.reference_guide;
 node('reference-eligible').textContent = count(data.annotation_source?.eligible_clips || 0);

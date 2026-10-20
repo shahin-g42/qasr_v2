@@ -13,8 +13,8 @@ from pathlib import Path
 from .common import sha256
 from .worker import Recognizer
 
-BACKENDS = ("hf-qwen", "cohere", "whisper")
-MODEL_TYPES = {"hf-qwen": "qwen3_asr", "cohere": "cohere_asr", "whisper": "whisper"}
+BACKENDS = ("hf-qwen", "cohere", "whisper", "jais")
+MODEL_TYPES = {"hf-qwen": "qwen3_asr", "cohere": "cohere_asr", "whisper": "whisper", "jais": "jais_asr"}
 
 
 def frontend_config(directory):
@@ -43,8 +43,19 @@ def frontend_config(directory):
     return frontend
 
 
+def validate_jais_code(root):
+    """Only execute the reviewed Python files from the pinned official checkpoint."""
+    root = Path(root)
+    expected = json.loads(Path(__file__).with_name("jais_code.json").read_text())
+    actual = {p.relative_to(root).as_posix(): sha256(p) for p in root.rglob("*.py") if ".cache" not in p.relative_to(root).parts}
+    if actual != expected:
+        raise ValueError("Jais custom code differs from the reviewed checkpoint")
+
+
 def checkpoint_identity(directory, backend):
     root = Path(directory)
+    if backend == "jais":
+        validate_jais_code(root)
     config = json.loads((root / "config.json").read_text())
     if config.get("model_type") != MODEL_TYPES[backend]:
         raise ValueError(f"Expected {MODEL_TYPES[backend]} checkpoint: {root}")
@@ -130,15 +141,18 @@ class PublicRecognizer(Recognizer):
             "hf-qwen": "Qwen3ASRForConditionalGeneration",
             "cohere": "CohereAsrForConditionalGeneration",
             "whisper": "WhisperForConditionalGeneration",
+            "jais": "AutoModelForCausalLM",
         }
+        if self.backend == "jais":
+            validate_jais_code(checkpoint)
         self.processor = transformers.AutoProcessor.from_pretrained(
-            checkpoint, local_files_only=True, trust_remote_code=False
+            checkpoint, local_files_only=True, trust_remote_code=self.backend == "jais"
         )
         dtype = torch.bfloat16 if precision == "bf16" else torch.float32
         self.model, loading = getattr(transformers, classes[self.backend]).from_pretrained(
             checkpoint,
             local_files_only=True,
-            trust_remote_code=False,
+            trust_remote_code=self.backend == "jais",
             dtype=dtype,
             attn_implementation="sdpa",
             output_loading_info=True,
@@ -153,7 +167,7 @@ class PublicRecognizer(Recognizer):
         self.model.eval().to(device)
         if self.processor.feature_extractor.sampling_rate != 16000:
             raise ValueError("Benchmark requires a native 16 kHz frontend")
-        if self.backend == "hf-qwen":
+        if self.backend in ("hf-qwen", "jais"):
             self.processor.tokenizer.padding_side = "left"
         if self.backend == "whisper":
             self.pipeline = transformers.pipeline(
@@ -220,6 +234,29 @@ class PublicRecognizer(Recognizer):
                     }
                     for r in outputs
                 ]
+            elif self.backend == "jais":
+                prompt = self.processor.tokenizer.apply_chat_template(
+                    [{"role": "user", "content": [{"type": "audio"}]}],
+                    tokenize=False, add_generation_prompt=True,
+                    diacritics=False, code_switch=False,
+                )
+                inputs = self.processor(text=[prompt] * len(waves), audio=waves,
+                                        sampling_rate=[16000] * len(waves), padding=True,
+                                        return_tensors="pt")
+                prompt_length = inputs["input_ids"].shape[1]
+                if prompt_length + max_new_tokens > self.model.config.text_config.max_position_embeddings:
+                    raise ValueError("Jais audio plus generation budget exceeds context; no audio truncated")
+                inputs = inputs.to(self.device, self.model.dtype)
+                outputs = self.model.generate(**inputs, language="ar", max_new_tokens=max_new_tokens,
+                                              do_sample=False, num_beams=1, repetition_penalty=1.0)
+                decoded = self.processor.post_process_transcription(outputs, input_lengths=prompt_length)
+                values = []
+                for ids, result in zip(outputs[:, prompt_length:].tolist(), decoded, strict=True):
+                    stats = generation_stats(ids, self.model.generation_config.eos_token_id, max_new_tokens)
+                    values.append({"pred_text": result.text, "predicted_language": result.language,
+                                   "refused": result.refused, "truncated": result.truncated,
+                                   "raw_output": self.processor.tokenizer.decode(ids[:stats["generated_tokens"]], skip_special_tokens=False),
+                                   **stats})
             elif self.backend == "hf-qwen":
                 inputs = self.processor.apply_transcription_request(
                     audio=waves,
@@ -292,7 +329,7 @@ class PublicRecognizer(Recognizer):
         if len(values) != len(rows) or any(not isinstance(v["pred_text"], str) for v in values):
             raise ValueError("Public model did not return one transcription per clip")
         return [
-            {**row, **value, "mode": mode, "forced_language": "Arabic", "predicted_language": None}
+            {**row, "predicted_language": None, **value, "mode": mode, "forced_language": "Arabic"}
             for row, value in zip(rows, values, strict=True)
         ]
 
@@ -309,7 +346,11 @@ class WhisperRecognizer(PublicRecognizer):
     backend = "whisper"
 
 
+class JaisRecognizer(PublicRecognizer):
+    backend = "jais"
+
+
 def recognizer_class(backend):
-    return {"hf-qwen": QwenRecognizer, "cohere": CohereRecognizer, "whisper": WhisperRecognizer}[
+    return {"hf-qwen": QwenRecognizer, "cohere": CohereRecognizer, "whisper": WhisperRecognizer, "jais": JaisRecognizer}[
         backend
     ]

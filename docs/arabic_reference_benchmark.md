@@ -821,6 +821,7 @@ bundle, prepared audio and completed QASR/GQASR predictions. It adds these basel
 | `cohere-arabic` | [CohereLabs/cohere-transcribe-arabic-07-2026](https://huggingface.co/CohereLabs/cohere-transcribe-arabic-07-2026) | Arabic hint, punctuation, greedy |
 | `cohere-multilingual` | [CohereLabs/cohere-transcribe-03-2026](https://huggingface.co/CohereLabs/cohere-transcribe-03-2026) | Arabic hint, punctuation, greedy |
 | `whisper-large-v3` | [openai/whisper-large-v3](https://huggingface.co/openai/whisper-large-v3) | Arabic transcription, greedy, overlapping 30-second chunks |
+| `jais-asr` | [IFM/Jais-ASR](https://huggingface.co/IFM/Jais-ASR/tree/1323995fa189c479369a3929be0e95039eba5cba) | Arabic family hint (MSA and dialects), greedy, official tag/refusal parser |
 
 Use an allocated eight-GPU node and the inference environment, with native
 `transformers==5.19.0`, CUDA-enabled PyTorch, NumPy, librosa, soundfile, PyYAML,
@@ -937,7 +938,7 @@ repetition repair. Cohere uses its native audio chunk boundaries and reassembles
 chunks, including empty outputs. Whisper uses the documented pipeline with 30-second
 chunks and five-second strides; this is a chunked baseline, not its alternative sequential
 long-form strategy. Its pipeline hides per-chunk token counts, so generation-limit
-diagnostics are explicitly unavailable. Token budgets are 768 for Qwen/Cohere and 440
+diagnostics are explicitly unavailable. Token budgets are 768 for Qwen/Cohere/Jais and 440
 for Whisper to fit its decoder context. These protocols are recorded per run.
 
 Enhanced scores still use the same 46,751 non-speculative `ideal_text_draft` values;
@@ -1031,3 +1032,83 @@ This stage reuses completed predictions, includes the public model submissions,
 rebuilds the scores and guide, and verifies the private Space upload. It does not
 run GPU inference again. For an offline preview of the same completed runs, use
 `score` instead of `publish`.
+
+
+### Blue-and-gold leaderboard, timing, and Jais (v4.9)
+
+The dashboard uses sapphire glass surfaces, metallic gold accents, responsive tables,
+and the existing paired original/enhanced score filters. Timing is separate from the
+accuracy filters and exports to `performance.csv`:
+
+- **Mean batch time:** synchronized elapsed inference service time per batch call,
+  including processor work inside inference and OOM retry/splitting. Initial audio reads,
+  queue waiting and model loading are excluded. New worker records include every call;
+  older records without this instrumentation show “Not recorded”.
+- **Compute / transcript:** summed worker inference seconds divided by completed
+  `(clip, mode)` outputs. This is amortized compute, not per-request latency.
+- **Transcripts / second:** completed outputs divided by all recorded attempt wall time,
+  including startup. Failed attempts add time, not duplicate completed outputs.
+
+Timing imports verify the run protocol, scored-prediction checksum, exact task membership,
+waveform hashes, Arabic output text, and timing totals. QASR/GQASR source runs include both
+Arabic and automatic modes (93,514 outputs each); public runs use Arabic only. Displayed
+replicas, batch sizes and hardware differ, so this is not a controlled speed ranking.
+`ARABIC_REF_QASR_RUN` and `ARABIC_REF_GQASR_RUN` locate those saved run folders and
+can be set to empty to omit them. Missing timing files stay unavailable.
+
+Jais is pinned to revision `1323995fa189c479369a3929be0e95039eba5cba`. Its six official
+Python modules are verified against `jais_code.json` before offline custom-code loading;
+other adapters continue using native Transformers. The Arabic family hint allows MSA
+and dialect tags, while preserving refusals. Default `diacritics=false` and
+`code_switch=false` match the model's ordinary prompt; reference texts never enter it.
+Raw output, language, refusal, truncation and token-cap diagnostics are saved.
+
+The checkpoint has 5,717,988,224 parameters (~11.4 GB BF16 weights). It defaults to
+**four workers per GPU**, configurable with `PUBLIC_JAIS_WORKERS_PER_GPU`, because eight
+replicas cannot fit an 80 GB H100. Other models retain eight workers/GPU; batch size
+remains 32, with OOM splitting. The official processor was checked on Transformers 5.19
+with 1- and 43-second waveforms (100 and 4,300 mel frames retained); the full model was
+initialized on the meta device. GPU inference must pass the cluster smoke stage.
+
+#### Publish the just-completed five-model run without new inference
+
+Wait until inference has finished before pulling code. Keep `PUBLIC_BENCH_ROOT` set to
+**the actual completed run root**, containing each model's `full/` directory. The `publish`
+stage validates and re-scores saved predictions; it does not load models or run inference.
+
+```bash
+cd /lustrefs/shared/shahin.konadath/workspace/train/stt/v2/qasr-reference-pilot
+git pull --ff-only origin codex/arabic-reference-pilot
+export PYTHON="$PWD/.venv-public-asr/bin/python"
+# Set this to the folder you used for the completed run:
+export PUBLIC_BENCH_ROOT=/absolute/path/to/completed/public-benchmarks
+export PUBLIC_MODELS="qwen3-asr-0.6b qwen3-asr-1.7b cohere-arabic cohere-multilingual whisper-large-v3"
+export HF_SPACE_REPO=shahink/asr_ideal_leaderboard
+export ARABIC_REF_BOARD_RELEASE_ID=v4.9-completed-001
+unset ARABIC_REF_SPACE_BUNDLE
+bash scripts/corpus/benchmark_public_asr.sh publish
+```
+
+#### Add only Jais, then refresh all models
+
+Keep that same run root. Only the **new `jais-asr/` subdirectory** is created; old model
+outputs are read during publication. If Jais already has an incompatible partial run,
+retain it under another directory before starting its fresh run.
+
+```bash
+export PUBLIC_MODELS=jais-asr
+export PUBLIC_JAIS_WORKERS_PER_GPU=4
+export PUBLIC_BATCH_SIZE=32
+bash scripts/corpus/benchmark_public_asr.sh download &&
+bash scripts/corpus/benchmark_public_asr.sh smoke &&
+bash scripts/corpus/benchmark_public_asr.sh run
+
+export PUBLIC_MODELS="qwen3-asr-0.6b qwen3-asr-1.7b cohere-arabic cohere-multilingual whisper-large-v3 jais-asr"
+export ARABIC_REF_BOARD_RELEASE_ID=v4.9-with-jais-001
+unset ARABIC_REF_SPACE_BUNDLE
+bash scripts/corpus/benchmark_public_asr.sh publish
+```
+
+Use a new release ID when rebuilding an already frozen leaderboard. Do not use `all`
+against completed model directories after inference code changes: that stage invokes
+inference and correctly enforces the old code/protocol identity.

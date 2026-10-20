@@ -3,7 +3,7 @@
 # Uses gemma_speech/.venv; does not activate the original QASR conda environment.
 set -euo pipefail
 usage() {
-  echo "Usage: $0 NODE_RANK [MASTER_ADDR] [--stage bridge|full|encoder] [--preflight] [--resume CHECKPOINT]" >&2
+  echo "Usage: $0 NODE_RANK [MASTER_ADDR] [--stage bridge|full|encoder] [--preflight] [--resume CHECKPOINT] [--allow-microbatch-change]" >&2
 }
 [[ $# -ge 1 && "$1" =~ ^[0-9]+$ ]] || { usage; exit 2; }
 export NODE_RANK=$((10#$1))
@@ -22,6 +22,7 @@ while [[ $# -gt 0 ]]; do
       [[ $# -ge 2 ]] || { usage; exit 2; }
       STAGE="$2"; shift 2 ;;
     --preflight) PREFLIGHT=1; shift ;;
+    --allow-microbatch-change) TRAIN_ARGS+=(--allow-microbatch-change); shift ;;
     --resume)
       [[ $# -ge 2 && "$2" != --* ]] || { usage; exit 2; }
       TRAIN_ARGS+=(--resume "$2"); shift 2 ;;

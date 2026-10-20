@@ -1,5 +1,111 @@
 # GQASR encoder continuation on 12 nodes
 
+## Recovery from update 7,500
+
+Use `scripts/resume_gqasr_encoder_12node.sh` for the interrupted encoder run.
+It selects `03_encoder12_b20_acc4_12node.yaml`, loads
+`outputs/encoder12_b80/checkpoint-00007500`, and writes to the new
+`outputs/encoder12_b20_acc4_resume7500` directory. The original checkpoints stay
+intact. Do not invoke this recipe as a fresh encoder stage without `--resume`.
+
+| Setting | Restart |
+|---|---|
+| Microbatch / accumulation | 20 / 4 |
+| Effective batch | 80 per rank, 7,680 across 96 GPUs; unchanged |
+| Workers / prefetch | 8 per GPU / 1 batch per worker |
+| DataLoader timeout | 180 seconds for delivery of a batch |
+| Optimizer and learning rates | Restored AdamW state; existing schedule continues |
+| Updates | Next 7,501; stop at 31,446; 23,946 remain |
+| Code-switching | Disabled; waveform augmentation and SpecAugment unchanged |
+| Output / W&B name | `encoder12_b20_acc4_resume7500` / `gqasr-encoder12-b20-acc4-resume7500` |
+
+Accumulation 6 would increase the global batch to 11,520 and the remaining
+sampled-example budget by 50%. This recovery uses 4 to retain the existing
+budget and schedule. Smaller microbatches reduce peak activations and the likely
+amount of padding; speed must be measured on the cluster. Four forward/backward
+calls can also add overhead. This is not a promise of a fourfold speedup.
+
+The prefetch queue capacity falls from 1,280 to 160 anchor examples per GPU
+(80 × 8 × 2 versus 20 × 8 × 1). Actual host/shared-memory usage also depends
+on audio duration and worker internals. There are 64 DataLoader workers per
+96-core node. The wrapper defaults OpenMP/BLAS thread counts to one to avoid
+nested CPU oversubscription.
+
+The hot loop now checks all accumulated losses once at each optimizer boundary,
+before the synchronized backward. Nonfinite losses still abort every rank without
+updating the optimizer. DDP's `no_sync()` avoids gradient reduction on the first
+three microbatches. Gradient clipping retains the ordinary PyTorch norm and scale;
+per-parameter diagnostic scans only run if the norm check fails. No FP64 clipping
+or nonfinite-value replacement is used. Scalar extraction and diagnostics are
+limited to logged updates on rank zero.
+
+The explicit `--allow-microbatch-change` flag allows only batch size and
+accumulation to differ, and requires identical effective batch, language quotas,
+world size, index metadata, seeds, augmentations, trainable layers and schedule.
+It restores optimizer moments, step and RNG state. Microbatch grouping changes
+token weighting, padding, floating-point reduction order and augmentation seeds:
+this is a controlled continuation, not a bit-identical replay of batch 80.
+Each resumed run records its source and changes in `resume.json`.
+
+Before launching, have the cluster team check or replace the allocation containing
+node `inception-H100-hpc-009` and HCA `mlx5_an0:1`: the reported fatal RDMA event
+and Lustre I/O error are not repaired by changing batch size. The worker bus-error
+message alone does not establish that `/dev/shm` was full. Keep 12 healthy nodes
+with unique ranks 0–11.
+
+Run once on a cluster machine, from the repository root:
+
+```bash
+git pull origin main
+unset GQASR_CONFIG GQASR_RESUME_CHECKPOINT
+bash scripts/resume_gqasr_encoder_12node.sh check
+```
+
+This CPU-only check loads the checkpoint and optimizer, verifies configuration,
+index/tokenizer compatibility, finite weights and optimizer state, and a fresh
+output directory. It does not rescan the corpus or write model weights. Require
+`resume_check_complete` with `passed: true`; this is not an RDMA/storage health test.
+
+On master 051:
+
+```bash
+unset GQASR_CONFIG GQASR_RESUME_CHECKPOINT
+bash scripts/resume_gqasr_encoder_12node.sh 0
+```
+
+On each remaining node, with its rank 1–11:
+
+```bash
+unset GQASR_CONFIG GQASR_RESUME_CHECKPOINT
+bash scripts/resume_gqasr_encoder_12node.sh YOUR_RANK
+```
+
+No download, export or index rebuild is needed. Normal `--stage encoder` still
+selects the original batch-80 recipe; the recovery wrapper selects batch 20.
+All nodes must use the same checkout/configuration. A later recovery can override
+`GQASR_RESUME_CHECKPOINT` and `GQASR_CONFIG` (with another fresh output directory).
+
+Console logs and NCCL flight-recorder dumps default to node-local
+`/tmp/gqasr-$USER-logs`; set `GQASR_LOG_DIR` to a durable node-local directory if
+available, and collect these files before the allocation is released.
+Weights, `metrics.jsonl` and W&B tracking metadata remain in the shared output
+directory. This keeps console diagnostics available during a shared-filesystem
+failure; shared storage is still required for training data and checkpoints.
+The wrapper enables a 2,000-event NCCL recorder and dumps on timeout, following
+the [PyTorch flight-recorder guidance](https://docs.pytorch.org/tutorials/prototype/flight_recorder_tutorial.html).
+It does not increase collective timeouts or disable InfiniBand.
+
+Console and W&B expose recent seconds/update and global anchors/second.
+The interval includes startup and any preceding validation/checkpoint work;
+compare several steady-state windows after workers warm up. New
+`performance/rank0_data_wait_seconds_per_update` and
+`performance/rank0_data_wait_seconds_per_microbatch` measure host wall time
+waiting for batch delivery, without additional GPU synchronization. They are
+rank-zero diagnostics, not measurements of every rank or GPU compute time.
+Global loss and separate LR curves remain available.
+
+## Original encoder-stage setup
+
 Run after the Arabic benchmark finishes. Pulling code during a benchmark changes
 its implementation fingerprint and causes its final provenance check to fail.
 
@@ -146,7 +252,7 @@ worker-count changes with the same training settings and a fresh output director
 Review early checkpoints before committing to the whole budget; improvement is
 not guaranteed by unfreezing.
 
-For recovery **within this new stage**, use its own `checkpoint-NNNNNNNN`, a copy
-of the same config with a fresh `output_dir`, and `--resume`. Changing batch size,
-trainable layers, seeds or schedule is a new experiment and must not restore an
-incompatible optimizer state.
+For an unchanged-recipe recovery, use its own `checkpoint-NNNNNNNN`, a copy
+of the same config with a fresh `output_dir`, and `--resume`. For microbatch
+regrouping with the same effective batch, use the guarded recovery above.
+Changing trainable layers, seeds, quotas or schedule remains disallowed on resume.

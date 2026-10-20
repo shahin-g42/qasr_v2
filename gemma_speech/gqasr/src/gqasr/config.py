@@ -40,6 +40,10 @@ def load_config(path):
         raise ValueError("training, evaluation and quotas must cover the same languages")
     if cfg["workers"] < 0 or min(cfg["language_batch_counts"].values()) < 1:
         raise ValueError("workers must be nonnegative and language quotas positive")
+    if type(cfg.get("prefetch_factor", 2)) is not int or cfg.get("prefetch_factor", 2) < 1:
+        raise ValueError("prefetch_factor must be a positive integer")
+    if type(cfg.get("dataloader_timeout", 0)) is not int or cfg.get("dataloader_timeout", 0) < 0:
+        raise ValueError("dataloader_timeout must be a nonnegative integer in seconds")
     if not 0 <= cfg["min_lr_ratio"] <= 1 or min(cfg["warmup_steps"], cfg["decay_steps"]) < 0:
         raise ValueError("invalid learning-rate schedule")
     for key in ("train_acoustic_frontend", "eval_at_start"):

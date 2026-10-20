@@ -9,8 +9,9 @@ source "$ENV_DIR/bin/activate"
 if [[ -n "${GQASR_CUDA_VISIBLE_DEVICES+x}" ]]; then
   export CUDA_VISIBLE_DEVICES="$GQASR_CUDA_VISIBLE_DEVICES"
 fi
-mkdir -p "$ROOT/logs" "$ROOT/gqasr/verification"
-exec > >(tee "$ROOT/logs/gqasr-${STAGE}-$(date -u +%Y%m%dT%H%M%SZ)-${NODE_RANK:-local}.log") 2>&1
+LOG_DIR="${GQASR_LOG_DIR:-$ROOT/logs}"
+mkdir -p "$LOG_DIR" "$ROOT/gqasr/verification"
+exec > >(tee "$LOG_DIR/gqasr-${STAGE}-$(date -u +%Y%m%dT%H%M%SZ)-${NODE_RANK:-local}.log") 2>&1
 export TOKENIZERS_PARALLELISM=false
 BRIDGE="$ROOT/gqasr/configs/01_bridge_12node.yaml"
 FULL="$ROOT/gqasr/configs/02_full_b40_12node.yaml"

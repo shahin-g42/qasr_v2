@@ -47,6 +47,17 @@ def format_record(record, config=None):
             f"{group}={lr:.3g}" for group, lr in record["learning_rates"].items()
         ))
     rows = record.get("rank0_last_microbatch_augmentation", [])
+    timing = record.get("performance", {})
+    if "seconds_per_update" in timing:
+        lines.append(
+            f"Throughput (recent window): {timing['seconds_per_update']:.2f} s/update"
+            f" | {timing['examples_per_second']:.1f} global anchors/s"
+        )
+    if "rank0_data_wait_seconds_per_update" in timing:
+        lines.append(
+            f"DataLoader wait (rank 0): {timing['rank0_data_wait_seconds_per_update']:.3f} s/update"
+            f" | {timing['rank0_data_wait_seconds_per_microbatch']:.3f} s/microbatch"
+        )
     if rows:
         n = len(rows)
         lines.append("Augmentation (rank 0): " + " | ".join(

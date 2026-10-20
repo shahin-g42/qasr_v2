@@ -13,7 +13,9 @@ TRACKING_KEYS = {"report_to", "wandb_project", "wandb_entity", "run_name"}
 
 def training_config(cfg):
     """Logging choices must not invalidate an otherwise exact training resume."""
-    return {k: v for k, v in cfg.items() if k not in TRACKING_KEYS | {"output_dir", "workers"}}
+    return {k: v for k, v in cfg.items() if k not in TRACKING_KEYS | {
+        "output_dir", "workers", "prefetch_factor", "dataloader_timeout",
+    }}
 
 
 def scalars(record):
@@ -24,6 +26,8 @@ def scalars(record):
             result["train/" + key] = record[key]
     for group, value in record.get("learning_rates", {}).items():
         result["lr/" + group] = value
+    for key, value in record.get("performance", {}).items():
+        result["performance/" + key] = value
     for group, scores in record.get("validation", {}).items():
         for metric, value in scores.items():
             if isinstance(value, (int, float)) and math.isfinite(value):
@@ -79,6 +83,7 @@ class Tracker:
             "train_embeddings", "precision", "language_batch_counts",
             "train_acoustic_frontend", "training_data_seed", "eval_at_start",
             "workers", "online_code_switching", "code_switch_probability",
+            "prefetch_factor", "dataloader_timeout",
         ) if k in self.cfg}
         config["resumed_training"] = bool(self.resume)
         self.run = wandb.init(
@@ -112,11 +117,11 @@ class Tracker:
                 ds = record["step"] - self.previous["step"]
                 dt = record["elapsed_seconds"] - self.previous["elapsed_seconds"]
                 if ds > 0 and dt > 0:
-                    values["performance/seconds_per_update"] = dt / ds
+                    values.setdefault("performance/seconds_per_update", dt / ds)
                     batch = self.cfg.get("batch_size", 0) * self.cfg.get(
                         "accumulation_steps", 1
                     ) * self.cfg.get("expected_world_size", 1)
-                    values["performance/examples_per_second"] = batch * ds / dt
+                    values.setdefault("performance/examples_per_second", batch * ds / dt)
             self.run.log(values)
             self.previous = record
             self.last_step = record["step"]

@@ -127,6 +127,8 @@ def main():
     p = sub.add_parser("train")
     p.add_argument("--config", required=True)
     p.add_argument("--resume")
+    p.add_argument("--allow-microbatch-change", action="store_true",
+                   help="Restore optimizer/schedule with new microbatches but identical quotas/effective batch")
     p = sub.add_parser("verify-base")
     p.add_argument("--model", required=True)
     p.add_argument("--report")

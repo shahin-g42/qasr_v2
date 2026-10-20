@@ -23,7 +23,12 @@ class Runtime:
             raise ValueError("GPU lacks BF16 support; use precision=fp32")
         self.precision = precision
         if self.world > 1:
-            dist.init_process_group("nccl" if self.device.type == "cuda" else "gloo")
+            if self.device.type == "cuda":
+                # Bind NCCL to LOCAL_RANK explicitly, including its first barrier.
+                # Global-rank-based device inference is unsafe for differing GPU visibility.
+                dist.init_process_group("nccl", device_id=self.device)
+            else:
+                dist.init_process_group("gloo")
 
     @property
     def main(self):

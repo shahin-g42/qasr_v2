@@ -1,5 +1,50 @@
 # GQASR encoder continuation on 12 nodes
 
+## Inspect the October 20 resume timeout before relaunching
+
+The supplied trace from node `inception-H100-hpc-056` (node rank 9) identifies
+sequence 16 as `Runtime.all_finite` in the training loss check: a one-element
+int32 MIN all-reduce, before the synchronized backward. This is different from
+the average-loss logging operation: two float32 values reduced with SUM after
+an optimizer update. With resume step 7,500 and logging every five updates, the
+first average-loss publication is at 7,505. Its reduction runs on all ranks;
+only publishing to W&B runs on rank zero.
+
+The traceback establishes where those ranks waited, not the root cause.
+Compare all ranks' recorder entries before deciding between collective-order
+divergence, a rank stalled before entering the collective, or GPU/transport
+failure. A missing dump is missing evidence. The reporting rank need not be
+the rank causing the stall. These messages do not establish Python-environment
+corruption or an OOM.
+
+Collect existing evidence on **each of the 12 nodes**, using its original node
+rank. For example, use `NODE_RANK=9` on node 056 and `NODE_RANK=0` on master 051:
+
+```bash
+git pull origin main
+NODE_RANK=9  # replace with this node's original rank, 0 through 11
+gemma_speech/.venv/bin/python -m gqasr.nccl_report \
+  --node-rank "$NODE_RANK" --sequence 16 \
+  --output "$PWD/gemma_speech/gqasr/verification/nccl-startup-20261020/node-$NODE_RANK.json"
+```
+
+This reads existing recorder files and a bounded tail of the latest encoder log.
+It uses no GPU, loads no model, launches no collective and leaves the source files
+intact. Keep the original dumps until diagnosis is complete. If logging was
+redirected, pass `--log-dir /actual/node/local/logs`; a custom recorder prefix can
+be supplied with `--trace-prefix /actual/path/prefix_`. Check report timestamps
+against the failed attempt. Copy the report directory back for comparison.
+
+NCCL initialization now receives `device_id=cuda:LOCAL_RANK` explicitly, removing
+the device-inference warning. The wrapper uses PyTorch 2.11's `TORCH_FR_BUFFER_SIZE`
+and `TORCH_FR_DUMP_TEMP_FILE`, while accepting old overrides as fallback. These
+changes address the warnings; they are not proof of a fix for sequence 16.
+See [PyTorch process-group initialization](https://docs.pytorch.org/docs/2.11/distributed.html#torch.distributed.init_process_group)
+and [flight-recorder guidance](https://docs.pytorch.org/tutorials/unstable/flight_recorder_tutorial.html).
+The model, augmentations, loss checks, gradient clipping and loss averaging are
+unchanged. Retain the failed output directory; any later retry needs a fresh
+output directory in its config.
+
 ## Recovery from update 7,500
 
 Use `scripts/resume_gqasr_encoder_12node.sh` for the interrupted encoder run.

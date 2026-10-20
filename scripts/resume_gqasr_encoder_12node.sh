@@ -13,9 +13,9 @@ export MKL_NUM_THREADS="${MKL_NUM_THREADS:-1}"
 export OPENBLAS_NUM_THREADS="${OPENBLAS_NUM_THREADS:-1}"
 export NUMEXPR_NUM_THREADS="${NUMEXPR_NUM_THREADS:-1}"
 # Keep diagnostic dumps on node-local storage if shared storage stops responding.
-export TORCH_NCCL_TRACE_BUFFER_SIZE="${TORCH_NCCL_TRACE_BUFFER_SIZE:-2000}"
+export TORCH_FR_BUFFER_SIZE="${TORCH_FR_BUFFER_SIZE:-${TORCH_NCCL_TRACE_BUFFER_SIZE:-2000}}"
 export TORCH_NCCL_DUMP_ON_TIMEOUT="${TORCH_NCCL_DUMP_ON_TIMEOUT:-1}"
-export TORCH_NCCL_DEBUG_INFO_TEMP_FILE="${TORCH_NCCL_DEBUG_INFO_TEMP_FILE:-$GQASR_LOG_DIR/nccl_trace_rank_}"
+export TORCH_FR_DUMP_TEMP_FILE="${TORCH_FR_DUMP_TEMP_FILE:-${TORCH_NCCL_DEBUG_INFO_TEMP_FILE:-$GQASR_LOG_DIR/nccl_trace_rank_}}"
 if [[ "${1:-}" == check ]]; then
   [[ $# == 1 ]] || { echo 'Usage: bash scripts/resume_gqasr_encoder_12node.sh check' >&2; exit 2; }
   ENV_DIR="${GEMMA_SPEECH_ENV:-$PROJECT_DIR/gemma_speech/.venv}"

@@ -20,7 +20,7 @@ def test_recipe_and_coverage():
     old = TrainConfig.from_yaml('configs/v8.1/03_hq_12node.yaml')
     cfg.validate()
     assert cfg.code_switch_index is None and cfg.code_switch_probability == 0
-    assert cfg.max_steps == 31446
+    assert cfg.max_steps == 32679
     assert cfg.expected_world_size * cfg.per_device_train_batch_size * cfg.gradient_accumulation_steps == 3200
     assert cfg.dataloader_num_workers == 10
     assert cfg.augmentation == old.augmentation

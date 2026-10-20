@@ -1,5 +1,5 @@
 # Stage 3, 8 x 8 GPUs, batch 50 per GPU, accumulation 1: global batch 3200.
-# Fixed 31446-step budget overrides num_train_epochs (~1.60 weighted epochs).
+# Fixed 32679-step budget overrides num_train_epochs (~1.67 weighted epochs).
 # Integer quotas approximate 50/30/10/5/5 as 50/30/10/6/4 percent.
 # No code-switch index is loaded or required. Other augmentations are unchanged.
 model_name_or_path: /lustrefs/shared/shahin.konadath/workspace/train/stt/v2/qasr_v2/output/v81/full_12node
@@ -55,7 +55,7 @@ validate_audio_paths: false
 eval_log_samples: 5
 eval_generation_max_new_tokens: 768
 num_train_epochs: 1.0
-max_steps: 31446
+max_steps: 32679
 per_device_train_batch_size: 50
 per_device_eval_batch_size: 4
 gradient_accumulation_steps: 1

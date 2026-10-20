@@ -13,14 +13,14 @@ Use `configs/v8.1/03_hq_8node_b50_no_cs.yaml` and
 12-node config unchanged. Master is `inception-H100-hpc-053:29584`.
 
 - 8 nodes × 8 GPUs, batch 50 per GPU, accumulation 1: global batch 3,200.
-- Exact budget: 31,446 optimizer steps (100,627,200 presentations).
+- Exact budget: 32,679 optimizer steps (104,572,800 presentations).
 - DataLoader workers: 10 per GPU process, 80 per node, 640 across the job.
 - Code-switch probability 0 and index null: no cs_v1 or refresh dependency.
 - Other augmentations and the Stage 3 4e-6 peak LR / cosine schedule remain.
 - Quotas ar/en/hi/ml/zh = 25/15/5/3/2. Batch 50 cannot give both smaller
   languages exactly 5%; these integer counts give 50/30/10/6/4 percent.
 - The fixed step budget overrides num_train_epochs and spans approximately
-  1.60 weighted epochs (19,608 steps per epoch from the count snapshot).
+  1.67 weighted epochs (19,608 steps per epoch from the count snapshot).
 - Same completed Stage 2 initialization; separate output
   `output/v81/hq_8node_b50_no_cs` and startup logs
   `output/v81/logs_p3_8node_b50_no_cs`. Do not resume a code-switched run.

@@ -389,7 +389,7 @@ def main(argv=None):
                     gpus=gpus,
                     workers_per_gpu=workers_per_gpu(name),
                     batch_size=int(os.environ["PUBLIC_BATCH_SIZE"]),
-                    limit_per_dataset=32 if phase == "smoke" else 0,
+                    limit_per_dataset=int(os.environ.get("PUBLIC_SMOKE_PER_DATASET", "32")) if phase == "smoke" else 0,
                     modes=["arabic"],
                 )
     if args.stage in {"score", "publish", "all"}:

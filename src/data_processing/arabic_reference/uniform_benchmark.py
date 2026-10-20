@@ -13,12 +13,12 @@ from .core import digest, write_json
 from .public_benchmark import REGISTRY, selected_models
 
 
-def validate_uniform_runs(root, names, *, gpus, workers, batch, diacritics):
+def validate_uniform_runs(root, names, *, gpus, workers, batch, diacritics, phase="full"):
     """Reject partial runs and configuration drift before scoring or publishing."""
     common = None
     bindings = {}
     for name in names:
-        folder = Path(root) / name / "full"
+        folder = Path(root) / name / phase
         run = json.loads((folder / "run.json").read_text())
         scores = json.loads((folder / "scores.json").read_text())
         progress = json.loads((folder / "progress.json").read_text())
@@ -80,6 +80,7 @@ def main(argv=None):
         "gpus": gpus,
         "workers_per_gpu": workers,
         "batch_size": batch,
+        "smoke_per_dataset": int(os.environ["PUBLIC_SMOKE_PER_DATASET"]),
         "jais_diacritics": value == "1",
         "precision": "bf16",
         "mode": "arabic",
@@ -113,6 +114,10 @@ def main(argv=None):
         stage("public_benchmark", "check")
     if args.stage in ("smoke", "all"):
         stage("public_benchmark", "smoke")
+        validate_uniform_runs(
+            os.environ["PUBLIC_BENCH_ROOT"], names, gpus=gpus,
+            workers=workers, batch=batch, diacritics=value == "1", phase="smoke",
+        )
     if args.stage in ("run", "all"):
         stage("public_benchmark", "run")
     if args.stage in ("run", "latency", "build", "publish", "all"):

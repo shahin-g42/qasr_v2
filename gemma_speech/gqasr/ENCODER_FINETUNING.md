@@ -1,5 +1,71 @@
 # GQASR encoder continuation
 
+## Fresh optimizer round from checkpoint 7,500
+
+Use `scripts/start_gqasr_encoder_4node.sh` for the requested weights-only restart.
+This is a full **31,446 new updates**, starting at zero. It preserves the trained
+model weights, tokenizer and frontend, but loads no `training_state.pt` and starts
+new AdamW moments, RNG streams, LR warmup and W&B run.
+
+The export is a standalone model artifact, not a declaration that the interrupted
+training round finished or that speech quality was validated. It copies weights
+without dtype conversion, verifies the copy's SHA-256 and finite weights on CPU,
+retains attribution/licenses, and records the source checkpoint in
+`checkpoint_export.json`. Progress is printed while copying and validating.
+Only one tensor is materialized at a time; no GPU or full model is constructed.
+Intentional scalar infinite clipping bounds are preserved and recorded separately;
+nonfinite learned weights or invalid clipping bounds fail the export.
+The source checkpoint is never overwritten. An existing export is refused.
+
+| Setting | Fresh round |
+|---|---|
+| Config | `04_encoder12_b120_fresh_4node.yaml` |
+| Source checkpoint | `outputs/encoder12_b80/checkpoint-00007500` |
+| Exported model | `models/gqasr-encoder12-step7500` |
+| New output | `outputs/encoder12_b120_4node_fresh7500` |
+| Nodes / GPUs | 4 / 32; master 020, default port 29614 |
+| Batch / accumulation / global batch | 120 / 1 / 3,840 |
+| DataLoader workers / prefetch | 8 per GPU / 2 |
+| Trainable model | 12 encoder blocks + projection, decoder, bridge and embeddings; frontend frozen |
+| Base LR: encoder / bridge / decoder / embeddings | 1e-6 / 5e-6 / 2e-6 / 1e-6 |
+| Schedule | 1,000-update warmup, then cosine decay over 30,446 updates to 10% |
+| Validation / checkpoints | Initial validation, then every 500 updates and at completion |
+| Sampling | New training seed 1000043; evaluation seed stays 42 |
+| Code-switching | Disabled; waveform augmentation and SpecAugment retained |
+| W&B | Project `gqasr`, new run `gqasr-encoder12-b120-4node-fresh7500` |
+
+Run the export **once** in the shared cluster checkout:
+
+```bash
+git pull origin main
+export GEMMA_SPEECH_ENV="$PWD/gemma_speech/.venv2"
+bash scripts/start_gqasr_encoder_4node.sh export
+```
+
+Then on each of the four nodes, use the same checkout and environment:
+
+```bash
+export GEMMA_SPEECH_ENV="$PWD/gemma_speech/.venv2"
+export MASTER_ADDR=inception-H100-hpc-020
+unset MASTER_PORT GQASR_FRESH_CONFIG
+# 020 runs rank 0; the other three nodes run unique ranks 1, 2, 3:
+bash scripts/start_gqasr_encoder_4node.sh YOUR_RANK
+```
+
+The fresh launcher deliberately ignores inherited `GQASR_CONFIG` and
+`GQASR_RESUME_CHECKPOINT`; it never forwards `--resume`. `GQASR_FRESH_CONFIG`
+selects a custom fresh config, and `GQASR_EXPORT_CHECKPOINT` selects another export
+source. The export always goes to that config's `base_model` directory.
+The existing SQLite index is reused; no scan or upstream download is needed.
+The previous resume launchers remain available with their original semantics.
+
+This changes optimizer initialization, not DataLoader startup or systemd IPC
+policy. On October 20, node 020 was verified to have `RemoveIPC=true`, and missing
+DataLoader semaphores/NCCL shared-memory files followed a diagnostic SSH session
+ending. The cluster administrator should address automatic IPC cleanup before
+another run; a fresh optimizer does not protect running jobs against it.
+[NVIDIA documents this failure and the `RemoveIPC=no` remedy](https://docs.nvidia.com/deeplearning/nccl/archives/nccl_2273/user-guide/docs/troubleshooting.html#systemd).
+Batch-120 GPU memory and throughput still need validation on the cluster.
 
 ## Default recovery: four nodes, batch 120
 

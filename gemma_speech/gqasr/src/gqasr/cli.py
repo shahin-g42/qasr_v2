@@ -188,6 +188,18 @@ def main():
 
         result = smoke(**args)
     elif command == "train":
+        import os
+        import socket
+
+        if os.environ.get("GQASR_RANK_STATUS", "1") != "0":
+            print(json.dumps({
+                "event": "rank_worker_started",
+                "rank": int(os.environ.get("RANK", "0")),
+                "local_rank": int(os.environ.get("LOCAL_RANK", "0")),
+                "world_size": int(os.environ.get("WORLD_SIZE", "1")),
+                "host": socket.gethostname(),
+                "phase": "importing_trainer",
+            }), flush=True)
         from .train import train
 
         train(**args)

@@ -17,4 +17,9 @@ if [[ "${DRY_RUN:-0}" == 1 ]]; then
   printf '\n'
   exit 0
 fi
+# RankStatus runs inside GPU workers, which do not exist until this rendezvous
+# finishes. Use PyTorch's own agent logs to expose the earlier waiting stage.
+export LOGLEVEL="${LOGLEVEL:-INFO}"
+echo "[GQASR startup] node_rank=$NODE_RANK phase=torchrun_rendezvous nodes=${NNODES:-12} gpus_per_node=${NPROC_PER_NODE:-8} master=$MASTER_ADDR:${MASTER_PORT:-29500} timeout_seconds=${GQASR_RDZV_TIMEOUT:-7200}"
+echo "[GQASR startup] GPU rank logs begin after all ${NNODES:-12} node launchers join rendezvous. LOGLEVEL=$LOGLEVEL rank_status=${GQASR_RANK_STATUS:-1}"
 exec "${CMD[@]}"

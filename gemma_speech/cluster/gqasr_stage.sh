@@ -97,13 +97,27 @@ PYCODE
     if [[ "$STAGE" == encoder ]]; then CONFIG="$ENCODER"; fi
     CONFIG="${GQASR_CONFIG:-$CONFIG}"
     export HF_HUB_OFFLINE=1
-    python - "$CONFIG" <<'PY'
+    echo "[GQASR startup] node_rank=${NODE_RANK:-local} phase=preflight_start config=$CONFIG"
+    python -u - "$CONFIG" <<'PY'
+import json
+import os
 import sys
+import time
+started = time.monotonic()
 from gqasr.cli import preflight
 from gqasr.config import load_config
-result = preflight(load_config(sys.argv[1]))
+cfg = load_config(sys.argv[1])
+result = preflight(cfg)
 if not result['ready_to_train']:
     raise SystemExit(f"Preflight incomplete: {result}")
+print(json.dumps({
+    "event": "launcher_preflight_complete",
+    "node_rank": os.environ.get("NODE_RANK", "local"),
+    "ready_to_train": True,
+    "expected_world_size": cfg["expected_world_size"],
+    "global_batch": result["global_batch"],
+    "elapsed_seconds": round(time.monotonic() - started, 1),
+}), flush=True)
 PY
     "$ROOT/gqasr/scripts/torchrun_node.sh" "$CONFIG" "$@"
     ;;

@@ -192,6 +192,15 @@ drift during optimizer-state restoration.
 
 ## Observational rank startup status
 
+Before GPU workers exist, each node prints `preflight_start` and
+`launcher_preflight_complete`, then `torchrun_rendezvous` with the node rank,
+master address and expected node count. `LOGLEVEL` defaults to `INFO` for
+PyTorch's own rendezvous/start-worker messages (an explicit `LOGLEVEL` overrides
+it). Static rendezvous launches GPU workers only after all node agents join;
+there are no GPU rank counts during that earlier wait.
+
+Each launched Python worker prints `rank_worker_started` before importing the
+trainer, so a slow library import can be distinguished from rendezvous.
 Each rank prints `rank_startup` with its rank, hostname and phase. Phases cover
 joining, index/processor loading, model loading, optimizer restore, the initial
 barrier, DDP initialization, augmentation setup, worker startup, waiting for the

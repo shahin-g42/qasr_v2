@@ -26,6 +26,7 @@ from .processing import GQASRProcessor
 from .tracking import Tracker
 from .resume import validate_resume
 from .performance import BatchTimer
+from .rank_status import RankStatus
 
 
 def schedule(step, cfg):
@@ -118,24 +119,35 @@ def train(config, resume=None, allow_microbatch_change=False, allow_batch_change
     if (allow_microbatch_change or allow_batch_change) and not resume:
         raise ValueError("batch-change flags require --resume")
     cfg = load_config(config)
-    rt = Runtime(cfg["precision"])
+    status = RankStatus()
+    status.mark("joining")
+    try:
+        rt = Runtime(cfg["precision"])
+    except BaseException:
+        status.close()
+        raise
+    status.mark("joined")
+    status.attach()
     tracker = Tracker(cfg, main=rt.main, resume=resume)
     exit_code = 1
     try:
-        _train(cfg, rt, resume, tracker, allow_microbatch_change, allow_batch_change)
+        _train(cfg, rt, resume, tracker, allow_microbatch_change, allow_batch_change, status)
         exit_code = 0
     finally:
+        status.close()
         tracker.finish(exit_code)
         rt.close()
 
 
-def _train(cfg, rt, resume, tracker=None, allow_microbatch_change=False, allow_batch_change=False):
+def _train(cfg, rt, resume, tracker=None, allow_microbatch_change=False, allow_batch_change=False, status=None):
+    mark = status.mark if status is not None else lambda phase: None
     if rt.world != cfg["expected_world_size"]:
         raise ValueError(f"config expects {cfg['expected_world_size']} ranks; launched {rt.world}")
     torch.manual_seed(cfg["seed"] + rt.rank)
     torch.set_num_threads(max(1, int(os.environ.get("OMP_NUM_THREADS", "2"))))
     if rt.device.type == "cuda":
         torch.backends.cuda.matmul.allow_tf32 = cfg["tf32"]
+    mark("loading_index_and_processor")
     dataset = ManifestIndex(cfg["index_path"], "train")
     validation = ManifestIndex(cfg["index_path"], "eval")
     if dataset.metadata["data_contract"] != data_contract(cfg):
@@ -148,6 +160,7 @@ def _train(cfg, rt, resume, tracker=None, allow_microbatch_change=False, allow_b
     ).hexdigest()
     if dataset.metadata["tokenizer_sha256"] != tokenizer_hash:
         raise ValueError("tokenizer differs from the preflight index")
+    mark("loading_model")
     model = GQASRForSpeechRecognition.from_pretrained(resume or cfg["base_model"])
     model.configure_training(
         cfg["acoustic_layers"],
@@ -162,6 +175,7 @@ def _train(cfg, rt, resume, tracker=None, allow_microbatch_change=False, allow_b
     step = 0
     resume_record = None
     if resume:
+        mark("restoring_optimizer")
         saved = torch.load(
             Path(resume) / "training_state.pt", map_location="cpu", weights_only=True
         )
@@ -204,6 +218,7 @@ def _train(cfg, rt, resume, tracker=None, allow_microbatch_change=False, allow_b
             ),
             flush=True,
         )
+    mark("initial_barrier")
     rt.barrier()
     if cfg.get("eval_at_start", False) and not resume:
         if rt.main:
@@ -220,6 +235,7 @@ def _train(cfg, rt, resume, tracker=None, allow_microbatch_change=False, allow_b
             print_record(record, cfg)
             if tracker is not None:
                 tracker.log(record)
+    mark("ddp_initialization")
     wrapped = (
         DistributedDataParallel(
             model,
@@ -240,6 +256,7 @@ def _train(cfg, rt, resume, tracker=None, allow_microbatch_change=False, allow_b
         step,
         augmentation_seeds=True,
     )
+    mark("augmentation_setup")
     collator = Collator(processor, cfg, training=True)
     eval_collator = Collator(processor, cfg)
     loader = DataLoader(
@@ -259,9 +276,13 @@ def _train(cfg, rt, resume, tracker=None, allow_microbatch_change=False, allow_b
     started = time.monotonic()
     loss_window = LossWindow(rt, start_step=step)
     last_log_time = started
+    mark("worker_startup")
     batch_timer = BatchTimer(iter(loader))
+    mark("waiting_first_batch")
     pending_losses = []
     for microbatch, (batch, rows) in enumerate(batch_timer):
+        if microbatch == 0:
+            mark("first_forward")
         sync = (microbatch + 1) % cfg["accumulation_steps"] == 0
         context = wrapped.no_sync() if rt.world > 1 and not sync else nullcontext()
         with context:
@@ -272,18 +293,24 @@ def _train(cfg, rt, resume, tracker=None, allow_microbatch_change=False, allow_b
             # backward/optimizer step. Earlier no_sync backwards may run, but a
             # bad update is never applied.
             pending_losses.append(result["loss"].detach())
+            if sync:
+                mark("loss_finiteness_collective")
             if sync and not rt.all_finite(torch.stack(pending_losses)):
                 raise FloatingPointError("nonfinite GQASR loss")
+            mark("backward")
             loss.backward()
             loss_window.add(result["loss"])
         if not sync:
             continue
         pending_losses.clear()
+        mark("gradient_clipping")
         gradient_norm = clip_gradients(model, cfg["grad_clip"], rt, step)
         factor = schedule(step, cfg)
         for group in optimizer.param_groups:
             group["lr"] = group["base_lr"] * factor
+        mark("optimizer_step")
         optimizer.step()
+        mark("first_update_complete")
         optimizer.zero_grad(set_to_none=True)
         step += 1
         validate = step % cfg["eval_steps"] == 0 or step == cfg["max_steps"]

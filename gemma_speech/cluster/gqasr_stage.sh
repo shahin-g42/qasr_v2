@@ -30,8 +30,8 @@ import sys
 import torch
 import transformers
 expected = int(os.environ.get("NPROC_PER_NODE", "8"))
-assert torch.__version__.split("+")[0] == "2.11.0", torch.__version__
-assert transformers.__version__ == "5.19.0", transformers.__version__
+from gqasr.env_check import check_training_profile
+check_training_profile()
 visible = torch.cuda.device_count()
 print({"python": sys.executable, "CUDA_VISIBLE_DEVICES": os.environ.get("CUDA_VISIBLE_DEVICES"),
        "NVIDIA_VISIBLE_DEVICES": os.environ.get("NVIDIA_VISIBLE_DEVICES"),

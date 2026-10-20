@@ -135,3 +135,78 @@ code-switch augmentation enabled. It is not the recovery configuration.
 The older `--allow-microbatch-change` option continues to require identical
 effective batch and identical quotas. Neither option permits arbitrary recipe
 drift during optimizer-state restoration.
+
+## Observational rank startup status
+
+Each rank prints `rank_startup` with its rank, hostname and phase. Phases cover
+joining, index/processor loading, model loading, optimizer restore, the initial
+barrier, DDP initialization, augmentation setup, worker startup, waiting for the
+first batch, forward, loss-finiteness collective, backward, clipping and the
+first completed optimizer update. A phase names the operation being entered;
+it does not prove completion of asynchronous GPU work.
+
+After ordinary process-group initialization, a background observer publishes
+small records through the existing CPU rendezvous store. Rank zero prints
+`rank_startup_summary` every 15 seconds: reported/joined counts, ranks not yet
+reported, first-batch/first-update counts, phase counts and pending rank/host
+pairs. Before initialization completes, only individual joining messages are
+available. Records are last-observed stages, not liveness heartbeats. Missing
+reports do not prove failed ranks. Summaries stop once all first updates are
+reported; per-rank phase logs stop after that rank's first update.
+
+This adds no collective, training gate, CUDA synchronization, warmup batch or
+stack dump. Store operations run in a daemon thread; observation failures are
+reported without aborting training. Set `GQASR_RANK_STATUS=0` to disable these
+messages. No training jobs are started by installing this update.
+
+## Separate training-only `.venv2`
+
+Run once in the shared repository (no sudo; not once per node):
+
+```bash
+bash gemma_speech/cluster/setup_training_env2.sh
+```
+
+This creates `gemma_speech/.venv2` from standard CPython 3.11–3.14. Set
+`PYTHON=/path/to/python3.13` to select another installed interpreter. It refuses
+to overwrite an existing environment; `GQASR_TRAIN_ENV` selects a fresh path.
+The original `.venv` and its pinned unified ASR/TTS dependencies remain untouched.
+
+The installer resolves newest stable `torch>=2.13,<3` from the official **cu129**
+index, then constrains that exact build while installing `transformers>=5.20.2,<6`
+and the remaining compatible training dependencies. It installs only the
+`gqasr-training` project, not the combined `gemma-speech` distribution. This avoids
+conflicting Torch/Transformers pins and omits TTS, datasets/PyArrow benchmark
+support, torchvision, torchaudio, DeepSpeed and Accelerate. It retains W&B and
+the audio/frontend dependencies used by training. Do not subsequently install
+`gemma_speech[dev]` into this environment: that is the older combined profile.
+
+CUDA 12.9 binaries use CUDA minor-version compatibility on driver 570.
+Newer PTX or driver-dependent features may require a driver update; cluster
+validation is still needed. The installer does not modify the host driver or
+install a system CUDA toolkit. NCCL is supplied by the selected
+Torch build. No Torch nightlies or CUDA 13 builds are selected. See the
+[official PyTorch build matrix](https://pytorch.org/get-started/previous-versions/).
+The exact compatible dependency set can change over time; successful setup saves
+`requirements.lock.txt`, `pip-inspect.json` and `gqasr-training-profile.json`
+inside `.venv2`. All nodes should use this single shared installation. Do not
+upgrade it while processes are running.
+
+Setup runs `pip check` plus a small CPU audio frontend, forward/backward,
+AdamW and exact model save/reload test. No production weights are downloaded or
+loaded, and no GPU/NCCL job is started. Failure stops setup before its success
+message. The version stamp allows the regular doctor to recognize this new
+runtime; subsequent Torch/Transformers changes invalidate the stamp. This smoke
+is not full saved-checkpoint or 96-GPU compatibility validation.
+
+To select `.venv2` on **every node**, before using the existing recovery launcher:
+
+```bash
+export GEMMA_SPEECH_ENV="$PWD/gemma_speech/.venv2"
+export MASTER_ADDR=inception-H100-hpc-020
+```
+
+The existing doctor then checks GPU visibility/BF16 using the selected runtime.
+Switch back by unsetting `GEMMA_SPEECH_ENV`. No launcher automatically switches
+environments merely because `.venv2` exists. Use a fresh output directory for
+another training attempt; do not overwrite an existing failed-run directory.

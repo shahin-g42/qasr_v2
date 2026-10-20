@@ -403,6 +403,19 @@ def main(argv=None):
                     limit_per_dataset=int(os.environ.get("PUBLIC_SMOKE_PER_DATASET", "32")) if phase == "smoke" else 0,
                     modes=["arabic"],
                 )
+                if os.environ.get("UNIFORM_BENCH_ROOT"):
+                    from .uniform_benchmark import validate_uniform_runs
+
+                    # Stop before spending time on another model if this run
+                    # needed OOM splitting or deviated from the common setup.
+                    validate_uniform_runs(
+                        root, [name], gpus=[gpu.strip() for gpu in gpus.split(",")],
+                        workers=workers_per_gpu(name),
+                        batch=int(os.environ["PUBLIC_BATCH_SIZE"]),
+                        diacritics=os.environ["PUBLIC_JAIS_DIACRITICS"] == "1",
+                        phase=phase,
+                    )
+                    print(json.dumps({"event": "uniform_model_validated", "name": name, "phase": phase}), flush=True)
     if args.stage in {"score", "publish", "all"}:
         submissions = export_submissions(root, names, plan, rows)
         os.environ["ARABIC_REF_SUBMISSIONS"] = str(submissions)

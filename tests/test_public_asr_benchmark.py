@@ -404,14 +404,17 @@ def test_invalid_model_selection_is_explicit(value):
 
 @pytest.mark.parametrize("fail_inference", [False, True])
 @pytest.mark.parametrize("uniform", [False, True])
+@pytest.mark.parametrize("fail_validation", [False, True])
 def test_all_runs_smoke_then_full_and_publishes_only_after_success(
-    public_plan, tmp_path, monkeypatch, fail_inference, uniform
+    public_plan, tmp_path, monkeypatch, fail_inference, uniform, fail_validation
 ):
     from data_processing.arabic_reference import cluster_leaderboard
     from data_processing.arabic_reference import public_benchmark as module
+    from data_processing.arabic_reference import uniform_benchmark
 
     plan_root, _ = public_plan
     events = []
+    validations = []
     environment = {
         "ARABIC_REF_PLAN": str(plan_root),
         "ARABIC_REF_ANNOTATIONS_BUNDLE": str(tmp_path / "annotations"),
@@ -423,6 +426,7 @@ def test_all_runs_smoke_then_full_and_publishes_only_after_success(
         "PUBLIC_WORKERS_PER_GPU": "1",
         "PUBLIC_BATCH_SIZE": "16",
         "PUBLIC_SMOKE_PER_DATASET": "32",
+        "PUBLIC_JAIS_DIACRITICS": "1",
         "ARABIC_REF_SPACE_BUNDLE": str(tmp_path / "board"),
     }
     for key, value in environment.items():
@@ -452,6 +456,14 @@ def test_all_runs_smoke_then_full_and_publishes_only_after_success(
             raise ValueError("Failed GPU smoke run")
 
     monkeypatch.setattr(module, "run", run)
+
+    def validate(root, names, **kwargs):
+        validations.append((names, kwargs["phase"]))
+        assert kwargs["workers"] == 1 and kwargs["batch"] == 16
+        if fail_validation:
+            raise ValueError("Invalid uniform smoke allocation")
+
+    monkeypatch.setattr(uniform_benchmark, "validate_uniform_runs", validate)
     submissions = tmp_path / "submissions.json"
     monkeypatch.setattr(
         module, "export_submissions", lambda *args: events.append("export") or submissions
@@ -459,10 +471,11 @@ def test_all_runs_smoke_then_full_and_publishes_only_after_success(
     monkeypatch.setattr(cluster_leaderboard, "main", lambda args: events.append(("board", args)))
     monkeypatch.setattr(module, "write_comparison_report", lambda *args: events.append("report"))
     monkeypatch.setenv("ARABIC_REF_SUBMISSIONS", "")
-    if fail_inference:
-        with pytest.raises(ValueError, match="Failed GPU smoke"):
+    if fail_inference or (uniform and fail_validation):
+        with pytest.raises(ValueError, match="Failed GPU smoke|Invalid uniform smoke"):
             module.main(["all"])
         assert "export" not in events and not any(e[0] == "board" for e in events)
+        assert not any(isinstance(e, tuple) and e[0] == "whisper-large-v3" for e in events)
     else:
         module.main(["all"])
         assert events[-7:] == [
@@ -477,6 +490,11 @@ def test_all_runs_smoke_then_full_and_publishes_only_after_success(
         import os
 
         assert os.environ["ARABIC_REF_SUBMISSIONS"] == str(submissions)
+        assert validations == (
+            [(["qwen3-asr-0.6b"], "smoke"), (["qwen3-asr-0.6b"], "full"),
+             (["whisper-large-v3"], "smoke"), (["whisper-large-v3"], "full")]
+            if uniform else []
+        )
     assert events[:2] == ["runtime", "audio"]
 
 

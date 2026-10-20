@@ -1241,9 +1241,13 @@ accuracy, latency and leaderboard directories under one `UNIFORM_RUN_ID`.
 Previously generated predictions are not used as scores in this release;
 the original QASR/GQASR candidates remain reference-curation provenance.
 
-All accuracy runs use the same eight GPUs, four replicas per GPU, batch 32,
-BF16, Arabic hints, greedy decoding and runtime. Four replicas accommodate
-Jais's BF16 weights. The ordinary public launcher retains its previous defaults.
+All accuracy runs use the same eight GPUs, two replicas per GPU, batch 32,
+BF16, Arabic hints, greedy decoding and runtime. Two replicas leave more memory
+for Jais's longer batches: four replicas fit the weights but two full-run
+batches of approximately 30-second clips exceeded that per-worker budget.
+Replaying those same 64 clips with two replicas and batch 32 completed without
+OOM splitting; peak reserved memory was 18.76 GiB per worker.
+The ordinary public launcher retains its previous defaults.
 Jais diacritics are enabled by default for this comparison and are recorded in
 both accuracy and latency identities. Other models use their native output
 format. A setting cannot guarantee equally rich or correct diacritics across
@@ -1283,7 +1287,9 @@ every requested replica before processing, so a fast first replica cannot finish
 the short selection before the others load. Full accuracy runs continue to start
 each replica as soon as it is ready. Both policies are recorded and validated.
 
-Before publication, the coordinator verifies common membership, runtime,
+Each model is validated immediately after its smoke or full run, so an OOM split
+stops the pipeline before the next model. Before publication, the coordinator
+also verifies common membership, runtime,
 precision, batch size, GPU allocation and output options. OOM batch splitting
 blocks a controlled throughput release; choose a smaller common allocation and
 rerun into a new directory if it occurs. Submission import then validates every

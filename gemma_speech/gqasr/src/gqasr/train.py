@@ -26,6 +26,7 @@ from .processing import GQASRProcessor
 from .tracking import Tracker
 from .resume import validate_resume
 from .performance import BatchTimer
+from .startup import Startup, prepared_batches, first_update_ready
 
 
 def schedule(step, cfg):
@@ -218,15 +219,6 @@ def _train(cfg, rt, resume, tracker=None, allow_microbatch_change=False):
             print_record(record, cfg)
             if tracker is not None:
                 tracker.log(record)
-    wrapped = (
-        DistributedDataParallel(
-            model,
-            device_ids=[rt.local_rank] if rt.device.type == "cuda" else None,
-            broadcast_buffers=False,
-        )
-        if rt.world > 1
-        else model
-    )
     sampler = StratifiedUpdateSampler(
         dataset.counts,
         cfg["language_batch_counts"],
@@ -238,107 +230,123 @@ def _train(cfg, rt, resume, tracker=None, allow_microbatch_change=False):
         step,
         augmentation_seeds=True,
     )
-    collator = Collator(processor, cfg, training=True)
-    eval_collator = Collator(processor, cfg)
-    loader = DataLoader(
-        dataset,
-        batch_sampler=sampler,
-        collate_fn=collator,
-        num_workers=cfg["workers"],
-        multiprocessing_context="spawn" if cfg["workers"] else None,
-        pin_memory=rt.device.type == "cuda",
-        persistent_workers=cfg["workers"] > 0,
-        prefetch_factor=cfg.get("prefetch_factor", 2) if cfg["workers"] else None,
-        timeout=cfg.get("dataloader_timeout", 0) if cfg["workers"] else 0,
-        generator=torch.Generator().manual_seed(cfg.get("training_data_seed", cfg["data_seed"])),
-    )
-    model.train()
-    optimizer.zero_grad(set_to_none=True)
-    started = time.monotonic()
-    loss_window = LossWindow(rt, start_step=step)
-    last_log_time = started
-    batch_timer = BatchTimer(iter(loader))
-    pending_losses = []
-    for microbatch, (batch, rows) in enumerate(batch_timer):
-        sync = (microbatch + 1) % cfg["accumulation_steps"] == 0
-        context = wrapped.no_sync() if rt.world > 1 and not sync else nullcontext()
-        with context:
-            with rt.autocast():
-                result = wrapped(**move(batch, rt.device))
-                loss = result["loss"] / cfg["accumulation_steps"]
-            # Check all unscaled losses once per update before the synchronized
-            # backward/optimizer step. Earlier no_sync backwards may run, but a
-            # bad update is never applied.
-            pending_losses.append(result["loss"].detach())
-            if sync and not rt.all_finite(torch.stack(pending_losses)):
-                raise FloatingPointError("nonfinite GQASR loss")
-            loss.backward()
-            loss_window.add(result["loss"])
-        if not sync:
-            continue
-        pending_losses.clear()
-        gradient_norm = clip_gradients(model, cfg["grad_clip"], rt, step)
-        factor = schedule(step, cfg)
-        for group in optimizer.param_groups:
-            group["lr"] = group["base_lr"] * factor
-        optimizer.step()
-        optimizer.zero_grad(set_to_none=True)
-        step += 1
-        validate = step % cfg["eval_steps"] == 0 or step == cfg["max_steps"]
-        log_update = step == 1 or step % cfg["logging_steps"] == 0 or validate
-        # Avoid scalar extraction (CUDA host synchronization) and diagnostic
-        # dictionaries on every rank at every unlogged update.
-        record = {
-            "step": step,
-            "rank0_last_microbatch_loss": float(result["loss"].detach()),
-            "rank0_gradient_norm": float(gradient_norm),
-            "learning_rates": {g.get("name", str(i)): g["lr"] for i, g in enumerate(optimizer.param_groups)},
-            "elapsed_seconds": time.monotonic() - started,
-            "rank0_last_microbatch_augmentation": [r.get("augmentation_audit", {}) for r in rows],
-        } if rt.main and log_update else {"step": step}
-        if log_update:
-            record.update(loss_window.flush(step))
-            timing = batch_timer.flush(record["loss_window_updates"])
-            now = time.monotonic()
-            seconds_per_update = (now - last_log_time) / record["loss_window_updates"]
-            last_log_time = now
-            if rt.main:
-                record["performance"] = {
-                    **timing,
-                    "seconds_per_update": seconds_per_update,
-                    "examples_per_second": (
-                        cfg["batch_size"] * cfg["accumulation_steps"] * rt.world / seconds_per_update
-                    ),
-                }
-        if validate:
-            if rt.main:
-                print(f"[GQASR] Validation started at update {step:,}", flush=True)
-            scores, predictions = evaluate(model, validation, eval_collator, cfg, rt)
-            record["validation"] = scores
-            if rt.main:
-                (output / f"predictions-{step}.jsonl").write_text(
-                    "".join(json.dumps(r, ensure_ascii=False) + "\n" for r in predictions)
-                )
-        if rt.main and log_update:
-            with (output / "metrics.jsonl").open("a") as f:
-                f.write(json.dumps(record) + "\n")
-            print_record(record, cfg)
-            if tracker is not None:
-                tracker.log(record)
-        if step % cfg["save_steps"] == 0 or step == cfg["max_steps"]:
-            rng = {"cpu": torch.get_rng_state()}
-            if rt.device.type == "cuda":
-                rng["cuda"] = torch.cuda.get_rng_state(rt.device)
-            rngs = rt.gather(rng)
-            if rt.main:
-                save_checkpoint(
+    with Startup(rt) as startup:
+        startup.mark("augmentation_setup")
+        collator = Collator(processor, cfg, training=True)
+        eval_collator = Collator(processor, cfg)
+        loader = DataLoader(
+            dataset,
+            batch_sampler=sampler,
+            collate_fn=collator,
+            num_workers=cfg["workers"],
+            multiprocessing_context="spawn" if cfg["workers"] else None,
+            pin_memory=rt.device.type == "cuda",
+            persistent_workers=cfg["workers"] > 0,
+            prefetch_factor=cfg.get("prefetch_factor", 2) if cfg["workers"] else None,
+            timeout=cfg.get("dataloader_timeout", 0) if cfg["workers"] else 0,
+            generator=torch.Generator().manual_seed(cfg.get("training_data_seed", cfg["data_seed"])),
+        )
+        with prepared_batches(loader, startup, cfg["accumulation_steps"]) as batches:
+            wrapped = (
+                DistributedDataParallel(
                     model,
-                    optimizer,
-                    cfg,
-                    dataset.metadata,
-                    step,
-                    output,
-                    rngs,
-                    final=step == cfg["max_steps"],
+                    device_ids=[rt.local_rank] if rt.device.type == "cuda" else None,
+                    broadcast_buffers=False,
                 )
-            rt.barrier()
+                if rt.world > 1
+                else model
+            )
+            model.train()
+            optimizer.zero_grad(set_to_none=True)
+            started = time.monotonic()
+            loss_window = LossWindow(rt, start_step=step)
+            last_log_time = started
+            batch_timer = BatchTimer(batches)
+            pending_losses = []
+            for microbatch, (batch, rows) in enumerate(batch_timer):
+                startup.mark(f"microbatch_{microbatch + 1}_forward")
+                sync = (microbatch + 1) % cfg["accumulation_steps"] == 0
+                context = wrapped.no_sync() if rt.world > 1 and not sync else nullcontext()
+                with context:
+                    with rt.autocast():
+                        result = wrapped(**move(batch, rt.device))
+                        loss = result["loss"] / cfg["accumulation_steps"]
+                    # Check all unscaled losses once per update before the synchronized
+                    # backward/optimizer step. Earlier no_sync backwards may run, but a
+                    # bad update is never applied.
+                    pending_losses.append(result["loss"].detach())
+                    if sync:
+                        first_update_ready(startup)
+                    if sync and not rt.all_finite(torch.stack(pending_losses)):
+                        raise FloatingPointError("nonfinite GQASR loss")
+                    startup.mark(f"microbatch_{microbatch + 1}_backward")
+                    loss.backward()
+                    loss_window.add(result["loss"])
+                if not sync:
+                    continue
+                pending_losses.clear()
+                gradient_norm = clip_gradients(model, cfg["grad_clip"], rt, step)
+                factor = schedule(step, cfg)
+                for group in optimizer.param_groups:
+                    group["lr"] = group["base_lr"] * factor
+                optimizer.step()
+                optimizer.zero_grad(set_to_none=True)
+                step += 1
+                validate = step % cfg["eval_steps"] == 0 or step == cfg["max_steps"]
+                log_update = step == 1 or step % cfg["logging_steps"] == 0 or validate
+                # Avoid scalar extraction (CUDA host synchronization) and diagnostic
+                # dictionaries on every rank at every unlogged update.
+                record = {
+                    "step": step,
+                    "rank0_last_microbatch_loss": float(result["loss"].detach()),
+                    "rank0_gradient_norm": float(gradient_norm),
+                    "learning_rates": {g.get("name", str(i)): g["lr"] for i, g in enumerate(optimizer.param_groups)},
+                    "elapsed_seconds": time.monotonic() - started,
+                    "rank0_last_microbatch_augmentation": [r.get("augmentation_audit", {}) for r in rows],
+                } if rt.main and log_update else {"step": step}
+                if log_update:
+                    record.update(loss_window.flush(step))
+                    timing = batch_timer.flush(record["loss_window_updates"])
+                    now = time.monotonic()
+                    seconds_per_update = (now - last_log_time) / record["loss_window_updates"]
+                    last_log_time = now
+                    if rt.main:
+                        record["performance"] = {
+                            **timing,
+                            "seconds_per_update": seconds_per_update,
+                            "examples_per_second": (
+                                cfg["batch_size"] * cfg["accumulation_steps"] * rt.world / seconds_per_update
+                            ),
+                        }
+                if validate:
+                    if rt.main:
+                        print(f"[GQASR] Validation started at update {step:,}", flush=True)
+                    scores, predictions = evaluate(model, validation, eval_collator, cfg, rt)
+                    record["validation"] = scores
+                    if rt.main:
+                        (output / f"predictions-{step}.jsonl").write_text(
+                            "".join(json.dumps(r, ensure_ascii=False) + "\n" for r in predictions)
+                        )
+                if rt.main and log_update:
+                    with (output / "metrics.jsonl").open("a") as f:
+                        f.write(json.dumps(record) + "\n")
+                    print_record(record, cfg)
+                    if tracker is not None:
+                        tracker.log(record)
+                if step % cfg["save_steps"] == 0 or step == cfg["max_steps"]:
+                    rng = {"cpu": torch.get_rng_state()}
+                    if rt.device.type == "cuda":
+                        rng["cuda"] = torch.cuda.get_rng_state(rt.device)
+                    rngs = rt.gather(rng)
+                    if rt.main:
+                        save_checkpoint(
+                            model,
+                            optimizer,
+                            cfg,
+                            dataset.metadata,
+                            step,
+                            output,
+                            rngs,
+                            final=step == cfg["max_steps"],
+                        )
+                    rt.barrier()

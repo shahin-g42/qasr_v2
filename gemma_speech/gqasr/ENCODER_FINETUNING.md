@@ -1,5 +1,49 @@
 # GQASR encoder continuation on 12 nodes
 
+## Startup correction for the update-7,500 restart
+
+Keep the existing environment and checkpoint. The recovery wrapper still resumes
+`encoder12_b80/checkpoint-00007500` with batch 20, accumulation 4 and eight data
+workers per GPU. Its new output is
+`encoder12_b20_acc4_resume7500_startupfix`; prior attempts stay intact.
+
+The October 20 reports show all 96 ranks completed the weight broadcast.
+Nodes 009 and 056 enqueued the first loss check at 07:46 UTC; node 051 at
+07:53, node 048 at 07:55 and node 020 at 07:56. Seven other nodes had not
+enqueued it when the first ten-minute timeout fired. This is a startup
+imbalance; the reports do not identify the instruction delaying those nodes.
+
+The training loop now warms the data workers before wrapping the model in DDP.
+It retains the first batches in order, without discarding or resampling them.
+Startup temporarily retains up to eight prepared CPU microbatches per rank in
+addition to the ordinary prefetch queue; this buffer drains during training.
+All ranks announce readiness through the existing CPU rendezvous store before
+DDP initialization, and again before the first accumulated loss reduction.
+The second check drains first-update CUDA work before announcing readiness.
+These are one-time startup checks, not additional per-update collectives.
+The NCCL training timeout, objective, augmentation recipe, optimizer, schedule,
+language quotas and effective batch remain unchanged.
+
+The wrapper now explicitly sets OpenMP/BLAS/Numba thread budgets to one, even
+if the invoking Conda environment exported larger values. Previously the shell
+fallback preserved such values, allowing each of 64 data workers per node to
+create its own large CPU thread pool. `GQASR_CPU_THREADS` is the explicit override.
+
+Expect `training_startup_ready` for each rank, `training_startup_wait` progress
+from rank zero, then `training_startup_all_ready` with 96 ranks at each stage,
+followed by the usual training updates. Startup waits have a
+separate 1,200-second bound (`GQASR_STARTUP_TIMEOUT`). Missing ranks and their
+phases are reported; slow local startup work also dumps Python stacks after
+180 seconds. This covers process spawning, which the normal DataLoader
+batch-delivery timeout does not cover. A permanently stuck node is still an
+error, not silently skipped.
+
+Validation includes a real two-process Gloo regression: delaying one rank beyond
+the unchanged collective timeout fails without readiness and succeeds with it.
+The resumed training-loop test also uses spawned data workers, checks identical
+collective order across ranks, and verifies global loss publication. These CPU
+tests do not establish H100/NCCL throughput or hardware health.
+
 ## Inspect the October 20 resume timeout before relaunching
 
 The supplied trace from node `inception-H100-hpc-056` (node rank 9) identifies
@@ -50,7 +94,7 @@ output directory in its config.
 Use `scripts/resume_gqasr_encoder_12node.sh` for the interrupted encoder run.
 It selects `03_encoder12_b20_acc4_12node.yaml`, loads
 `outputs/encoder12_b80/checkpoint-00007500`, and writes to the new
-`outputs/encoder12_b20_acc4_resume7500` directory. The original checkpoints stay
+`outputs/encoder12_b20_acc4_resume7500_startupfix` directory. The original checkpoints stay
 intact. Do not invoke this recipe as a fresh encoder stage without `--resume`.
 
 | Setting | Restart |
@@ -62,7 +106,7 @@ intact. Do not invoke this recipe as a fresh encoder stage without `--resume`.
 | Optimizer and learning rates | Restored AdamW state; existing schedule continues |
 | Updates | Next 7,501; stop at 31,446; 23,946 remain |
 | Code-switching | Disabled; waveform augmentation and SpecAugment unchanged |
-| Output / W&B name | `encoder12_b20_acc4_resume7500` / `gqasr-encoder12-b20-acc4-resume7500` |
+| Output / W&B name | `encoder12_b20_acc4_resume7500_startupfix` / `gqasr-encoder12-b20-acc4-resume7500-startupfix` |
 
 Accumulation 6 would increase the global batch to 11,520 and the remaining
 sampled-example budget by 50%. This recovery uses 4 to retain the existing
@@ -73,8 +117,8 @@ calls can also add overhead. This is not a promise of a fourfold speedup.
 The prefetch queue capacity falls from 1,280 to 160 anchor examples per GPU
 (80 × 8 × 2 versus 20 × 8 × 1). Actual host/shared-memory usage also depends
 on audio duration and worker internals. There are 64 DataLoader workers per
-96-core node. The wrapper defaults OpenMP/BLAS thread counts to one to avoid
-nested CPU oversubscription.
+96-core node. The wrapper sets OpenMP/BLAS thread counts to one, overriding
+inherited values, to avoid nested CPU oversubscription.
 
 The hot loop now checks all accumulated losses once at each optimizer boundary,
 before the synchronized backward. Nonfinite losses still abort every rank without

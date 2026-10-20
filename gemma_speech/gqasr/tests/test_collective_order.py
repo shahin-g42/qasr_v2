@@ -77,7 +77,8 @@ def test_resumed_loss_logging_has_same_collective_order_on_every_rank(tmp_path, 
     cfg.update(batch_size=1, accumulation_steps=4, language_batch_counts={"ar": 4},
                expected_world_size=2, acoustic_layers=2, decoder_layers=2,
                train_embeddings=True, max_steps=7505, logging_steps=5,
-               eval_steps=500, save_steps=500, report_to="wandb")
+               eval_steps=500, save_steps=500, report_to="wandb",
+               workers=2, prefetch_factor=1, dataloader_timeout=60)
     path.write_text(yaml.safe_dump(cfg))
     cfg = load_config(path)
     checkpoint = tmp_path / "checkpoint-00007500"
@@ -98,7 +99,7 @@ def test_resumed_loss_logging_has_same_collective_order_on_every_rank(tmp_path, 
     }, checkpoint / "training_state.pt")
     context = mp.spawn(worker, args=(str(path), str(tmp_path / "rendezvous"), str(checkpoint)),
                        nprocs=2, join=False)
-    deadline = time.monotonic() + 55
+    deadline = time.monotonic() + 90
     try:
         while not context.join(timeout=1):
             if time.monotonic() > deadline:

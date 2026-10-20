@@ -4,7 +4,7 @@
 format_version: 1
 model_name: gqasr
 base_model: ../outputs/full_b40_frozen/final
-output_dir: ../outputs/encoder12_b20_acc4_resume7500
+output_dir: ../outputs/encoder12_b20_acc4_resume7500_startupfix
 index_path: ../indexes/full_v81.sqlite
 train_manifest:
   ar:
@@ -127,4 +127,4 @@ code_switch_exclude_manifest: /lustrefs/shared/shahin.konadath/workspace/train/s
 
 report_to: wandb
 wandb_project: gqasr
-run_name: gqasr-encoder12-b20-acc4-resume7500
+run_name: gqasr-encoder12-b20-acc4-resume7500-startupfix

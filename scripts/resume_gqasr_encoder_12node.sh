@@ -8,10 +8,18 @@ cd "$PROJECT_DIR"
 export GQASR_CONFIG="${GQASR_CONFIG:-$PROJECT_DIR/gemma_speech/gqasr/configs/03_encoder12_b20_acc4_12node.yaml}"
 CHECKPOINT="${GQASR_RESUME_CHECKPOINT:-$PROJECT_DIR/gemma_speech/gqasr/outputs/encoder12_b80/checkpoint-00007500}"
 export GQASR_LOG_DIR="${GQASR_LOG_DIR:-/tmp/gqasr-${USER:-user}-logs}"
-export OMP_NUM_THREADS="${OMP_NUM_THREADS:-1}"
-export MKL_NUM_THREADS="${MKL_NUM_THREADS:-1}"
-export OPENBLAS_NUM_THREADS="${OPENBLAS_NUM_THREADS:-1}"
-export NUMEXPR_NUM_THREADS="${NUMEXPR_NUM_THREADS:-1}"
+# Conda/base environments can already export OPENBLAS_NUM_THREADS=32. A fallback
+# default leaves 64 data workers spawning thousands of threads on a 96-core node.
+# Use one explicit budget for this launch, before Python/NumPy import.
+CPU_THREADS="${GQASR_CPU_THREADS:-1}"
+[[ "$CPU_THREADS" =~ ^[1-9][0-9]*$ ]] || { echo 'GQASR_CPU_THREADS must be positive.' >&2; exit 2; }
+export OMP_NUM_THREADS="$CPU_THREADS"
+export MKL_NUM_THREADS="$CPU_THREADS"
+export OPENBLAS_NUM_THREADS="$CPU_THREADS"
+export NUMEXPR_NUM_THREADS="$CPU_THREADS"
+export BLIS_NUM_THREADS="$CPU_THREADS"
+export NUMBA_NUM_THREADS="$CPU_THREADS"
+export VECLIB_MAXIMUM_THREADS="$CPU_THREADS"
 # Keep diagnostic dumps on node-local storage if shared storage stops responding.
 export TORCH_FR_BUFFER_SIZE="${TORCH_FR_BUFFER_SIZE:-${TORCH_NCCL_TRACE_BUFFER_SIZE:-2000}}"
 export TORCH_NCCL_DUMP_ON_TIMEOUT="${TORCH_NCCL_DUMP_ON_TIMEOUT:-1}"
@@ -29,6 +37,6 @@ if [[ "${DRY_RUN:-0}" != 1 ]]; then
   }
   mkdir -p "$GQASR_LOG_DIR"
 fi
-echo "Recovery: checkpoint=$CHECKPOINT config=$GQASR_CONFIG logs=$GQASR_LOG_DIR"
+echo "Recovery: checkpoint=$CHECKPOINT config=$GQASR_CONFIG logs=$GQASR_LOG_DIR cpu_threads=$CPU_THREADS"
 exec bash "$PROJECT_DIR/scripts/run_gqasr_12node.sh" "$@" \
   --stage encoder --resume "$CHECKPOINT" --allow-microbatch-change

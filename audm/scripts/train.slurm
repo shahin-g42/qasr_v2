@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 #SBATCH --job-name=aud-train
-#SBATCH --nodes=12
+#SBATCH --nodes=8
 #SBATCH --ntasks-per-node=1
 #SBATCH --gpus-per-node=8
 #SBATCH --cpus-per-task=96

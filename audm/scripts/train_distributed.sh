@@ -20,7 +20,7 @@ if [[ -n "${SLURM_JOB_NODELIST:-}" && -z "${AUD_INSIDE_SRUN:-}" ]]; then
 fi
 
 # Outside Slurm, run this same command on every node with AUD_NODE_RANK=0..N-1.
-: "${AUD_NNODES:?Set AUD_NNODES (12 for production)}"
+export AUD_NNODES="${AUD_NNODES:-8}"
 : "${AUD_MASTER_ADDR:?Set AUD_MASTER_ADDR to the rank-0 host reachable from all nodes}"
 AUD_NODE_RANK="${SLURM_PROCID:-${AUD_NODE_RANK:-}}"
 : "${AUD_NODE_RANK:?Set AUD_NODE_RANK on each node}"

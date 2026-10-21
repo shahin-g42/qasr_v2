@@ -138,7 +138,7 @@ cached normally.
 
 ## Dataset and augmentation inheritance
 
-The five supplied recipes reference **`configs/v8.1/02_full_12node.yaml`**, the
+The supplied eight-node and twelve-node recipes reference **`configs/v8.1/02_full_12node.yaml`**, the
 latest QASR stage-02 full-training recipe in this checkout. They import its
 training/evaluation manifests, duration limits, target length limit, language
 sampling and augmentation settings, with code-switch augmentation explicitly
@@ -201,11 +201,11 @@ Then set `training.code_switch_index` in a copied AUD recipe to the new
 `assembled/index.json` and set `training.code_switch_probability: 0.4`.
 Do not modify the existing QASR index.
 
-## Training: 12 nodes × 8 GPUs
+## Training: 8 nodes × 8 GPUs
 
-The production launch shape is **96 ranks** with DeepSpeed **ZeRO-2**, one
+The production launch shape is **64 ranks** with DeepSpeed **ZeRO-2**, one
 `torchrun` launcher per node. The default is **5 samples/GPU/microbatch × 4
-accumulation × 96 GPUs = 1,920 samples/update**, matching QASR stage 02.
+accumulation × 64 GPUs = 1,280 samples/update**, with the same per-GPU quotas as QASR stage 02.
 Language quotas apply over an accumulation window, not each microbatch.
 Microbatch must divide the quota window, and each optimizer update must contain
 whole windows. For less activation memory, use microbatch 1 with accumulation
@@ -214,7 +214,7 @@ whole windows. For less activation memory, use microbatch 1 with accumulation
 Use the export node for preflight before occupying the training nodes:
 
 ```bash
-python -m audm preflight --config audm/configs/audturbo_adapter_12node.yaml \
+python -m audm preflight --config audm/configs/audturbo_adapter_8node.yaml \
   --model "$AUD_EXPORT_ROOT/AudTurbo" --output /shared/aud-runs/turbo-adapter --scan
 ```
 
@@ -226,18 +226,18 @@ manifests on training ranks, as the QASR loader does; large corpora can take tim
 First run an NCCL connectivity/all-reduce check across the allocation:
 
 ```bash
-AUD_COMMAND=distributed-check sbatch audm/scripts/train.slurm --expected-world-size 96
+AUD_COMMAND=distributed-check sbatch audm/scripts/train.slurm --expected-world-size 64
 ```
 
 Run a two-update distributed rehearsal, then alignment training:
 
 ```bash
 sbatch audm/scripts/train.slurm \
-  --config audm/configs/audturbo_adapter_12node.yaml \
+  --config audm/configs/audturbo_adapter_8node.yaml \
   --model "$AUD_EXPORT_ROOT/AudTurbo" --output /shared/aud-runs/turbo-adapter --smoke
 
 sbatch audm/scripts/train.slurm \
-  --config audm/configs/audturbo_adapter_12node.yaml \
+  --config audm/configs/audturbo_adapter_8node.yaml \
   --model "$AUD_EXPORT_ROOT/AudTurbo" --output /shared/aud-runs/turbo-adapter
 ```
 
@@ -254,13 +254,13 @@ Full fine-tuning starts from the **alignment run's final model**, not the export
 
 ```bash
 sbatch audm/scripts/train.slurm \
-  --config audm/configs/audturbo_full_12node.yaml \
+  --config audm/configs/audturbo_full_8node.yaml \
   --model /shared/aud-runs/turbo-adapter --output /shared/aud-runs/turbo-full
 ```
 
-Use the corresponding `audflash_adapter_12node.yaml` and
-`audflash_full_12node.yaml` for Flash. AudPro can start directly with
-`audpro_full_12node.yaml`. Run models sequentially on the 12-node pool unless
+Use the corresponding `audflash_adapter_8node.yaml` and
+`audflash_full_8node.yaml` for Flash. AudPro can start directly with
+`audpro_full_8node.yaml`. Run models sequentially on the 8-node pool unless
 you intentionally divide resources and supply recipes with the new world size.
 Full recipes use one coverage epoch with a cosine schedule; they do not blindly
 copy a step count calculated for a different sampler or cluster size.
@@ -277,7 +277,7 @@ FP16, torch.compile and ZeRO-3 configurations explicitly in this release.
 
 ```bash
 sbatch audm/scripts/train.slurm \
-  --config audm/configs/audturbo_full_12node.yaml \
+  --config audm/configs/audturbo_full_8node.yaml \
   --model /shared/aud-runs/turbo-adapter --output /shared/aud-runs/turbo-full \
   --resume auto
 ```
@@ -294,12 +294,12 @@ not an optimizer-resume checkpoint. Keep the original run directory/receipts
 with its numbered checkpoints.
 
 For a non-Slurm cluster, run the following on each node, changing
-`AUD_NODE_RANK` from 0 to 11 and using the same reachable rank-0 address:
+`AUD_NODE_RANK` from 0 to 7 and using the same reachable rank-0 address:
 
 ```bash
-AUD_NNODES=12 AUD_NODE_RANK=0 AUD_MASTER_ADDR=training-node-0 \
+AUD_NNODES=8 AUD_NODE_RANK=0 AUD_MASTER_ADDR=training-node-0 \
   bash audm/scripts/train_distributed.sh \
-  --config audm/configs/audflash_adapter_12node.yaml \
+  --config audm/configs/audflash_adapter_8node.yaml \
   --model "$AUD_EXPORT_ROOT/AudFlash" --output /shared/aud-runs/flash-adapter
 ```
 
@@ -344,7 +344,7 @@ weights, optional bridge/pool/CTC preservation, native encoder weight parity,
 Captioner chunk-boundary lengths, Moonshine batch invariance, adapter gradients,
 offline reload, missing/corrupt checkpoint rejection, all three training paths,
 optimizer resume equivalence, augmentation layout and clean evaluation, and
-96-rank sampler coverage. A two-process CPU DDP run has also exercised training,
+64- and 96-rank sampler coverage. A two-process CPU DDP run has also exercised training,
 checkpointing, evaluation and per-language WER/CER callbacks.
 
 Full pretrained checkpoints and cluster datasets were not available locally.

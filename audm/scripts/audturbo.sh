@@ -9,8 +9,8 @@ export PYTHONUNBUFFERED=1
 AUD_MODEL="${AUD_MODEL:-$AUD_REPO_ROOT/models/AudTurbo-v1}"
 AUD_RUN_ROOT="${AUD_RUN_ROOT:-$AUD_REPO_ROOT/output/audturbo-v1}"
 AUD_PYTHON="${AUD_PYTHON:-python}"
-AUD_ADAPTER_CONFIG="${AUD_ADAPTER_CONFIG:-$AUD_REPO_ROOT/audm/configs/audturbo_adapter_12node.yaml}"
-AUD_FULL_CONFIG="${AUD_FULL_CONFIG:-$AUD_REPO_ROOT/audm/configs/audturbo_full_12node.yaml}"
+AUD_ADAPTER_CONFIG="${AUD_ADAPTER_CONFIG:-$AUD_REPO_ROOT/audm/configs/audturbo_adapter_8node.yaml}"
+AUD_FULL_CONFIG="${AUD_FULL_CONFIG:-$AUD_REPO_ROOT/audm/configs/audturbo_full_8node.yaml}"
 ACTION="${1:-help}"
 if [[ $# -gt 0 ]]; then shift; fi
 cd "$AUD_REPO_ROOT"
@@ -41,10 +41,10 @@ case "$ACTION" in
     ;;
   nccl|smoke|adapter|full)
     RANK="${1:-}"
-    [[ "$RANK" =~ ^([0-9]|1[01])$ ]] || { echo 'Supply node rank 0..11' >&2; exit 2; }
+    [[ "$RANK" =~ ^[0-7]$ ]] || { echo 'Supply node rank 0..7' >&2; exit 2; }
     shift
     : "${AUD_MASTER_ADDR:?Set AUD_MASTER_ADDR to the reachable rank-0 training host}"
-    export AUD_NNODES=12 AUD_GPUS_PER_NODE=8 AUD_NODE_RANK="$RANK"
+    export AUD_NNODES=8 AUD_GPUS_PER_NODE=8 AUD_NODE_RANK="$RANK"
     export OMP_NUM_THREADS="${OMP_NUM_THREADS:-2}"
     export AUD_MASTER_PORT="${AUD_MASTER_PORT:-29591}"
     # This entrypoint is deliberately one invocation per node, not an srun fan-out.
@@ -54,7 +54,7 @@ case "$ACTION" in
     fi
     if [[ "$ACTION" == nccl ]]; then
       export AUD_COMMAND=distributed-check
-      ARGS=(--expected-world-size 96)
+      ARGS=(--expected-world-size 64)
     else
       export AUD_COMMAND=train
       if [[ "$ACTION" == full ]]; then
@@ -65,7 +65,7 @@ case "$ACTION" in
       fi
     fi
     if [[ "${AUD_DRY_RUN:-0}" == 1 ]]; then
-      printf 'rank=%s nodes=12 GPUs/node=8 master=%s:%s command=%s\n' "$RANK" "$AUD_MASTER_ADDR" "$AUD_MASTER_PORT" "$AUD_COMMAND"
+      printf 'rank=%s nodes=8 GPUs/node=8 master=%s:%s command=%s\n' "$RANK" "$AUD_MASTER_ADDR" "$AUD_MASTER_PORT" "$AUD_COMMAND"
       printf '%q ' bash "$AUD_REPO_ROOT/audm/scripts/train_distributed.sh" "${ARGS[@]}" "$@"
       printf '\n'
       exit 0
@@ -100,7 +100,7 @@ AudTurbo manual-node workflow (activate the same environment on every node):
   bash audm/scripts/audturbo.sh preflight full --scan
   bash audm/scripts/audturbo.sh full NODE_RANK [--resume auto]
 
-NODE_RANK is 0..11; launch the same action once on each of the 12 nodes.
+NODE_RANK is 0..7; launch the same action once on each of the 8 nodes.
 Required: QASR_CHECKPOINT for export; AUD_MASTER_ADDR for distributed actions.
 Optional: AUD_REPO_ROOT, AUD_MODEL, AUD_RUN_ROOT, AUD_MASTER_PORT,
           AUD_ADAPTER_CONFIG, AUD_FULL_CONFIG, AUD_CAPTIONER_REVISION.

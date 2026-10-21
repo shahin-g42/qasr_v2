@@ -1,13 +1,21 @@
 # AudTurbo: cluster commands
 
 This follows the existing QASR **manual per-node launch** workflow. Use the
-separate export node first, then the 12 training nodes, with 8 GPUs per node.
+separate export node first, then the 8 training nodes, with 8 GPUs per node.
 Run each distributed action once on **every** training node with a unique rank
-0–11. Wait for that action to finish on every node before starting the next.
+0–7. Wait for that action to finish on every node before starting the next.
 
 Copy the updated `audm/` directory into the shared cluster QASR checkout first.
 The data recipe remains `configs/v8.1/02_full_12node.yaml`; its referenced data,
 noise assets must remain accessible. Code-switching is disabled by default.
+
+The default is 8 nodes × 8 GPUs = 64 ranks. Training uses microbatch 5 and
+accumulation 4: **1,280 samples per optimizer update**, with 4 DataLoader workers
+per GPU (32 per node). Adapter training remains 2,000 updates; full training
+still covers one weighted epoch. Use a fresh `AUD_RUN_ROOT` when moving from a
+12-node run; exact resume requires the original world size and recipe. Existing
+12-node recipes remain available through the generic distributed launcher with
+`AUD_NNODES=12`, or Slurm with `sbatch --nodes=12` and a 12-node recipe.
 
 ## 1. Set shared paths — once
 
@@ -94,7 +102,7 @@ and calculates coverage. This can take time on the full dataset.
 
 ## 4. Prepare each training node
 
-On each of the 12 nodes, open a persistent shell/session, activate the shared
+On each of the 8 nodes, open a persistent shell/session, activate the shared
 environment and assign a **unique** `NODE_RANK`. Keep those shells for the
 subsequent commands.
 
@@ -104,7 +112,7 @@ source audturbo-cluster.env
 eval "$(conda shell.bash hook)"
 conda activate "$AUD_CONDA_ENV"
 
-export NODE_RANK=0  # use 0, 1, ..., 11 on the respective nodes
+export NODE_RANK=0  # use 0, 1, ..., 7 on the respective nodes
 ```
 
 Optional command inspection without starting workers:
@@ -113,17 +121,17 @@ Optional command inspection without starting workers:
 AUD_DRY_RUN=1 bash audm/scripts/audturbo.sh adapter "$NODE_RANK"
 ```
 
-## 5. NCCL connectivity — all 12 nodes
+## 5. NCCL connectivity — all 8 nodes
 
 ```bash
 bash audm/scripts/audturbo.sh nccl "$NODE_RANK"
 ```
 
 Launch promptly on every node. Rank 0 must report `"nccl": "passed"`,
-`"world_size": 96`, and `"sum": 4656.0`. Resolve connectivity failures before
+`"world_size": 64`, and `"sum": 2080.0`. Resolve connectivity failures before
 loading full training models.
 
-## 6. Two-update rehearsal — all 12 nodes
+## 6. Two-update rehearsal — all 8 nodes
 
 ```bash
 bash audm/scripts/audturbo.sh smoke "$NODE_RANK"
@@ -136,17 +144,17 @@ manifests, so startup is not a synthetic two-batch test. Inspect finite losses,
 successful completion, and GPU memory before proceeding. For a second rehearsal,
 use a new `AUD_RUN_ROOT` on every node; existing output is protected.
 
-## 7. Adapter alignment — all 12 nodes
+## 7. Adapter alignment — all 8 nodes
 
 ```bash
 bash audm/scripts/audturbo.sh adapter "$NODE_RANK"
 ```
 
-Recipe: `audm/configs/audturbo_adapter_12node.yaml`.
+Recipe: `audm/configs/audturbo_adapter_8node.yaml`.
 
 - Encoder and trained QASR decoder frozen; new adapter trainable.
 - 2,000 optimizer updates, learning rate `2e-4`, 100 warm-up updates.
-- BF16, ZeRO-2, microbatch 5 × accumulation 4 × 96 GPUs = 1,920 samples/update.
+- BF16, ZeRO-2, microbatch 5 × accumulation 4 × 64 GPUs = 1,280 samples/update.
 - Stage-02 language quotas and other augmentations retained; code-switching disabled.
 - Evaluation/checkpoint every 500 updates; final model at `$AUD_RUN_ROOT/adapter`.
 
@@ -168,13 +176,13 @@ Run once on a node with the environment active:
 bash audm/scripts/audturbo.sh preflight full --scan
 ```
 
-Then run on **all 12 nodes**:
+Then run on **all 8 nodes**:
 
 ```bash
 bash audm/scripts/audturbo.sh full "$NODE_RANK"
 ```
 
-Recipe: `audm/configs/audturbo_full_12node.yaml`. It loads the **trained adapter
+Recipe: `audm/configs/audturbo_full_8node.yaml`. It loads the **trained adapter
 stage model**, unfreezes encoder/decoder/adapter, and runs one coverage epoch.
 The base LR is `2e-5`, decoder LR `1e-5`, embedding LR `5e-6`, with 500 warm-up
 updates and a cosine schedule. Evaluation/checkpoint every 1,000 updates.

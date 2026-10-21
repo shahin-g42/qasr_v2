@@ -116,7 +116,8 @@ def test_two_updates_checkpoint_resume_and_clean_eval(tmp_path, tokenizer, varia
         run(recipe, model=tmp_path / "aud", output=tmp_path / "run")
 
 
-def test_accumulation_window_preserves_96_rank_coverage():
+@pytest.mark.parametrize("world_size", [64, 96])
+def test_accumulation_window_preserves_rank_coverage(world_size):
     parts = []
     quotas = {"ar": 10, "en": 6, "hi": 2, "ml": 1, "zh": 1}
 
@@ -127,12 +128,17 @@ def test_accumulation_window_preserves_96_rank_coverage():
         def __len__(self):
             return self.size
 
-    parts = [Part(lang, quota * 96 + 3) for lang, quota in quotas.items()]
+    parts = [Part(lang, quota * world_size + 3) for lang, quota in quotas.items()]
     ends = np.cumsum([len(p) for p in parts])
     seen = set()
-    for rank in range(96):
+    for rank in range(world_size):
         sampler = WeightedStratifiedLanguageSampler(
-            parts, batch_size=20, seed=42, num_replicas=96, rank=rank, language_batch_counts=quotas
+            parts,
+            batch_size=20,
+            seed=42,
+            num_replicas=world_size,
+            rank=rank,
+            language_batch_counts=quotas,
         )
         indices = list(sampler)
         seen.update(indices)
@@ -145,18 +151,25 @@ def test_accumulation_window_preserves_96_rank_coverage():
     assert seen == set(range(sum(map(len, parts))))
 
 
-def test_production_recipes_reuse_stage02_data_and_augmentation():
+@pytest.mark.parametrize("nodes", [8, 12])
+def test_production_recipes_reuse_stage02_data_and_augmentation(nodes):
     root = Path(__file__).resolve().parents[1]
     original = yaml.safe_load((root.parent / "configs/v8.1/02_full_12node.yaml").read_text())
-    for path in (root / "configs").glob("*_12node.yaml"):
+    for path in (root / "configs").glob(f"*_{nodes}node.yaml"):
         config, stage, receipt = load_recipe(path, model="/tmp/export", output="/tmp/run")
         assert config.train_manifest == original["train_manifest"]
         assert config.eval_manifest == original["eval_manifest"]
         assert config.augmentation == original["augmentation"]
         assert config.code_switch_index is None
         assert config.code_switch_probability == 0.0
-        assert config.expected_world_size == 96
-        assert config.per_device_train_batch_size * config.gradient_accumulation_steps * 96 == 1920
+        assert config.expected_world_size == nodes * 8
+        assert config.per_device_train_batch_size == 5
+        assert config.gradient_accumulation_steps == 4
+        assert config.dataloader_num_workers == 4
+        assert (
+            config.per_device_train_batch_size * config.gradient_accumulation_steps * nodes * 8
+            == nodes * 160
+        )
         assert receipt["quota_window"] == 20
 
 

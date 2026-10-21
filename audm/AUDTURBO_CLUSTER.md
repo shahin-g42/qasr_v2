@@ -10,7 +10,7 @@ The data recipe remains `configs/v8.1/02_full_12node.yaml`; its referenced data,
 noise assets must remain accessible. Code-switching is disabled by default.
 
 The default is 8 nodes × 8 GPUs = 64 ranks. Training uses microbatch 10 and
-accumulation 2: **1,280 samples per optimizer update**, with 4 DataLoader workers
+accumulation 4: **2,560 samples per optimizer update**, with 4 DataLoader workers
 per GPU (32 per node). Adapter training remains 2,000 updates; full training
 still covers one weighted epoch. Use a fresh `AUD_RUN_ROOT` when moving from a
 12-node run; exact resume requires the original world size and recipe. Existing
@@ -154,7 +154,7 @@ Recipe: `audm/configs/audturbo_adapter_8node.yaml`.
 
 - Encoder and trained QASR decoder frozen; new adapter trainable.
 - 2,000 optimizer updates, learning rate `2e-4`, 100 warm-up updates.
-- BF16, ZeRO-2, microbatch 10 × accumulation 2 × 64 GPUs = 1,280 samples/update.
+- BF16, ZeRO-2, microbatch 10 × accumulation 4 × 64 GPUs = 2,560 samples/update.
 - Stage-02 language quotas and other augmentations retained; code-switching disabled.
 - Evaluation/checkpoint every 500 updates; final model at `$AUD_RUN_ROOT/adapter`.
 

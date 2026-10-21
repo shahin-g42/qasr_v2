@@ -141,12 +141,9 @@ cached normally.
 The five supplied recipes reference **`configs/v8.1/02_full_12node.yaml`**, the
 latest QASR stage-02 full-training recipe in this checkout. They import its
 training/evaluation manifests, duration limits, target length limit, language
-sampling and augmentation settings. The online code-switch index is explicitly
-overridden to `cs_v1_ml_v2`, the stage-03 Malayalam quarantine revision, while
-retaining the stage-02 full corpus and mixing probability. The old `cs_v1` index
-is stale after the Malayalam manifest cleanup. See
-[AUDTURBO_CLUSTER.md](AUDTURBO_CLUSTER.md#3-export-and-verify--export-node-only)
-for the one-time refresh command if this revision has not been built. No corpus
+sampling and augmentation settings, with code-switch augmentation explicitly
+disabled by default (`code_switch_index: null`, `code_switch_probability: 0.0`).
+No code-switch index is required for default preflight or training. No corpus
 is rebuilt or copied. To use an earlier stage-02 run, change `data_recipe` in a
 new AUD recipe. Relative recipe and DeepSpeed paths resolve against the AUD YAML.
 
@@ -156,9 +153,10 @@ Inherited production behavior includes:
   weighted language sampling. Quotas per GPU/update remain **10/6/2/1/1**.
 - Speed perturbation, noise injection, codec augmentation and SpecAugment with
   the original settings and probabilities. Audio stays inside duration bounds.
-- Indexed online code-switching at the original **0.4** probability, with frozen
-  source/index checks, tokenizer fingerprint checks and train/eval exclusions
-  enforced by the existing QASR index.
+- Optional indexed online code-switching remains available. To enable it, set
+  `training.code_switch_index` to a valid index and
+  `training.code_switch_probability` to a positive value (original QASR: **0.4**).
+  Frozen source checks, tokenizer checks and train/eval exclusions still apply.
 - Clean evaluation collators, loss, per-language WER/CER and macro WER;
   generation budgets are configurable. W&B and ordinary Trainer metrics files.
 - Non-reentrant gradient checkpointing, BF16, preserved Conformer BatchNorm
@@ -170,6 +168,21 @@ mel features. Flash has no mel frontend: its equivalent masks STFT time/frequenc
 bins and reconstructs waveforms with the original phase before the learned
 frontend. This is an explicit AUD adaptation. Disable `spec_augment` in a recipe
 override if an ablation shows it harms Flash. Evaluation never uses these masks.
+
+For optional code-switching after the Malayalam cleanup, use the stage-03
+`code_switch_indexes/cs_v1_ml_v2/assembled/index.json` revision, not stale `cs_v1`.
+If absent, build it once from the repository root with the environment active:
+
+```bash
+RUN_ID=cs_v1_ml_v2 JOBS=8 PYTHON="$(command -v python)" \
+  bash scripts/corpus/run_code_switch.sh refresh-ml \
+  --source-index "$PWD/code_switch_indexes/cs_v1/assembled/index.json" \
+  --quarantine "$PWD/asr_cleaned_manifests/ml_training_v2/quarantine/ml_damaged_transcripts.jsonl"
+```
+
+Keep the original `cs_v1` pools, which this revision references. Use a fresh
+training output when enabling code-switching; exact resume requires unchanged
+recipe and index receipts.
 
 An old code-switch index is reusable only if its tokenizer fingerprint matches.
 Preflight fails if Flash's tokenizer differs; it does not silently disable
@@ -185,7 +198,8 @@ python -m data_processing.code_switch assemble --run-root /shared/new-audflash-c
 ```
 
 Then set `training.code_switch_index` in a copied AUD recipe to the new
-`assembled/index.json`. Do not modify the existing QASR index.
+`assembled/index.json` and set `training.code_switch_probability: 0.4`.
+Do not modify the existing QASR index.
 
 ## Training: 12 nodes × 8 GPUs
 
@@ -205,7 +219,7 @@ python -m audm preflight --config audm/configs/audturbo_adapter_12node.yaml \
 ```
 
 Preflight checks shared paths, noise assets, tokenizer/index compatibility and
-frozen code-switch metadata. `--scan` indexes the actual manifests and reports
+frozen code-switch metadata when explicitly enabled. `--scan` indexes the actual manifests and reports
 full-coverage updates and per-language repeat factors. Startup still scans
 manifests on training ranks, as the QASR loader does; large corpora can take time.
 

@@ -7,7 +7,7 @@ Run each distributed action once on **every** training node with a unique rank
 
 Copy the updated `audm/` directory into the shared cluster QASR checkout first.
 The data recipe remains `configs/v8.1/02_full_12node.yaml`; its referenced data,
-noise assets and frozen code-switch index must remain accessible.
+noise assets must remain accessible. Code-switching is disabled by default.
 
 ## 1. Set shared paths — once
 
@@ -69,41 +69,15 @@ where each node already exposes its eight assigned GPUs; it does not overwrite
 
 ## 3. Export and verify — export node only
 
-The AUD recipes retain the stage-02 full datasets but select the refreshed
-`cs_v1_ml_v2` code-switch index from the 12-node stage-03 recipe. The latest
-eight-node stage-03 recipe disables code-switching, so completing that run does
-not imply this index exists. Quarantining Malayalam rows invalidates the old
-`cs_v1` manifest fingerprint; do not bypass that check.
+The AUD recipes retain the stage-02 full datasets and disable code-switch
+augmentation by default (`code_switch_index: null`, `code_switch_probability: 0.0`).
+No code-switch index or Malayalam index refresh is needed for default preflight
+or training. Speed perturbation, noise injection, codec augmentation and
+SpecAugment retain their existing settings.
 
-Before preflight, check for the refreshed index on the shared filesystem:
-
-```bash
-ls code_switch_indexes/cs_v1_ml_v2/assembled/index.json
-```
-
-If absent, build it **once on one node**, with the environment active:
-
-```bash
-RUN_ID=cs_v1_ml_v2 JOBS=8 PYTHON="$(command -v python)" \
-  bash scripts/corpus/run_code_switch.sh refresh-ml \
-  --source-index "$PWD/code_switch_indexes/cs_v1/assembled/index.json" \
-  --quarantine "$PWD/asr_cleaned_manifests/ml_training_v2/quarantine/ml_damaged_transcripts.jsonl"
-```
-
-This rebuilds only Malayalam partners from the current manifest, excluding
-quarantined/missing audio, and publishes a separate immutable revision. Keep
-`cs_v1`: the refreshed index references its other language pools. Non-Malayalam
-and evaluation manifests must still match the original frozen plan. No separate
-`verify`/`assemble` lifecycle command is needed; AUD preflight validates the
-revision. If `cs_v1_ml_v2` already exists but fails integrity checks after further
-manifest edits, create a new revision with another `RUN_ID` and set
-`training.code_switch_index` in copies of both AUD recipes to its index path.
-Use a fresh training output when changing a run's index; do not resume across
-index revisions. Custom recipe paths can be selected with `AUD_ADAPTER_CONFIG`
-and `AUD_FULL_CONFIG`.
-
-An already verified AudTurbo export does **not** need to be exported again for
-this data-index correction. Continue directly with preflight below.
+An already verified AudTurbo export does not need to be exported again. Continue
+directly with preflight below. If changing an existing training run's recipe,
+use a fresh output directory; exact resume requires the original recipe.
 
 ```bash
 bash audm/scripts/audturbo.sh export
@@ -115,7 +89,7 @@ Export uses CPU and downloads the Captioner encoder-containing shards. Verify
 uses `cuda:0` and disables Hub/network model loading. No GQASR checkpoint is
 needed. An existing model destination is rejected; if export already succeeded,
 start with `verify` instead of exporting again. Preflight checks the stage-02
-manifests and frozen code-switch index; `--scan` additionally counts the corpus
+manifests (and the code-switch index only if explicitly enabled); `--scan` counts the corpus
 and calculates coverage. This can take time on the full dataset.
 
 ## 4. Prepare each training node
@@ -155,7 +129,7 @@ loading full training models.
 bash audm/scripts/audturbo.sh smoke "$NODE_RANK"
 ```
 
-This exercises the actual export, data loading, augmentation, code-switching,
+This exercises the actual export, data loading, augmentation,
 distributed training and evaluation. It writes under
 `$AUD_RUN_ROOT/adapter/smoke-test`. It still validates/indexes the production
 manifests, so startup is not a synthetic two-batch test. Inspect finite losses,
@@ -173,7 +147,7 @@ Recipe: `audm/configs/audturbo_adapter_12node.yaml`.
 - Encoder and trained QASR decoder frozen; new adapter trainable.
 - 2,000 optimizer updates, learning rate `2e-4`, 100 warm-up updates.
 - BF16, ZeRO-2, microbatch 5 × accumulation 4 × 96 GPUs = 1,920 samples/update.
-- Stage-02 language quotas, augmentations and code-switching retained.
+- Stage-02 language quotas and other augmentations retained; code-switching disabled.
 - Evaluation/checkpoint every 500 updates; final model at `$AUD_RUN_ROOT/adapter`.
 
 Resume an interrupted adapter run on **all nodes** with:

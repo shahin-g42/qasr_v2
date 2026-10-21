@@ -148,15 +148,13 @@ def test_accumulation_window_preserves_96_rank_coverage():
 def test_production_recipes_reuse_stage02_data_and_augmentation():
     root = Path(__file__).resolve().parents[1]
     original = yaml.safe_load((root.parent / "configs/v8.1/02_full_12node.yaml").read_text())
-    revised = yaml.safe_load((root.parent / "configs/v8.1/03_hq_12node.yaml").read_text())
     for path in (root / "configs").glob("*_12node.yaml"):
         config, stage, receipt = load_recipe(path, model="/tmp/export", output="/tmp/run")
         assert config.train_manifest == original["train_manifest"]
         assert config.eval_manifest == original["eval_manifest"]
         assert config.augmentation == original["augmentation"]
-        assert config.code_switch_index == revised["code_switch_index"]
-        assert config.code_switch_index != original["code_switch_index"]
-        assert config.code_switch_probability == original["code_switch_probability"]
+        assert config.code_switch_index is None
+        assert config.code_switch_probability == 0.0
         assert config.expected_world_size == 96
         assert config.per_device_train_batch_size * config.gradient_accumulation_steps * 96 == 1920
         assert receipt["quota_window"] == 20

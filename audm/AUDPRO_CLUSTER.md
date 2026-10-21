@@ -6,11 +6,11 @@ Slurm environment settings and does not call `srun` or `scontrol`.
 
 Recipe: `audm/configs/audpro_full_5node.yaml`. It reuses the same stage-02 full
 training/evaluation manifests and augmentation settings as AudTurbo. Code-switch
-mixing is disabled. Training uses three weighted coverage epochs, microbatch 5,
-accumulation 4, and 40 GPUs: **800 samples per optimizer update**. There are
-four DataLoader workers per GPU (32 per node, 160 total). Each GPU processes one
-20-example language quota window per update: 10 Arabic, 6 English, 2 Hindi,
-1 Malayalam and 1 Chinese sample. BF16, ZeRO-2 and gradient
+mixing is disabled. Training uses three weighted coverage epochs, microbatch 10,
+accumulation 4, and 40 GPUs: **1,600 samples per optimizer update**. There are
+four DataLoader workers per GPU (32 per node, 160 total). Each GPU processes two
+20-example language quota windows per update: 20 Arabic, 12 English, 4 Hindi,
+2 Malayalam and 2 Chinese samples in total. BF16, ZeRO-2 and gradient
 checkpointing remain enabled. Base learning rate is 2e-5, decoder factor 0.5,
 embedding factor 0.25, warmup 500 updates, cosine schedule, save/eval every
 1,000 updates. The scan determines updates per coverage epoch from the data.

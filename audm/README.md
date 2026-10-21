@@ -357,5 +357,5 @@ ASR quality, CPU quantization and deployment latency remain to be measured.
 
 Use [AUDPRO_CLUSTER.md](AUDPRO_CLUSTER.md) for direct per-node commands alongside
 an existing AudTurbo run. The dedicated `audpro_full_5node.yaml` uses 40 GPUs,
-microbatch 5, accumulation 4, and three epochs (800 samples/update).
+microbatch 10, accumulation 4, and three epochs (1,600 samples/update).
 `audpro.sh` has separate `AUDPRO_*` paths and rendezvous settings.

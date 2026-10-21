@@ -16,7 +16,7 @@ noise assets must remain accessible. Code-switching is disabled by default.
 The default is 8 nodes × 8 GPUs = 64 ranks. Training uses microbatch 10 and
 accumulation 4: **2,560 samples per optimizer update**, with 4 DataLoader workers
 per GPU (32 per node). Adapter training remains 2,000 updates; full training
-still covers one weighted epoch. Use a fresh `AUD_RUN_ROOT` when moving from a
+covers three weighted epochs. Use a fresh `AUD_RUN_ROOT` when moving from a
 12-node run; exact resume requires the original world size and recipe. Existing
 12-node recipes remain available through the generic distributed launcher with
 `AUD_NNODES=12`, or Slurm with `sbatch --nodes=12` and a 12-node recipe.
@@ -187,7 +187,7 @@ bash audm/scripts/audturbo.sh full "$NODE_RANK"
 ```
 
 Recipe: `audm/configs/audturbo_full_8node.yaml`. It loads the **trained adapter
-stage model**, unfreezes encoder/decoder/adapter, and runs one coverage epoch.
+stage model**, unfreezes encoder/decoder/adapter, and runs three coverage epochs.
 The base LR is `2e-5`, decoder LR `1e-5`, embedding LR `5e-6`, with 500 warm-up
 updates and a cosine schedule. Evaluation/checkpoint every 1,000 updates.
 The effective batch, language mix and augmentation settings remain unchanged.

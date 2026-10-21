@@ -171,6 +171,11 @@ def test_production_recipes_reuse_stage02_data_and_augmentation(nodes):
             == (2560 if nodes == 8 else 1920)
         )
         assert receipt["quota_window"] == 20
+        if stage == "full":
+            assert config.num_train_epochs == 3.0
+            assert config.max_steps == -1
+        else:
+            assert config.max_steps == 2000
 
 
 @pytest.mark.parametrize("variant", ["audpro", "audturbo", "audflash"])

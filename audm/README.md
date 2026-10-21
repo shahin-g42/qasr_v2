@@ -263,7 +263,7 @@ Use the corresponding `audflash_adapter_8node.yaml` and
 `audflash_full_8node.yaml` for Flash. AudPro can start directly with
 `audpro_full_8node.yaml`. Run models sequentially on the 8-node pool unless
 you intentionally divide resources and supply recipes with the new world size.
-Full recipes use one coverage epoch with a cosine schedule; they do not blindly
+Full recipes use three coverage epochs with a cosine schedule; they do not blindly
 copy a step count calculated for a different sampler or cluster size.
 
 Fine-tuning options go under `training:` in a copied YAML. Unknown fields fail.

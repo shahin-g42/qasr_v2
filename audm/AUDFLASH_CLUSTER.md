@@ -139,3 +139,42 @@ bash audm/scripts/audflash.sh full "$NODE_RANK" --resume auto
 The 20-sample microbatch is the requested configuration, not a measured H100
 memory guarantee. Local tests validate models, recipes and launcher arguments;
 actual memory and throughput must be checked on the cluster.
+
+## Audit Malayalam transcript lengths (CPU only)
+
+Run once in the AUD environment; no GPU, audio decoding, or model weight loading
+is needed. The wrapper selects the exported AudFlash tokenizer and the Malayalam
+training manifests in the resolved adapter recipe. It streams batched tokenization
+with eight tokenizer threads by default (`RAYON_NUM_THREADS` overrides this).
+
+```bash
+bash audm/scripts/audit_transcripts.sh --output output/ml-token-audit
+```
+
+The new output directory contains `report.json` (total/per-manifest counts and
+percentages strictly above 512 and 1,024, source hashes, tokenizer fingerprint)
+and `over_limit.jsonl` (original manifest/line, path, text and exact token count).
+It reports both all usable transcripts and duration-eligible transcripts under
+the recipe's 30-second limit. Unknown durations are included but counted separately;
+audio validity and actual duration are not checked. These are manifest-row counts,
+not unique recording counts. Blank/punctuation-only transcripts are counted separately.
+
+To scan evaluation data, add `--split eval`. To select another export/checkpoint,
+add `--model /path/to/export`. Counts exclude prompt markers and special tokens,
+matching the trainer's transcript validation. Malformed JSON/records fail the scan;
+only a completed scan writes `report.json`. Output directories are never overwritten.
+
+After reviewing the counts, optionally generate new filtered manifest copies:
+
+```bash
+bash audm/scripts/audit_transcripts.sh \
+  --output output/ml-token-filter-512 --filter-above 512
+```
+
+Filtering removes only tokenized transcripts above the threshold. It preserves
+other metadata and normalizes retained usable records' audio paths so relocating
+manifests does not break relative paths. Existing unusable-text records are retained
+and will still be skipped by training. The originals and all training configs remain
+unchanged; `filtered_path` in the report identifies each new copy. Do not replace
+manifests under a running job. Using filtered data requires a deliberate new run/data
+configuration, not exact resume of a run with different manifests.

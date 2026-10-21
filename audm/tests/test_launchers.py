@@ -2,6 +2,8 @@ import os
 import subprocess
 from pathlib import Path
 
+import pytest
+
 SCRIPT = Path(__file__).resolve().parents[1] / "scripts/audturbo.sh"
 
 
@@ -43,7 +45,10 @@ def test_nccl_has_all_64_ranks_and_invalid_launches_fail():
     assert launch("adapter", "0", master=None).returncode != 0
 
 
-def test_direct_launch_ignores_inherited_slurm_environment(tmp_path):
+@pytest.mark.parametrize(
+    "variant,rank,nodes,port", [("audturbo", "7", 8, 29591), ("audpro", "4", 5, 29601)]
+)
+def test_direct_launch_ignores_inherited_slurm_environment(tmp_path, variant, rank, nodes, port):
     import json
 
     capture = tmp_path / "args.json"
@@ -70,6 +75,10 @@ def test_direct_launch_ignores_inherited_slurm_environment(tmp_path):
         AUD_RUN_ROOT=str(tmp_path / "runs"),
         AUD_MASTER_ADDR="chosen-master",
         AUD_MASTER_PORT="29591",
+        AUDPRO_RUN_ROOT=str(tmp_path / "pro-runs"),
+        AUDPRO_TRITON_CACHE_DIR=str(tmp_path / "cache"),
+        AUDPRO_MASTER_ADDR="chosen-master",
+        AUDPRO_MASTER_PORT=str(port),
         AUD_USE_SLURM="1",
         SLURM_JOB_ID="123",
         SLURM_JOB_NODELIST="wrong-hosts",
@@ -77,13 +86,53 @@ def test_direct_launch_ignores_inherited_slurm_environment(tmp_path):
         SLURM_PROCID="0",
     )
     result = subprocess.run(
-        ["bash", str(SCRIPT), "adapter", "7"], env=env, capture_output=True, text=True
+        ["bash", str(SCRIPT.with_name(f"{variant}.sh")), "full", rank],
+        env=env,
+        capture_output=True,
+        text=True,
     )
     assert result.returncode == 0, result.stderr
     args = json.loads(capture.read_text())
     assert args[:2] == ["-m", "torch.distributed.run"]
-    assert "--node-rank=7" in args
-    assert "--nnodes=8" in args
+    assert f"--node-rank={rank}" in args
+    assert f"--nnodes={nodes}" in args
     assert "--master-addr=chosen-master" in args
-    assert "--master-port=29591" in args
+    assert f"--master-port={port}" in args
     assert "--nproc-per-node=8" in args
+
+
+def test_audpro_defaults_are_isolated_from_audturbo(tmp_path):
+    env = dict(
+        os.environ,
+        AUD_DRY_RUN="1",
+        AUDPRO_MASTER_ADDR="pro-master",
+        AUD_MODEL="/wrong/turbo",
+        AUD_RUN_ROOT="/wrong/turbo-run",
+        AUD_FULL_CONFIG="/wrong/turbo.yaml",
+        AUD_MASTER_PORT="29591",
+        AUDPRO_TRITON_CACHE_DIR=str(tmp_path / "cache"),
+    )
+    for key in ("AUDPRO_MODEL", "AUDPRO_RUN_ROOT", "AUDPRO_FULL_CONFIG", "AUDPRO_MASTER_PORT"):
+        env.pop(key, None)
+
+    def run(*args):
+        return subprocess.run(
+            ["bash", str(SCRIPT.with_name("audpro.sh")), *args],
+            env=env,
+            capture_output=True,
+            text=True,
+        )
+
+    full = run("full", "4", "--resume", "auto")
+    assert full.returncode == 0, full.stderr
+    assert "nodes=5 GPUs/node=8 master=pro-master:29601" in full.stdout
+    assert "audpro_full_5node.yaml" in full.stdout
+    assert "models/AudPro-v1" in full.stdout
+    assert "output/audpro-v1/full" in full.stdout
+    assert "--resume auto" in full.stdout
+    assert "/wrong/" not in full.stdout
+    assert "--expected-world-size 40" in run("nccl", "0").stdout
+    assert "--smoke" in run("smoke", "0").stdout
+    assert run("full", "5").returncode != 0
+    env.pop("AUDPRO_MASTER_ADDR")
+    assert run("full", "0").returncode != 0

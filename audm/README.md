@@ -352,3 +352,10 @@ Full pretrained checkpoints and cluster datasets were not available locally.
 The supplied NCCL check and distributed smoke run are required rehearsals for
 your CUDA/DeepSpeed environment. Full-size peak memory, throughput, multilingual
 ASR quality, CPU quantization and deployment latency remain to be measured.
+
+## AudPro on five nodes
+
+Use [AUDPRO_CLUSTER.md](AUDPRO_CLUSTER.md) for direct per-node commands alongside
+an existing AudTurbo run. The dedicated `audpro_full_5node.yaml` uses 40 GPUs,
+microbatch 10, accumulation 4, and three epochs (1,600 samples/update).
+`audpro.sh` has separate `AUDPRO_*` paths and rendezvous settings.

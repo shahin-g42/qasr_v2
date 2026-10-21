@@ -141,7 +141,12 @@ cached normally.
 The five supplied recipes reference **`configs/v8.1/02_full_12node.yaml`**, the
 latest QASR stage-02 full-training recipe in this checkout. They import its
 training/evaluation manifests, duration limits, target length limit, language
-sampling, augmentation settings and frozen online code-switch index. No corpus
+sampling and augmentation settings. The online code-switch index is explicitly
+overridden to `cs_v1_ml_v2`, the stage-03 Malayalam quarantine revision, while
+retaining the stage-02 full corpus and mixing probability. The old `cs_v1` index
+is stale after the Malayalam manifest cleanup. See
+[AUDTURBO_CLUSTER.md](AUDTURBO_CLUSTER.md#3-export-and-verify--export-node-only)
+for the one-time refresh command if this revision has not been built. No corpus
 is rebuilt or copied. To use an earlier stage-02 run, change `data_recipe` in a
 new AUD recipe. Relative recipe and DeepSpeed paths resolve against the AUD YAML.
 

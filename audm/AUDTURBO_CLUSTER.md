@@ -69,6 +69,42 @@ where each node already exposes its eight assigned GPUs; it does not overwrite
 
 ## 3. Export and verify — export node only
 
+The AUD recipes retain the stage-02 full datasets but select the refreshed
+`cs_v1_ml_v2` code-switch index from the 12-node stage-03 recipe. The latest
+eight-node stage-03 recipe disables code-switching, so completing that run does
+not imply this index exists. Quarantining Malayalam rows invalidates the old
+`cs_v1` manifest fingerprint; do not bypass that check.
+
+Before preflight, check for the refreshed index on the shared filesystem:
+
+```bash
+ls code_switch_indexes/cs_v1_ml_v2/assembled/index.json
+```
+
+If absent, build it **once on one node**, with the environment active:
+
+```bash
+RUN_ID=cs_v1_ml_v2 JOBS=8 PYTHON="$(command -v python)" \
+  bash scripts/corpus/run_code_switch.sh refresh-ml \
+  --source-index "$PWD/code_switch_indexes/cs_v1/assembled/index.json" \
+  --quarantine "$PWD/asr_cleaned_manifests/ml_training_v2/quarantine/ml_damaged_transcripts.jsonl"
+```
+
+This rebuilds only Malayalam partners from the current manifest, excluding
+quarantined/missing audio, and publishes a separate immutable revision. Keep
+`cs_v1`: the refreshed index references its other language pools. Non-Malayalam
+and evaluation manifests must still match the original frozen plan. No separate
+`verify`/`assemble` lifecycle command is needed; AUD preflight validates the
+revision. If `cs_v1_ml_v2` already exists but fails integrity checks after further
+manifest edits, create a new revision with another `RUN_ID` and set
+`training.code_switch_index` in copies of both AUD recipes to its index path.
+Use a fresh training output when changing a run's index; do not resume across
+index revisions. Custom recipe paths can be selected with `AUD_ADAPTER_CONFIG`
+and `AUD_FULL_CONFIG`.
+
+An already verified AudTurbo export does **not** need to be exported again for
+this data-index correction. Continue directly with preflight below.
+
 ```bash
 bash audm/scripts/audturbo.sh export
 bash audm/scripts/audturbo.sh verify

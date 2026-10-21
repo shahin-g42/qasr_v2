@@ -20,8 +20,8 @@ training:
   lr_scheduler_type: cosine
   label_smoothing: 0.1
   logging_steps: 10
-  eval_steps: 10000
-  save_steps: 1000
+  eval_steps: 3700
+  save_steps: 3700
   save_total_limit: 4
   eval_log_samples: 2
   eval_generation_max_new_tokens: 768

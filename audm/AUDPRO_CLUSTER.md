@@ -12,8 +12,8 @@ four DataLoader workers per GPU (32 per node, 160 total). Each GPU processes two
 20-example language quota windows per update: 20 Arabic, 12 English, 4 Hindi,
 2 Malayalam and 2 Chinese samples in total. BF16, ZeRO-2 and gradient
 checkpointing remain enabled. Base learning rate is 2e-5, decoder factor 0.5,
-embedding factor 0.25, warmup 500 updates, cosine schedule, checkpoint saving every 1,000 updates and evaluation every
-10,000 updates. The scan determines updates per coverage epoch from the data.
+embedding factor 0.25, warmup 500 updates, cosine schedule, checkpoint saving and evaluation every
+3,700 updates. The scan determines updates per coverage epoch from the data.
 
 AudPro retains the trained QASR encoder and decoder. It needs no new bridge
 alignment stage. Export from the trained QASR checkpoint, not AudTurbo's adapter.

@@ -189,7 +189,7 @@ bash audm/scripts/audturbo.sh full "$NODE_RANK"
 Recipe: `audm/configs/audturbo_full_8node.yaml`. It loads the **trained adapter
 stage model**, unfreezes encoder/decoder/adapter, and runs three coverage epochs.
 The base LR is `2e-5`, decoder LR `1e-5`, embedding LR `5e-6`, with 500 warm-up
-updates and a cosine schedule. Evaluation every 10,000 updates; checkpoint saving every 1,000 updates.
+updates and a cosine schedule. Evaluation and checkpoint saving every 3,700 updates.
 The effective batch, language mix and augmentation settings remain unchanged.
 
 Resume full training on **all nodes**:

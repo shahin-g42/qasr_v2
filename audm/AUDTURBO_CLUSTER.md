@@ -3,7 +3,11 @@
 This follows the existing QASR **manual per-node launch** workflow. Use the
 separate export node first, then the 8 training nodes, with 8 GPUs per node.
 Run each distributed action once on **every** training node with a unique rank
-0–7. Wait for that action to finish on every node before starting the next.
+0–7. The script launches `torchrun` directly on the current node, even when
+`SLURM_*` variables are present; it does not call `srun` or `scontrol`. Start the
+same action on all eight nodes without waiting for the first node to finish:
+each launch waits for the other ranks to join. Once all nodes have started,
+wait for that action to finish everywhere before starting the next action.
 
 Copy the updated `audm/` directory into the shared cluster QASR checkout first.
 The data recipe remains `configs/v8.1/02_full_12node.yaml`; its referenced data,

@@ -47,11 +47,8 @@ case "$ACTION" in
     export AUD_NNODES=8 AUD_GPUS_PER_NODE=8 AUD_NODE_RANK="$RANK"
     export OMP_NUM_THREADS="${OMP_NUM_THREADS:-2}"
     export AUD_MASTER_PORT="${AUD_MASTER_PORT:-29591}"
-    # This entrypoint is deliberately one invocation per node, not an srun fan-out.
-    if [[ -n "${SLURM_JOB_ID:-}" ]]; then
-      echo 'Inside Slurm, use audm/scripts/train.slurm instead of this manual-node wrapper.' >&2
-      exit 2
-    fi
+    # Always launch directly on this node, including inside a Slurm allocation.
+    export AUD_USE_SLURM=0
     if [[ "$ACTION" == nccl ]]; then
       export AUD_COMMAND=distributed-check
       ARGS=(--expected-world-size 64)

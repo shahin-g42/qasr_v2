@@ -46,7 +46,8 @@ def test_nccl_has_all_64_ranks_and_invalid_launches_fail():
 
 
 @pytest.mark.parametrize(
-    "variant,rank,nodes,port", [("audturbo", "7", 8, 29591), ("audpro", "4", 5, 29601)]
+    "variant,rank,nodes,port",
+    [("audturbo", "7", 8, 29591), ("audpro", "4", 5, 29601), ("audflash", "0", 1, 29611)],
 )
 def test_direct_launch_ignores_inherited_slurm_environment(tmp_path, variant, rank, nodes, port):
     import json
@@ -79,6 +80,10 @@ def test_direct_launch_ignores_inherited_slurm_environment(tmp_path, variant, ra
         AUDPRO_TRITON_CACHE_DIR=str(tmp_path / "cache"),
         AUDPRO_MASTER_ADDR="chosen-master",
         AUDPRO_MASTER_PORT=str(port),
+        AUDFLASH_RUN_ROOT=str(tmp_path / "flash-runs"),
+        AUDFLASH_TRITON_CACHE_DIR=str(tmp_path / "flash-cache"),
+        AUDFLASH_MASTER_ADDR="chosen-master",
+        AUDFLASH_MASTER_PORT=str(port),
         AUD_USE_SLURM="1",
         SLURM_JOB_ID="123",
         SLURM_JOB_NODELIST="wrong-hosts",
@@ -136,3 +141,44 @@ def test_audpro_defaults_are_isolated_from_audturbo(tmp_path):
     assert run("full", "5").returncode != 0
     env.pop("AUDPRO_MASTER_ADDR")
     assert run("full", "0").returncode != 0
+
+
+def test_audflash_stage_paths_and_single_node_defaults(tmp_path):
+    env = dict(
+        os.environ,
+        AUD_DRY_RUN="1",
+        AUD_MODEL="/wrong/model",
+        AUD_RUN_ROOT="/wrong/run",
+        AUD_MASTER_ADDR="wrong-master",
+        AUD_MASTER_PORT="29591",
+        AUD_ADAPTER_CONFIG="/wrong/adapter.yaml",
+        AUD_FULL_CONFIG="/wrong/full.yaml",
+        AUDFLASH_TRITON_CACHE_DIR=str(tmp_path / "cache"),
+    )
+    for key in ("MODEL", "RUN_ROOT", "MASTER_ADDR", "MASTER_PORT", "ADAPTER_CONFIG", "FULL_CONFIG"):
+        env.pop("AUDFLASH_" + key, None)
+
+    def run(*args):
+        return subprocess.run(
+            ["bash", str(SCRIPT.with_name("audflash.sh")), *args],
+            env=env,
+            capture_output=True,
+            text=True,
+        )
+
+    adapter = run("adapter", "0")
+    assert adapter.returncode == 0, adapter.stderr
+    assert "nodes=1 GPUs/node=8 master=127.0.0.1:29611" in adapter.stdout
+    assert "audflash_adapter_1node.yaml" in adapter.stdout
+    assert "models/AudFlash-v1" in adapter.stdout
+    assert "output/audflash-v1/adapter" in adapter.stdout
+    assert "/wrong/" not in adapter.stdout
+    full = run("full", "0", "--resume", "auto")
+    assert full.returncode == 0, full.stderr
+    assert "audflash_full_1node.yaml" in full.stdout
+    assert "output/audflash-v1/adapter" in full.stdout
+    assert "output/audflash-v1/full" in full.stdout
+    assert "--resume auto" in full.stdout
+    assert "--smoke" in run("smoke", "0").stdout
+    assert "--expected-world-size 8" in run("nccl", "0").stdout
+    assert run("full", "1").returncode != 0

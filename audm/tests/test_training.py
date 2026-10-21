@@ -116,7 +116,7 @@ def test_two_updates_checkpoint_resume_and_clean_eval(tmp_path, tokenizer, varia
         run(recipe, model=tmp_path / "aud", output=tmp_path / "run")
 
 
-@pytest.mark.parametrize("world_size", [40, 64, 96])
+@pytest.mark.parametrize("world_size", [8, 40, 64, 96])
 def test_accumulation_window_preserves_rank_coverage(world_size):
     parts = []
     quotas = {"ar": 10, "en": 6, "hi": 2, "ml": 1, "zh": 1}
@@ -151,7 +151,7 @@ def test_accumulation_window_preserves_rank_coverage(world_size):
     assert seen == set(range(sum(map(len, parts))))
 
 
-@pytest.mark.parametrize("nodes", [5, 8, 12])
+@pytest.mark.parametrize("nodes", [1, 5, 8, 12])
 def test_production_recipes_reuse_stage02_data_and_augmentation(nodes):
     root = Path(__file__).resolve().parents[1]
     original = yaml.safe_load((root.parent / "configs/v8.1/02_full_12node.yaml").read_text())
@@ -163,12 +163,12 @@ def test_production_recipes_reuse_stage02_data_and_augmentation(nodes):
         assert config.code_switch_index is None
         assert config.code_switch_probability == 0.0
         assert config.expected_world_size == nodes * 8
-        assert config.per_device_train_batch_size == (5 if nodes == 12 else 10)
+        assert config.per_device_train_batch_size == ({1: 20, 5: 10, 8: 10, 12: 5}[nodes])
         assert config.gradient_accumulation_steps == 4
         assert config.dataloader_num_workers == 4
         assert (
             config.per_device_train_batch_size * config.gradient_accumulation_steps * nodes * 8
-            == ({5: 1600, 8: 2560, 12: 1920}[nodes])
+            == ({1: 640, 5: 1600, 8: 2560, 12: 1920}[nodes])
         )
         assert receipt["quota_window"] == 20
         if stage == "full":

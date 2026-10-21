@@ -359,3 +359,11 @@ Use [AUDPRO_CLUSTER.md](AUDPRO_CLUSTER.md) for direct per-node commands alongsid
 an existing AudTurbo run. The dedicated `audpro_full_5node.yaml` uses 40 GPUs,
 microbatch 10, accumulation 4, and three epochs (1,600 samples/update).
 `audpro.sh` has separate `AUDPRO_*` paths and rendezvous settings.
+
+## AudFlash on one node
+
+Use [AUDFLASH_CLUSTER.md](AUDFLASH_CLUSTER.md) for the single-node, eight-GPU
+workflow: export, verify, preflight, NCCL, smoke, adapter alignment, full training.
+Both stages use microbatch 20, accumulation 4 and four workers per GPU
+(640 samples/update). Adapter alignment runs 2,000 updates; full training runs
+three epochs. The launcher isolates `AUDFLASH_*` settings from other AUD runs.

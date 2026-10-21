@@ -2,6 +2,8 @@
 data_recipe: ../../configs/v8.1/02_full_12node.yaml
 stage: full
 training:
+  # Gemma audio context: filter longer recordings without truncation.
+  max_duration_seconds: 30.0
   # Optional code-switch mixing is disabled by default.
   code_switch_index: null
   code_switch_probability: 0.0

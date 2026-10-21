@@ -4,7 +4,7 @@ from typing import ClassVar
 
 import torch
 from torch import nn
-from transformers import PreTrainedModel, Qwen3ForCausalLM
+from transformers import Gemma4AudioModel, PreTrainedModel, Qwen3ForCausalLM
 from transformers.activations import ACT2FN
 from transformers.generation import GenerationMixin
 from transformers.models.moonshine_streaming.modeling_moonshine_streaming import (
@@ -39,6 +39,7 @@ def name_aud_layers(module):
     prefixes = {
         "Qwen3OmniMoe": "AUDOmni",
         "MoonshineStreaming": "AUDMoonshine",
+        "Gemma4Audio": "AUDGemma4Audio",
         "Parakeet": "AUDCohere",
         "Qwen3": "AUDText",
     }
@@ -118,6 +119,7 @@ class AUDForConditionalGeneration(PreTrainedModel, GenerationMixin):
         "AUDCohereEncoderBlock",
         "AUDOmniAudioEncoderLayer",
         "AUDMoonshineEncoderLayer",
+        "AUDGemma4AudioLayer",
         "AUDTextDecoderLayer",
     ]
     _tied_weights_keys = {"aud_decoder.lm_head.weight": "aud_decoder.model.embed_tokens.weight"}
@@ -140,7 +142,9 @@ class AUDForConditionalGeneration(PreTrainedModel, GenerationMixin):
         constructors = {
             "audpro": ParakeetEncoder,
             "audturbo": Qwen3OmniMoeAudioEncoder,
-            "audflash": MoonshineStreamingEncoder,
+            "audflash": Gemma4AudioModel
+            if config.flash_encoder == "gemma4"
+            else MoonshineStreamingEncoder,
         }
         self.aud_encoder = constructors[config.variant](config.audio_config)
         self.aud_decoder = Qwen3ForCausalLM(config.text_config)
@@ -155,6 +159,8 @@ class AUDForConditionalGeneration(PreTrainedModel, GenerationMixin):
             size = (
                 config.audio_config.output_dim
                 if config.variant == "audturbo"
+                else config.audio_config.output_proj_dims
+                if config.flash_encoder == "gemma4"
                 else config.audio_config.hidden_size
             )
             self.aud_projector = AUDAdapter(
@@ -236,15 +242,27 @@ class AUDForConditionalGeneration(PreTrainedModel, GenerationMixin):
             hidden = self.aud_encoder(input_features=packed, feature_lens=lengths).last_hidden_state
             lengths = _get_feat_extract_output_lengths(lengths, self.config.audio_config.n_window)
         else:
-            if self.config.variant == "audflash":
+            if self.config.variant == "audflash" and self.config.flash_encoder == "moonshine":
                 if features.shape != mask.shape:
                     raise ValueError("AudFlash expects [batch, samples] raw waveforms")
                 output = self.aud_encoder(input_values=features, attention_mask=mask)
             else:
                 if features.shape[:2] != mask.shape:
-                    raise ValueError("AudPro expects [batch, frames, mel] features")
+                    raise ValueError("Mel encoders expect [batch, frames, mel] features")
                 output = self.aud_encoder(input_features=features, attention_mask=mask)
             hidden, mask = output.last_hidden_state, output.attention_mask.bool()
+            if self.config.variant == "audflash" and self.config.flash_encoder == "gemma4":
+                # Preserve GQASR: project first, then average valid adjacent frames.
+                hidden = self.aud_projector(hidden).masked_fill(~mask[..., None], 0)
+                if self.config.flash_audio_stride == 2:
+                    padding = hidden.shape[1] % 2
+                    hidden = nn.functional.pad(hidden, (0, 0, 0, padding))
+                    mask = nn.functional.pad(mask, (0, padding))
+                    count = mask.reshape(mask.shape[0], -1, 2).sum(-1)
+                    hidden = hidden.reshape(hidden.shape[0], -1, 2, hidden.shape[-1]).sum(2)
+                    hidden = hidden / count.clamp_min(1)[..., None]
+                    mask = count > 0
+                return hidden[mask], mask.sum(-1)
             if self.aud_pool is not None:
                 hidden, mask = self.aud_pool(hidden, mask.sum(-1))
             lengths = mask.sum(-1)

@@ -10,25 +10,25 @@ local QASR/GQASR decoders**, not fresh upstream replacements.
 |---|---|---|---|---|
 | **AudPro** | Current QASR Cohere Conformer | Current QASR | Preserve trained bridge, depth and pooling | Optional full fine-tuning |
 | **AudTurbo** | `Qwen/Qwen3-Omni-30B-A3B-Captioner` audio tower, including output projections | Current QASR | New residual bottleneck; initially identity when widths match | Adapter alignment, then full fine-tuning |
-| **AudFlash** | `moonshine-ai/moonshine-streaming-medium` encoder and learned waveform frontend | Current GQASR | New LayerNorm → 384 → GELU → decoder-width projection | Adapter alignment, then full fine-tuning |
+| **AudFlash** | `google/gemma-4-E2B-it` audio tower and Gemma log-mel frontend | Current GQASR | Reuse compatible trained GQASR LayerNorm → 384 → GELU → decoder-width projection | Adapter alignment, then full fine-tuning |
 
 Captioner's published audio tower has 32 layers, width 1280 and output width
-2048 (approximately **648M encoder parameters**). Moonshine Medium's encoder
-has 14 layers, width 768 and approximately **106M encoder parameters**. The
+2048 (approximately **648M encoder parameters**). Gemma 4 E2B's audio tower
+has 12 layers, width 1024, output width 1536 and approximately **305M parameters**. The
 exporter writes actual component counts from the selected checkpoints into
 `provenance.json`. Total model size also includes the retained decoder: with the
 current approximately 1.7B/0.6B decoders, Turbo is roughly 2.4B total and Flash
-roughly 0.7B. Names express the intended product tiers; speed and ASR accuracy
+roughly 0.9B. Names express the intended product tiers; speed and ASR accuracy
 must be measured after training.
 
 Sources: [Captioner configuration](https://huggingface.co/Qwen/Qwen3-Omni-30B-A3B-Captioner/blob/main/config.json),
 [Captioner frontend](https://huggingface.co/Qwen/Qwen3-Omni-30B-A3B-Captioner/blob/main/preprocessor_config.json),
-[Moonshine Medium configuration](https://huggingface.co/moonshine-ai/moonshine-streaming-medium/blob/main/config.json).
+[Gemma 4 E2B configuration](https://huggingface.co/google/gemma-4-E2B-it/blob/main/config.json).
 
 Turbo and Flash are **new hybrids that require alignment training**. Matching
 tensor dimensions does not make an encoder compatible with a trained decoder.
-The full source encoder and decoder weights are loaded, while the newly
-initialized adapter is identified explicitly in the manifest. The existing
+The full source encoder and decoder weights are loaded; bridge tensor provenance
+is recorded explicitly. Flash reuses a compatible trained GQASR bridge by default. The existing
 QASR bridge cannot be reused with Captioner representations.
 
 ## Artifact format and namespace
@@ -47,16 +47,17 @@ start with `AUD`. Underlying kernels and source attribution are retained.
 AudPro preserves optional trained pooling/deep bridge/CTC weights. The optional
 CTC head remains an inactive frozen scaffold in this training platform; a
 nonzero CTC loss setting fails explicitly. Turbo keeps Captioner's pretrained
-`proj1`/`proj2` inside its encoder. Flash keeps Moonshine's native 50 Hz output
-rate and does not import its original text decoder or positional adapter.
+`proj1`/`proj2` inside its encoder. Flash defaults to Gemma's approximately 25 Hz output
+(stride 1) and does not import Gemma's text decoder. E4B audio weights are also
+supported via --encoder-source google/gemma-4-E4B-it.
 
 Audio must be mono, 16 kHz. The trainer's QASR loader handles decoding and
 resampling. Direct `AUDProcessor` callers pass already-resampled arrays.
 AudPro uses the original normalized Cohere log-mel frontend; Turbo uses the
-Captioner Whisper frontend; Flash takes raw waveforms. Limits are explicit and
+Captioner Whisper frontend; Flash uses Gemma log-mel features with a 30-second limit. Limits are explicit and
 long utterances are rejected rather than silently truncated.
 
-The AUD Moonshine wrapper corrects upstream convolution-mask propagation for
+Legacy Moonshine exports remain loadable. The AUD Moonshine wrapper corrects upstream convolution-mask propagation for
 unequal padded batches. Only valid time positions reach attention and the text
 decoder. Tests compare batched results with native single-utterance results.
 This package does not implement Moonshine's native C++ streaming runtime.
@@ -108,12 +109,12 @@ The exporter resolves Hub `main` to an immutable revision and reads the tensor
 index before downloading weight shards. It downloads only shards containing
 the requested encoder tensors; a selected shard can also contain unrelated
 weights. A source distributed as a single safetensors file requires that file.
-Neither the Captioner MoE decoder nor Moonshine's text decoder is instantiated.
+Neither the Captioner MoE decoder nor Gemma's text decoder is instantiated.
 
 Optional environment variables:
 
-- `AUD_CAPTIONER_SOURCE`, `AUD_MOONSHINE_SOURCE`: alternate Hub IDs or local snapshots.
-- `AUD_CAPTIONER_REVISION`, `AUD_MOONSHINE_REVISION`: commit/tag to select explicitly.
+- `AUD_CAPTIONER_SOURCE`, `AUD_GEMMA_SOURCE`: alternate Hub IDs or local snapshots.
+- `AUD_CAPTIONER_REVISION`, `AUD_GEMMA_REVISION`: commit/tag to select explicitly.
 - `AUD_PYTHON`: Python executable; `AUD_VERIFY_DEVICE=cpu` for CPU verification.
 
 Single-model export is useful after an interrupted batch:

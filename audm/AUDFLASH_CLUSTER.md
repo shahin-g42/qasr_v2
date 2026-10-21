@@ -15,8 +15,8 @@ Evaluation batch size is one per GPU.
 The same stage-02 training/evaluation manifests and augmentations are reused.
 Code-switching is disabled; no code-switch index is needed. Each microbatch
 contains the 20-example language quota (10 Arabic, 6 English, 2 Hindi,
-1 Malayalam, 1 Chinese), repeated four times per optimizer update. Flash's
-SpecAugment adaptation operates on waveform STFT features.
+1 Malayalam, 1 Chinese), repeated four times per optimizer update. Gemma SpecAugment operates on log-mel features. Recordings longer than 30 seconds
+are filtered to respect the audio tower's context limit; manifest paths stay the same.
 
 ## 1. Shared setup — on the AudFlash node
 
@@ -32,12 +32,14 @@ cat > audflash-cluster.env <<'ENV'
 export AUD_REPO_ROOT=/lustrefs/shared/shahin.konadath/workspace/train/stt/v2/qasr_v2
 export AUD_CONDA_ENV=/lustrefs/shared/shahin.konadath/workspace/conda/envs/audm
 export GQASR_CHECKPOINT=/REPLACE/WITH/TRAINED/GQASR/CHECKPOINT
-export AUDFLASH_MODEL="$AUD_REPO_ROOT/models/AudFlash-v1"
-export AUDFLASH_RUN_ROOT="$AUD_REPO_ROOT/output/audflash-v1"
+export AUDFLASH_MODEL="$AUD_REPO_ROOT/models/AudFlash-Gemma4-v1"
+export AUDFLASH_RUN_ROOT="$AUD_REPO_ROOT/output/audflash-gemma4-v1"
 export AUDFLASH_MASTER_ADDR=127.0.0.1
 export AUDFLASH_MASTER_PORT=29611
 export AUDFLASH_ADAPTER_CONFIG="$AUD_REPO_ROOT/audm/configs/audflash_adapter_1node.yaml"
 export AUDFLASH_FULL_CONFIG="$AUD_REPO_ROOT/audm/configs/audflash_full_1node.yaml"
+export RUN_ID=cs_v1_ml_v2
+export AUDFLASH_ENCODER_SOURCE=google/gemma-4-E2B-it
 export TOKENIZERS_PARALLELISM=false
 ENV
 
@@ -62,12 +64,23 @@ bash audm/scripts/audflash.sh verify
 bash audm/scripts/audflash.sh preflight adapter --scan
 ```
 
-Export combines the Moonshine streaming Medium encoder with the trained GQASR
-decoder and a new adapter. Default encoder source is
-`moonshine-ai/moonshine-streaming-medium`; AUDFLASH_ENCODER_SOURCE and
-AUDFLASH_ENCODER_REVISION can override it. Export runs on CPU; verification uses
-cuda:0 for strict reload and forward/generation checks. Skip export if the
-verified AudFlash model already exists; existing destinations are protected.
+Export combines the pretrained Gemma 4 E2B audio tower, the compatible trained
+384-wide GQASR bridge, and the trained GQASR 0.6B decoder. **Stride 1** retains
+approximately 25 audio embeddings/second. Every imported tensor is checked;
+an incompatible bridge fails rather than partially loading. `AUDFLASH_BRIDGE_INIT=new`
+explicitly requests a fresh bridge if needed.
+
+Default source is `google/gemma-4-E2B-it`; set AUDFLASH_ENCODER_SOURCE to
+`google/gemma-4-E4B-it` to use that model's audio weights instead. The E2B/E4B
+labels describe the parent models, not the extracted tower's parameter count.
+AUDFLASH_ENCODER_REVISION can pin a revision; the resolved commit is recorded.
+Ensure your Hugging Face account has access to the selected Gemma weights.
+Export runs on CPU; verification uses cuda:0 for strict reload and generation.
+
+Use the new Gemma export/run paths above, including when replacing an old env
+file. Do not resume a Moonshine checkpoint or reuse its adapter output. Existing
+export destinations are protected; skip export only for an already verified
+Gemma stride-1 artifact. The launcher rejects other architectures/strides.
 Preflight scans the actual corpus and calculates coverage updates.
 
 ## 3. NCCL and two-update rehearsal
@@ -88,7 +101,7 @@ archived first. Adapter memory does not establish full-training memory usage.
 bash audm/scripts/audflash.sh adapter "$NODE_RANK"
 ```
 
-Encoder and decoder are frozen while the new adapter learns for 2,000 updates,
+Encoder and decoder are frozen while the initialized bridge realigns for 2,000 updates,
 with learning rate 2e-4, warmup 100, and save/eval every 500 updates. This is
 1.28 million sample presentations at the configured global batch. Final adapter
 model is saved at `$AUDFLASH_RUN_ROOT/adapter`. Wait for completion and inspect

@@ -69,7 +69,8 @@ class AUDDataCollator(QASRDataCollator):
                 for w in waves
             ]
         variant = self.processor.config.variant
-        if variant == "audflash" and augmenter is not None and augmenter.has_spec_augmentation:
+        raw_audio = variant == "audflash" and self.processor.config.flash_encoder == "moonshine"
+        if raw_audio and augmenter is not None and augmenter.has_spec_augmentation:
             waves = [spectral_mask_waveform(w, augmenter) for w in waves]
         batch = dict(
             self.processor.prepare_training_batch(
@@ -78,7 +79,7 @@ class AUDDataCollator(QASRDataCollator):
                 language=[f.get("language") or self.language for f in features],
             )
         )
-        if variant != "audflash" and augmenter is not None and augmenter.has_spec_augmentation:
+        if not raw_audio and augmenter is not None and augmenter.has_spec_augmentation:
             mel = batch["input_features"]
             if variant == "audturbo":
                 mel = mel.transpose(1, 2)

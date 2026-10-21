@@ -170,15 +170,47 @@ def test_audflash_stage_paths_and_single_node_defaults(tmp_path):
     assert adapter.returncode == 0, adapter.stderr
     assert "nodes=1 GPUs/node=8 master=127.0.0.1:29611" in adapter.stdout
     assert "audflash_adapter_1node.yaml" in adapter.stdout
-    assert "models/AudFlash-v1" in adapter.stdout
-    assert "output/audflash-v1/adapter" in adapter.stdout
+    assert "models/AudFlash-Gemma4-v1" in adapter.stdout
+    assert "output/audflash-gemma4-v1/adapter" in adapter.stdout
     assert "/wrong/" not in adapter.stdout
     full = run("full", "0", "--resume", "auto")
     assert full.returncode == 0, full.stderr
     assert "audflash_full_1node.yaml" in full.stdout
-    assert "output/audflash-v1/adapter" in full.stdout
-    assert "output/audflash-v1/full" in full.stdout
+    assert "output/audflash-gemma4-v1/adapter" in full.stdout
+    assert "output/audflash-gemma4-v1/full" in full.stdout
     assert "--resume auto" in full.stdout
     assert "--smoke" in run("smoke", "0").stdout
     assert "--expected-world-size 8" in run("nccl", "0").stdout
     assert run("full", "1").returncode != 0
+
+
+@pytest.mark.parametrize("encoder,stride", [("moonshine", 1), ("gemma4", 2)])
+def test_audflash_rejects_incompatible_export(tmp_path, encoder, stride):
+    import json
+    import sys
+
+    model = tmp_path / "model"
+    model.mkdir()
+    (model / "config.json").write_text(
+        json.dumps(
+            dict(
+                variant="audflash",
+                flash_encoder=encoder,
+                flash_audio_stride=stride,
+            )
+        )
+    )
+    env = dict(
+        os.environ,
+        AUD_PYTHON=sys.executable,
+        AUDFLASH_MODEL=str(model),
+        AUDFLASH_TRITON_CACHE_DIR=str(tmp_path / "cache"),
+    )
+    result = subprocess.run(
+        ["bash", str(SCRIPT.with_name("audflash.sh")), "verify"],
+        env=env,
+        capture_output=True,
+        text=True,
+    )
+    assert result.returncode != 0
+    assert "fresh Gemma4 AudFlash stride-1 export" in result.stderr

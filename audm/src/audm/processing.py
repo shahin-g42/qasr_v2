@@ -5,7 +5,11 @@ from pathlib import Path
 
 import numpy as np
 import torch
-from transformers import PreTrainedTokenizerFast, WhisperFeatureExtractor
+from transformers import (
+    Gemma4AudioFeatureExtractor,
+    PreTrainedTokenizerFast,
+    WhisperFeatureExtractor,
+)
 from transformers.feature_extraction_utils import BatchFeature
 from transformers.models.qwen3_asr.processing_qwen3_asr import Qwen3ASRProcessor
 from transformers.models.qwen3_omni_moe.modeling_qwen3_omni_moe import (
@@ -127,6 +131,10 @@ class AUDProcessor:
             frontend = WhisperFeatureExtractor.from_dict(data)
             if frontend.feature_size != config.audio_config.num_mel_bins:
                 raise ValueError("Captioner mel bins differ from encoder configuration")
+        elif config.flash_encoder == "gemma4":
+            frontend = Gemma4AudioFeatureExtractor.from_dict(data)
+            if frontend.feature_size != config.audio_config.subsampling_conv_channels[0]:
+                raise ValueError("Gemma frontend feature size differs from encoder")
         else:
             frontend = AUDRawFeatureExtractor(data["frame_samples"], config.max_audio_seconds)
         template = directory / "chat_template.jinja"
@@ -171,11 +179,21 @@ class AUDProcessor:
         lengths = mask.long().sum(-1)
         if self.chat is not None:
             return torch.as_tensor(self.chat._get_audio_token_length(lengths), device=mask.device)
+        if self.config.flash_encoder == "gemma4":
+            lengths = (lengths + 3) // 4  # two stride-2 convolutions, mask[:, ::2]
+            return (lengths + self.config.flash_audio_stride - 1) // self.config.flash_audio_stride
         frames = lengths // self.feature_extractor.frame_samples
         return ((frames + 1) // 2 + 1) // 2
 
     def _flash_batch(self, waves, texts=None, languages=None):
-        result = self.feature_extractor(waves)
+        result = self.feature_extractor(
+            waves,
+            sampling_rate=16000,
+            padding=True,
+            truncation=False,
+            max_length=None,
+            return_tensors="pt",
+        )
         lengths = self.audio_token_lengths(result["input_features_mask"])
         rows, label_rows = [], []
         if texts is not None and (

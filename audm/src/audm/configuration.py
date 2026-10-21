@@ -1,6 +1,6 @@
 """Local, versioned configuration; upstream sources are provenance, not dependencies."""
 
-from transformers import PreTrainedConfig, Qwen3Config
+from transformers import Gemma4AudioConfig, PreTrainedConfig, Qwen3Config
 from transformers.models.moonshine_streaming.configuration_moonshine_streaming import (
     MoonshineStreamingEncoderConfig,
 )
@@ -24,6 +24,10 @@ class AUDOmniConfig(Qwen3OmniMoeAudioEncoderConfig):
 
 class AUDMoonshineConfig(MoonshineStreamingEncoderConfig):
     model_type = "aud_moonshine"
+
+
+class AUDGemma4Config(Gemma4AudioConfig):
+    model_type = "aud_gemma4_audio"
 
 
 ENCODERS = {"audpro": AUDCohereConfig, "audturbo": AUDOmniConfig, "audflash": AUDMoonshineConfig}
@@ -50,6 +54,8 @@ class AUDConfig(PreTrainedConfig):
         projector_hidden_act="gelu",
         projector_pool_stride=1,
         adapter_width=384,
+        flash_encoder="moonshine",
+        flash_audio_stride=1,
         ctc_vocab_size=0,
         prompt_prefix=None,
         prompt_suffix=None,
@@ -61,7 +67,16 @@ class AUDConfig(PreTrainedConfig):
         if variant not in ENCODERS or format_version != 1:
             raise ValueError("Unsupported AUD variant or format version")
         self.variant = variant
-        self.audio_config = ENCODERS[variant](**clean_config(audio_config))
+        if flash_encoder not in ("moonshine", "gemma4") or flash_audio_stride not in (1, 2):
+            raise ValueError("Unsupported Flash encoder or temporal stride")
+        self.flash_encoder = flash_encoder
+        self.flash_audio_stride = int(flash_audio_stride)
+        audio_cls = (
+            AUDGemma4Config
+            if variant == "audflash" and flash_encoder == "gemma4"
+            else ENCODERS[variant]
+        )
+        self.audio_config = audio_cls(**clean_config(audio_config))
         self.text_config = AUDTextConfig(**clean_config(text_config))
         self.audio_token_id = int(audio_token_id)
         self.projector_depth = int(projector_depth)

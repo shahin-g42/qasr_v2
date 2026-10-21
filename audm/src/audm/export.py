@@ -12,7 +12,12 @@ import torch
 from accelerate import init_empty_weights
 from huggingface_hub import HfApi, hf_hub_download
 from safetensors import safe_open
-from transformers import GenerationConfig, PreTrainedTokenizerFast, WhisperFeatureExtractor
+from transformers import (
+    Gemma4AudioFeatureExtractor,
+    GenerationConfig,
+    PreTrainedTokenizerFast,
+    WhisperFeatureExtractor,
+)
 
 from .configuration import AUDConfig
 from .feature_extraction import AUDCohereFeatureExtractor
@@ -20,7 +25,7 @@ from .modeling import AUDAdapter, AUDForConditionalGeneration
 from .processing import AUDProcessor, AUDRawFeatureExtractor
 
 CAPTIONER = "Qwen/Qwen3-Omni-30B-A3B-Captioner"
-MOONSHINE = "moonshine-ai/moonshine-streaming-medium"
+GEMMA4 = "google/gemma-4-E2B-it"
 DTYPES = {"float32": torch.float32, "bfloat16": torch.bfloat16, "float16": torch.float16}
 
 
@@ -145,7 +150,14 @@ def _frontend_config(source):
 
 
 def build_export(
-    variant, text_source, encoder_source=None, dtype="bfloat16", adapter_width=384, seed=42
+    variant,
+    text_source,
+    encoder_source=None,
+    dtype="bfloat16",
+    adapter_width=384,
+    seed=42,
+    bridge_init="gqasr",
+    flash_audio_stride=1,
 ):
     """Return a fully materialized CPU model plus explicit tensor provenance."""
     torch.manual_seed(seed)
@@ -201,6 +213,16 @@ def build_export(
         prefix = encoder_source.choose_prefix(
             ("thinker.audio_tower.", "model.thinker.audio_tower.")
         )
+    elif encoder_source.config.get("model_type") == "gemma4":
+        audio_config = encoder_source.config["audio_config"]
+        if audio_config.get("model_type") != "gemma4_audio":
+            raise ValueError("Gemma 4 source must contain a pretrained audio tower")
+        prefix = encoder_source.choose_prefix(("model.audio_tower.", "audio_tower."))
+        common.update(
+            flash_encoder="gemma4",
+            flash_audio_stride=flash_audio_stride,
+            max_audio_seconds=30.0,
+        )
     else:
         audio_config = encoder_source.config["encoder_config"]
         prefix = encoder_source.choose_prefix(("model.encoder.", "encoder."))
@@ -234,9 +256,18 @@ def build_export(
     # Nonpersistent buffers (RoPE, sinusoidal positions) stay on CPU and remain valid.
     with init_empty_weights(include_buffers=False):
         model = AUDForConditionalGeneration(config)
+    gemma = variant == "audflash" and config.flash_encoder == "gemma4"
+    if bridge_init not in ("gqasr", "new"):
+        raise ValueError("bridge_init must be gqasr or new")
     new_state = {}
-    if variant != "audpro":
-        size = audio_config["output_dim"] if variant == "audturbo" else audio_config["hidden_size"]
+    if variant != "audpro" and not (gemma and bridge_init == "gqasr"):
+        size = (
+            audio_config["output_dim"]
+            if variant == "audturbo"
+            else audio_config["output_proj_dims"]
+            if gemma
+            else audio_config["hidden_size"]
+        )
         adapter = AUDAdapter(
             size, config.text_config.hidden_size, adapter_width, residual=variant == "audturbo"
         )
@@ -258,6 +289,14 @@ def build_export(
             owner = text_source
             if target.startswith("aud_encoder.") and encoder_source is not None:
                 key, owner = prefix + target.removeprefix("aud_encoder."), encoder_source
+            elif gemma and target.startswith("aud_projector."):
+                bridge_names = {"norm": "0", "down": "1", "up": "3"}
+                part, suffix = target.removeprefix("aud_projector.").split(".", 1)
+                key = "gqasr_bridge." + bridge_names[part] + "." + suffix
+                if key not in text_source.weight_map:
+                    raise ValueError(
+                        f"Missing trained bridge tensor {key}; use --bridge-init new for a fresh bridge"
+                    )
             elif variant == "audflash":
                 key = "gqasr_decoder." + target.removeprefix("aud_decoder.")
             else:
@@ -323,6 +362,8 @@ def export_model(
     dtype="bfloat16",
     adapter_width=384,
     seed=42,
+    bridge_init="gqasr",
+    flash_audio_stride=1,
 ):
     output = Path(output).resolve()
     if output.exists():
@@ -338,11 +379,13 @@ def export_model(
         audio = None
         if variant != "audpro":
             audio = WeightSource(
-                encoder_source or (CAPTIONER if variant == "audturbo" else MOONSHINE),
+                encoder_source or (CAPTIONER if variant == "audturbo" else GEMMA4),
                 encoder_revision,
             )
             sources.append(audio)
-        model, mapping = build_export(variant, text, audio, dtype, adapter_width, seed)
+        model, mapping = build_export(
+            variant, text, audio, dtype, adapter_width, seed, bridge_init, flash_audio_stride
+        )
         tokenizer = PreTrainedTokenizerFast.from_pretrained(
             text.root / "tokenizer" if variant == "audflash" else text.root, local_files_only=True
         )
@@ -358,6 +401,15 @@ def export_model(
             ):
                 raise ValueError("Captioner audio frontend does not match its encoder")
             frontend = WhisperFeatureExtractor.from_dict(data)
+        elif model.config.flash_encoder == "gemma4":
+            data = _frontend_config(audio)
+            if (
+                data.get("sampling_rate") != 16000
+                or data.get("feature_size")
+                != model.config.audio_config.subsampling_conv_channels[0]
+            ):
+                raise ValueError("Gemma audio frontend does not match its encoder")
+            frontend = Gemma4AudioFeatureExtractor.from_dict(data)
         else:
             a = model.config.audio_config
             frontend = AUDRawFeatureExtractor(round(a.frame_ms * a.sample_rate / 1000))
@@ -386,6 +438,10 @@ def export_model(
             {
                 "format_version": 1,
                 "variant": variant,
+                "flash_encoder": model.config.flash_encoder if variant == "audflash" else None,
+                "bridge_init": bridge_init
+                if variant == "audflash" and model.config.flash_encoder == "gemma4"
+                else None,
                 "dtype": dtype,
                 "seed": seed,
                 "requires_alignment": model.config.requires_alignment,
@@ -398,7 +454,7 @@ def export_model(
                 "scope": "Weights and assets only. No optimizer or scheduler state imported.",
                 "runtime_modifications": (
                     ["Moonshine valid-time convolution padding mask"]
-                    if variant == "audflash"
+                    if variant == "audflash" and model.config.flash_encoder == "moonshine"
                     else []
                 ),
             },
@@ -406,7 +462,7 @@ def export_model(
         (staging / "README.md").write_text(
             f"# {variant}\n\nLoad with audm.AUDForConditionalGeneration and audm.AUDProcessor.\n\n"
             + (
-                "New encoder-to-decoder adapter: alignment training is required; this is not a validated ASR model.\n"
+                "Encoder-to-decoder alignment training is required; this is not a validated ASR model.\n"
                 if model.config.requires_alignment
                 else "QASR repack with trained components preserved.\n"
             )

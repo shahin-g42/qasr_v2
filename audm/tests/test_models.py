@@ -7,7 +7,14 @@ from qasr.feature_extraction import QASRFeatureExtractor
 from qasr.modeling import QASRForConditionalGeneration
 from qasr.processing import QASRProcessor
 from safetensors.torch import save_file
-from transformers import Qwen3Config, Qwen3ForCausalLM, WhisperFeatureExtractor
+from transformers import (
+    Gemma4AudioConfig,
+    Gemma4AudioFeatureExtractor,
+    Gemma4AudioModel,
+    Qwen3Config,
+    Qwen3ForCausalLM,
+    WhisperFeatureExtractor,
+)
 from transformers.models.moonshine_streaming.configuration_moonshine_streaming import (
     MoonshineStreamingEncoderConfig,
 )
@@ -100,6 +107,28 @@ def encoder_source(path, variant):
             "thinker.audio_tower.",
         )
         WhisperFeatureExtractor(feature_size=128, return_attention_mask=True).save_pretrained(path)
+    elif variant == "audflash_gemma":
+        config = Gemma4AudioConfig(
+            hidden_size=16,
+            num_hidden_layers=2,
+            num_attention_heads=2,
+            output_proj_dims=16,
+            subsampling_conv_channels=[128, 2],
+            attention_chunk_size=4,
+            attention_context_left=5,
+            use_clipped_linears=True,
+        )
+        model = Gemma4AudioModel(config).eval()
+        data, prefix = (
+            {"model_type": "gemma4", "audio_config": config.to_dict()},
+            "model.audio_tower.",
+        )
+        frontend = Gemma4AudioFeatureExtractor()
+        # Match the upstream multimodal processor layout (no standalone frontend file).
+        write_json(
+            path / "processor_config.json",
+            {"feature_extractor": __import__("json").loads(frontend.to_json_string())},
+        )
     else:
         config = MoonshineStreamingEncoderConfig(
             hidden_size=16,
@@ -133,13 +162,18 @@ def gqasr_source(path, tokenizer, tied=True):
             prompt_prefix=[2, 4],
             prompt_suffix=[6, 2],
             eos_id=tokenizer.eos_token_id,
+            audio_stride=2,
+            bridge_width=384,
         ),
     )
     weights = {"gqasr_decoder." + k: v.clone() for k, v in decoder.state_dict().items()}
     if tied:
         del weights["gqasr_decoder.model.embed_tokens.weight"]
     weights["gqasr_acoustic.core.weight"] = torch.ones(4, 4)
-    weights["gqasr_bridge.weight"] = torch.ones(4, 4)
+    bridge = torch.nn.Sequential(
+        torch.nn.LayerNorm(16), torch.nn.Linear(16, 384), torch.nn.GELU(), torch.nn.Linear(384, 16)
+    )
+    weights.update({"gqasr_bridge." + k: v for k, v in bridge.state_dict().items()})
     save_file(weights, path / "model.safetensors")
     tokenizer.save_pretrained(path / "tokenizer")
     return decoder
@@ -360,3 +394,95 @@ def test_remote_index_downloads_only_required_encoder_shard(tmp_path, monkeypatc
         assert source.revision == "immutable-test-sha"
     finally:
         source.close()
+
+
+@pytest.mark.parametrize("stride", [1, 2])
+@pytest.mark.parametrize("dtype", ["float32", "bfloat16"])
+def test_gemma_flash_pretrained_bridge_pooling_and_reload(tmp_path, tokenizer, dtype, stride):
+    gqasr_source(tmp_path / "text", tokenizer)
+    native = encoder_source(tmp_path / "encoder", "audflash_gemma")
+    export_model(
+        "audflash",
+        tmp_path / "aud",
+        gqasr_checkpoint=tmp_path / "text",
+        encoder_source=tmp_path / "encoder",
+        dtype=dtype,
+        flash_audio_stride=stride,
+    )
+    new = AUDForConditionalGeneration.from_pretrained(
+        tmp_path / "aud", dtype=getattr(torch, dtype)
+    ).eval()
+    proc = AUDProcessor.from_pretrained(tmp_path / "aud")
+    assert new.config.flash_encoder == "gemma4"
+    assert new.config.flash_audio_stride == stride
+    assert new.config.requires_alignment
+    assert all(k.startswith("aud_") for k in new.state_dict())
+    native.to(getattr(torch, dtype))
+    for key, value in native.state_dict().items():
+        torch.testing.assert_close(new.aud_encoder.state_dict()[key], value, rtol=0, atol=0)
+    source = WeightSource(tmp_path / "text")
+    for name, number in (("norm", "0"), ("down", "1"), ("up", "3")):
+        for suffix in ("weight", "bias"):
+            torch.testing.assert_close(
+                new.state_dict()[f"aud_projector.{name}.{suffix}"],
+                source.tensor(f"gqasr_bridge.{number}.{suffix}").to(getattr(torch, dtype)),
+                rtol=0,
+                atol=0,
+            )
+    source.close()
+    waves = [
+        np.random.default_rng(i).normal(0, 0.03, n).astype(np.float32)
+        for i, n in enumerate((3200, 4961, 8000))
+    ]
+    batch = proc.prepare_training_batch(waves, ["hello"] * 3, ["en", "ar", "ml"])
+    with torch.no_grad():
+        output = native(
+            input_features=batch["input_features"].to(getattr(torch, dtype)),
+            attention_mask=batch["input_features_mask"],
+            return_dict=True,
+        )
+        valid = output.attention_mask.bool()
+        hidden = new.aud_projector(output.last_hidden_state).masked_fill(~valid[..., None], 0)
+        # Independent per-row reference: GQASR valid-frame averaging after projection.
+        expected = []
+        for row, mask in zip(hidden, valid, strict=True):
+            row = row[mask]
+            expected.extend(row[i : i + stride].mean(0) for i in range(0, len(row), stride))
+        encoded, lengths = new.encode_audio(batch["input_features"], batch["input_features_mask"])
+        torch.testing.assert_close(encoded, torch.stack(expected))
+        torch.testing.assert_close(lengths, proc.audio_token_lengths(batch["input_features_mask"]))
+        assert torch.isfinite(new(**batch).loss)
+    new.configure_training("adapter")
+    new(**batch).loss.backward()
+    assert any(p.grad is not None for p in new.aud_projector.parameters())
+    assert all(p.grad is None for p in new.aud_encoder.parameters())
+    assert all(p.grad is None for p in new.aud_decoder.parameters())
+    assert verify(tmp_path / "aud")["offline_reload"]
+
+
+def test_gemma_bridge_mismatch_requires_explicit_new_init(tmp_path, tokenizer):
+    gqasr_source(tmp_path / "text", tokenizer)
+    encoder_source(tmp_path / "encoder", "audflash_gemma")
+    with pytest.raises(ValueError, match="Shape mismatch"):
+        export_model(
+            "audflash",
+            tmp_path / "bad",
+            gqasr_checkpoint=tmp_path / "text",
+            encoder_source=tmp_path / "encoder",
+            adapter_width=32,
+        )
+    assert not (tmp_path / "bad").exists()
+    export_model(
+        "audflash",
+        tmp_path / "new",
+        gqasr_checkpoint=tmp_path / "text",
+        encoder_source=tmp_path / "encoder",
+        adapter_width=32,
+        bridge_init="new",
+    )
+    import json
+
+    provenance = json.loads((tmp_path / "new/provenance.json").read_text())
+    assert (
+        provenance["tensor_mapping"]["aud_projector.down.weight"]["initialization"] == "new_adapter"
+    )

@@ -7,7 +7,10 @@ does not change their origin or licensing.
   learned bridge, optional pooling and optional CTC scaffold.
 - AudTurbo imports the complete Qwen3-Omni Captioner audio tower, including its
   pretrained output projections, and the local trained QASR text decoder.
-- AudFlash imports the Moonshine Streaming Medium encoder and the local trained
+- AudFlash defaults to the Gemma 4 audio tower and frontend, a compatible trained
+  GQASR bridge, and the trained GQASR decoder. Default temporal stride is 1;
+  re-alignment training is required. Gemma source terms continue to apply.
+- Legacy AudFlash imports the Moonshine Streaming Medium encoder and the local trained
   GQASR text decoder. Its new adapter replaces the original Moonshine decoder's
   interface. Moonshine's text decoder and positional adapter are not imported.
 - Transformer primitives are provided by Hugging Face Transformers and their
@@ -19,9 +22,9 @@ does not change their origin or licensing.
   valid output time positions. This prevents padded batch tails from adding
   audio tokens or changing look-ahead attention. Convolution weights and
   valid-frame convolution mathematics are unchanged.
-- Turbo and Flash add newly initialized adapters. Their exported checkpoints
+- Turbo and legacy Moonshine Flash add newly initialized adapters. Their exported checkpoints
   are starting points for alignment training, not claims of pretrained ASR quality.
-- Flash's training spectral augmentation masks waveform STFT bins and
+- Legacy Moonshine Flash's training spectral augmentation masks waveform STFT bins and
   reconstructs audio. It is an AUD adaptation, not a claim about Moonshine's
   original training recipe or native streaming runtime.
 

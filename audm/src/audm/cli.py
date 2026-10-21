@@ -14,6 +14,13 @@ def main(argv=None):
     export.add_argument("--encoder-revision", default="main")
     export.add_argument("--dtype", choices=("float32", "bfloat16", "float16"), default="bfloat16")
     export.add_argument("--adapter-width", type=int, default=384)
+    export.add_argument(
+        "--bridge-init",
+        choices=("gqasr", "new"),
+        default="gqasr",
+        help="Gemma AudFlash: reuse compatible trained GQASR bridge or initialize a new bridge",
+    )
+    export.add_argument("--flash-audio-stride", type=int, choices=(1, 2), default=1)
     export.add_argument("--seed", type=int, default=42)
     verify = sub.add_parser(
         "verify", help="Strict offline reload, checksums and forward/generation smoke"

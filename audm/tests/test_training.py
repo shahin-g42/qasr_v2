@@ -50,8 +50,10 @@ def data_recipe(tmp_path):
     return path
 
 
-@pytest.mark.parametrize("variant", ["audpro", "audturbo", "audflash"])
+@pytest.mark.parametrize("variant", ["audpro", "audturbo", "audflash", "audflash_gemma"])
 def test_two_updates_checkpoint_resume_and_clean_eval(tmp_path, tokenizer, variant):
+    encoder_kind = variant
+    variant = "audflash" if variant == "audflash_gemma" else variant
     source = tmp_path / "source"
     if variant == "audflash":
         gqasr_source(source, tokenizer)
@@ -60,7 +62,7 @@ def test_two_updates_checkpoint_resume_and_clean_eval(tmp_path, tokenizer, varia
         qasr_source(source, tokenizer)
         kwargs = dict(qasr_checkpoint=source)
     if variant != "audpro":
-        encoder_source(tmp_path / "encoder", variant)
+        encoder_source(tmp_path / "encoder", encoder_kind)
         kwargs["encoder_source"] = tmp_path / "encoder"
     export_model(variant, tmp_path / "aud", dtype="float32", **kwargs)
     stage02 = data_recipe(tmp_path)
@@ -71,6 +73,7 @@ def test_two_updates_checkpoint_resume_and_clean_eval(tmp_path, tokenizer, varia
                 data_recipe=str(stage02),
                 stage="full",
                 training=dict(
+                    max_duration_seconds=30.0,
                     per_device_train_batch_size=1,
                     gradient_accumulation_steps=2,
                     per_device_eval_batch_size=1,
@@ -160,6 +163,8 @@ def test_production_recipes_reuse_stage02_data_and_augmentation(nodes):
         assert config.train_manifest == original["train_manifest"]
         assert config.eval_manifest == original["eval_manifest"]
         assert config.augmentation == original["augmentation"]
+        if path.name.startswith("audflash"):
+            assert config.max_duration_seconds == 30.0
         assert config.code_switch_index is None
         assert config.code_switch_probability == 0.0
         assert config.expected_world_size == nodes * 8
@@ -178,8 +183,10 @@ def test_production_recipes_reuse_stage02_data_and_augmentation(nodes):
             assert config.max_steps == 2000
 
 
-@pytest.mark.parametrize("variant", ["audpro", "audturbo", "audflash"])
+@pytest.mark.parametrize("variant", ["audpro", "audturbo", "audflash", "audflash_gemma"])
 def test_augmentation_and_codeswitch_use_correct_feature_axis(tmp_path, tokenizer, variant):
+    encoder_kind = variant
+    variant = "audflash" if variant == "audflash_gemma" else variant
     if variant == "audflash":
         gqasr_source(tmp_path / "text", tokenizer)
         kwargs = dict(gqasr_checkpoint=tmp_path / "text")
@@ -187,7 +194,7 @@ def test_augmentation_and_codeswitch_use_correct_feature_axis(tmp_path, tokenize
         qasr_source(tmp_path / "text", tokenizer)
         kwargs = dict(qasr_checkpoint=tmp_path / "text")
     if variant != "audpro":
-        encoder_source(tmp_path / "encoder", variant)
+        encoder_source(tmp_path / "encoder", encoder_kind)
         kwargs["encoder_source"] = tmp_path / "encoder"
     export_model(variant, tmp_path / "aud", dtype="float32", **kwargs)
     proc = AUDProcessor.from_pretrained(tmp_path / "aud")

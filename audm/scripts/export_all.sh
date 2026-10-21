@@ -14,7 +14,7 @@ AUD_PYTHON="${AUD_PYTHON:-python}"
 "$AUD_PYTHON" -m audm export --variant audturbo --qasr-checkpoint "$QASR_CHECKPOINT" --output "$AUD_EXPORT_ROOT/AudTurbo" \
   --encoder-source "${AUD_CAPTIONER_SOURCE:-Qwen/Qwen3-Omni-30B-A3B-Captioner}" --encoder-revision "${AUD_CAPTIONER_REVISION:-main}"
 "$AUD_PYTHON" -m audm export --variant audflash --gqasr-checkpoint "$GQASR_CHECKPOINT" --output "$AUD_EXPORT_ROOT/AudFlash" \
-  --encoder-source "${AUD_MOONSHINE_SOURCE:-moonshine-ai/moonshine-streaming-medium}" --encoder-revision "${AUD_MOONSHINE_REVISION:-main}"
+  --encoder-source "${AUD_GEMMA_SOURCE:-google/gemma-4-E2B-it}" --encoder-revision "${AUD_GEMMA_REVISION:-main}"
 
 # Each exported model fits on one H100; verification is intentionally sequential.
 for AUD_VARIANT in AudPro AudTurbo AudFlash; do

@@ -10,14 +10,15 @@ Both `audflash_adapter_1node.yaml` and `audflash_full_1node.yaml` use microbatch
 20, accumulation 4 and eight GPUs: **640 samples per optimizer update**.
 There are four DataLoader workers per GPU (32 total), with persistent workers
 and pinned memory. BF16, ZeRO-2 and gradient checkpointing are enabled.
-Evaluation batch size is one per GPU. Transcript limit is 1,024 tokens; evaluation
-can generate up to 1,152 tokens including language markers and EOS. Longer
-transcripts increase peak memory at the unchanged microbatch size.
+Evaluation batch size is one per GPU. The transcript limit is **512 tokens**,
+inherited from the stage-02 data recipe; evaluation can generate up to 768 tokens
+including language markers and EOS. Transcripts above 512 are replaced by the
+resilient loader unless removed in a separately prepared filtered manifest.
 
-This recipe change does not apply to an already running process. A run started
-with the old 512-token recipe cannot use exact `--resume auto` with this recipe.
-Finish that run with its original settings, or start a new output directory
-from saved model weights (a new optimizer/scheduler run).
+Changes do not affect an already running process. Exact `--resume auto` requires
+the original recipe and data; a run started with the temporary 1,024-token recipe
+cannot resume with the restored recipe. The single-node YAML files are restored
+to their pre-increase contents.
 
 The same stage-02 training/evaluation manifests and augmentations are reused.
 Code-switching is disabled; no code-switch index is needed. Each microbatch

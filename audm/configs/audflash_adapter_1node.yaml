@@ -4,7 +4,6 @@ stage: adapter
 training:
   # Gemma audio context: filter longer recordings without truncation.
   max_duration_seconds: 30.0
-  max_target_length: 1024
   # Optional code-switch mixing is disabled by default.
   code_switch_index: null
   code_switch_probability: 0.0
@@ -25,8 +24,7 @@ training:
   save_steps: 500
   save_total_limit: 4
   eval_log_samples: 2
-  # Allow the transcript plus language markers and EOS.
-  eval_generation_max_new_tokens: 1152
+  eval_generation_max_new_tokens: 768
   eval_wer_samples_per_language: 100
   dataloader_num_workers: 4
   dataloader_persistent_workers: true

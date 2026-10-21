@@ -211,9 +211,10 @@ class AUDForConditionalGeneration(PreTrainedModel, GenerationMixin):
 
     def train(self, mode=True):
         super().train(mode)
-        for module in (self.aud_encoder, self.aud_decoder):
-            if not any(p.requires_grad for p in module.parameters()):
-                module.eval()
+        # A frozen encoder needs no backward graph. The decoder does: adapter
+        # gradients pass through it, and eval() would disable its checkpointing.
+        if not any(p.requires_grad for p in self.aud_encoder.parameters()):
+            self.aud_encoder.eval()
         # Match QASR: preserve pretrained Conformer running statistics.
         for module in self.aud_encoder.modules():
             if isinstance(module, nn.modules.batchnorm._BatchNorm):

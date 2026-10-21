@@ -453,7 +453,23 @@ def test_gemma_flash_pretrained_bridge_pooling_and_reload(tmp_path, tokenizer, d
         torch.testing.assert_close(lengths, proc.audio_token_lengths(batch["input_features_mask"]))
         assert torch.isfinite(new(**batch).loss)
     new.configure_training("adapter")
+    new.gradient_checkpointing_enable(gradient_checkpointing_kwargs={"use_reentrant": False})
+    new.train()
+    assert new.aud_decoder.training
+    assert not new.aud_encoder.training
+    checkpoint_calls = []
+    for layer in new.aud_decoder.model.layers:
+        original = layer._gradient_checkpointing_func
+
+        def tracked_checkpoint(*args, _original=original, **kwargs):
+            checkpoint_calls.append(True)
+            return _original(*args, **kwargs)
+
+        layer._gradient_checkpointing_func = tracked_checkpoint
     new(**batch).loss.backward()
+    assert len(checkpoint_calls) == len(new.aud_decoder.model.layers)
+    new.eval()
+    assert not new.aud_decoder.training
     assert any(p.grad is not None for p in new.aud_projector.parameters())
     assert all(p.grad is None for p in new.aud_encoder.parameters())
     assert all(p.grad is None for p in new.aud_decoder.parameters())

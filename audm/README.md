@@ -204,7 +204,7 @@ Do not modify the existing QASR index.
 ## Training: 8 nodes × 8 GPUs
 
 The production launch shape is **64 ranks** with DeepSpeed **ZeRO-2**, one
-`torchrun` launcher per node. The default is **5 samples/GPU/microbatch × 4
+`torchrun` launcher per node. The default is **10 samples/GPU/microbatch × 2
 accumulation × 64 GPUs = 1,280 samples/update**, with the same per-GPU quotas as QASR stage 02.
 Language quotas apply over an accumulation window, not each microbatch.
 Microbatch must divide the quota window, and each optimizer update must contain

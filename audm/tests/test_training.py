@@ -163,8 +163,8 @@ def test_production_recipes_reuse_stage02_data_and_augmentation(nodes):
         assert config.code_switch_index is None
         assert config.code_switch_probability == 0.0
         assert config.expected_world_size == nodes * 8
-        assert config.per_device_train_batch_size == 5
-        assert config.gradient_accumulation_steps == 4
+        assert config.per_device_train_batch_size == (10 if nodes == 8 else 5)
+        assert config.gradient_accumulation_steps == (2 if nodes == 8 else 4)
         assert config.dataloader_num_workers == 4
         assert (
             config.per_device_train_batch_size * config.gradient_accumulation_steps * nodes * 8

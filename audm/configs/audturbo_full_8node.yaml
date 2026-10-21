@@ -1,13 +1,13 @@
-# 8 nodes x 8 GPUs. Quotas apply over 4 microbatches: 5 x 4 = 20 examples/GPU/update.
+# 8 nodes x 8 GPUs. Quotas apply over 2 microbatches: 10 x 2 = 20 examples/GPU/update.
 data_recipe: ../../configs/v8.1/02_full_12node.yaml
 stage: full
 training:
   # Optional code-switch mixing is disabled by default.
   code_switch_index: null
   code_switch_probability: 0.0
-  per_device_train_batch_size: 5
+  per_device_train_batch_size: 10
   per_device_eval_batch_size: 1
-  gradient_accumulation_steps: 4
+  gradient_accumulation_steps: 2
   num_train_epochs: 1.0
   max_steps: -1
   learning_rate: 2.0e-05

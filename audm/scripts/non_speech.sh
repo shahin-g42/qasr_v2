@@ -19,14 +19,15 @@ case "$ACTION" in
       --output "$AUD_NON_SPEECH_ROOT/candidates-v1" "$@"
     ;;
   finalize)
-    selection=(--decisions "$AUD_NON_SPEECH_ROOT/decisions.jsonl")
+    selection=(--output "$AUD_NON_SPEECH_ROOT/corpus-v1" --decisions "$AUD_NON_SPEECH_ROOT/decisions.jsonl")
     for arg in "$@"; do
-      if [[ "$arg" == "--metadata-only" ]]; then selection=(); fi
+      if [[ "$arg" == "--metadata-only" ]]; then
+        selection=(--output "$AUD_NON_SPEECH_ROOT/corpus-v1")
+      fi
     done
     exec "$AUD_PYTHON" -m audm.prepare_non_speech finalize \
       --candidates "$AUD_NON_SPEECH_ROOT/candidates-v1/candidates.jsonl" \
-      "${selection[@]}" \
-      --output "$AUD_NON_SPEECH_ROOT/corpus-v1" "$@"
+      "${selection[@]}" "$@"
     ;;
   help|-h|--help)
     printf '%s\n' 'Usage: bash audm/scripts/non_speech.sh download|prepare|finalize [options]' \

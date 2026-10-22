@@ -31,6 +31,9 @@ coverage epochs, evaluation and checkpoint saving every 3,700 updates.
   decoded waveform. Resulting length must fit the recipe.
 - Missing encoders/assets, invalid output, and failed real-noise loading fail
   explicitly. No fallback to synthetic noise or approximate codecs.
+- Settings are checked for unknown keys, invalid types, NaN/Inf, reversed ranges,
+  empty codec lists and unsupported codecs. FFmpeg encode/decode uses one codec
+  thread per subprocess and a 30-second timeout.
 - Worker-local counters report attempted/changed/duration-skipped effects,
   shift boundary skips, codec selections and non-speech replacements. These
   are diagnostics, not distributed aggregate statistics.
@@ -52,7 +55,9 @@ For checkpoints upgraded with [audio-category tokens](AUDIO_TYPES.md), every
 negative row additionally requires `audio_type: "music"`, `"noise"` or
 `"silence"`. Its supervised output is the category token plus EOS, without a
 language marker. Typed silence bypasses all augmentation; typed music/noise
-skip real-noise mixing to preserve their labels. The legacy manifest example
+skip real-noise mixing to preserve their labels. Music also skips additive white
+noise, which could dominate quiet music. Untyped empty-target negatives skip
+real-noise mixing as well. The legacy manifest example
 above remains valid for checkpoints without the token extension.
 
 Training replaces each sampled slot independently with probability 0.03. This
@@ -68,6 +73,19 @@ The framework's old `training.non_speech_manifest` and this controlled pool cann
 be combined. Pool/RIR manifest hashes and resolved robustness settings are saved
 in the training receipt and checked on resume. Keep referenced WAV assets immutable;
 the receipt hashes manifest contents, not every audio file.
+
+Both `text` and `transcript`, when present, must be empty strings. Nulls, numbers,
+punctuation, missing text fields and contradictory aliases are rejected. Negative
+replacement happens before code-switching; empty-target rows are never mixed.
+Relative robustness manifest paths resolve beside the AUD recipe. Unset environment
+variables produce an explicit error.
+
+The audited policy uses `robustness_version: 2` in its run receipt. Resume within
+the same run keeps optimizer/scheduler progress and checks the recipe/assets.
+An experiment started with the earlier robustness code needs a new weights-only
+run (`--model` and a new `--output`), because its augmentation semantics changed.
+With persistent workers, stochastic augmentation and prefetch state are not
+checkpointed; resume does not promise bit-identical augmented audio.
 
 ## Cluster preparation
 
@@ -99,8 +117,13 @@ python -m audm.robustness_smoke \
 This reports single-process waveform time including WAV output writing. It does
 not establish eight-GPU throughput or test SpecAugment. Listen for intelligibility
 and measure data-loader wait time on the cluster before a long training run.
-Preflight checks selected encoder availability; actual round trips are exercised
-when their effects are selected. An invalid/unsupported codec fails explicitly.
+`preflight --scan` decodes every eligible negative, every RIR and every selected
+real-noise asset, and runs an actual round trip for every selected codec. It checks
+decoded negative durations against the training limits and reports eligible
+category counts, hours and metadata duration exclusions. It does not decode all
+98M sampled speech slots or determine whether a recording acoustically contains
+speech. This can take time for a large noise corpus; run it once on rank 0 before
+launch. An invalid/unsupported codec fails explicitly.
 
 To retain the original adapter location while using a new full-training output,
 launch directly with the existing distributed wrapper:
@@ -140,3 +163,6 @@ no ordinary WER is calculated against empty references. Compare the original and
 new checkpoints on the same negatives and normal multilingual WER/CER sets.
 
 Source reference: [NeMo audio augmentors](https://docs.nvidia.com/nemo/speech/nightly/asr/api.html#audio-augmentors).
+
+For the complete audited AudFlash category-token workflow, including setup,
+checkpoint resume and acceptance checks, use [ROBUST_CLUSTER.md](ROBUST_CLUSTER.md).

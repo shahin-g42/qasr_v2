@@ -43,14 +43,19 @@ class AUDDataCollator(QASRDataCollator):
     def __call__(self, features):
         if not features:
             raise ValueError("Empty training batch")
+        if getattr(self, "non_speech_pool", None) is not None:
+            features = self.non_speech_pool.replace(features)
         audits = []
         if self.code_switcher is not None:
-            mixed = [self.code_switcher.augment(f, self.code_switch_probability) for f in features]
+            mixed = [
+                self.code_switcher.augment(f, self.code_switch_probability)
+                if f["text"].strip()
+                else (f, {})
+                for f in features
+            ]
             features, audits = [m[0] for m in mixed], [m[1] for m in mixed]
         if self.audit_callback is not None:
             self.audit_callback(features, audits)
-        if getattr(self, "non_speech_pool", None) is not None:
-            features = self.non_speech_pool.replace(features)
         # Keep the stage-02/index contract: this limit applies to transcript
         # tokens. Language markers and EOS are additional supervised tokens.
         if any(
@@ -64,11 +69,11 @@ class AUDDataCollator(QASRDataCollator):
         if augmenter is not None and augmenter.has_waveform_augmentation:
             augmented = []
             for wave, feature in zip(waves, features, strict=True):
-                kind = (
-                    feature.get("audio_type") if self.processor.config.audio_type_version else None
+                kind = feature.get("audio_type") or (
+                    "speech" if feature["text"].strip() else "non_speech"
                 )
                 supports_types = getattr(augmenter, "supports_audio_types", False)
-                if kind in ("music", "noise", "silence") and not supports_types:
+                if kind in ("music", "noise", "silence", "non_speech") and not supports_types:
                     augmented.append(wave)
                     continue
                 augmented.append(
@@ -85,9 +90,7 @@ class AUDDataCollator(QASRDataCollator):
         if raw_audio and augmenter is not None and augmenter.has_spec_augmentation:
             waves = [
                 w
-                if self.processor.config.audio_type_version
-                and f.get("audio_type") in ("music", "noise", "silence")
-                and not getattr(augmenter, "supports_audio_types", False)
+                if not f["text"].strip() and not getattr(augmenter, "supports_audio_types", False)
                 else spectral_mask_waveform(w, augmenter)
                 for w, f in zip(waves, features, strict=True)
             ]
@@ -106,13 +109,12 @@ class AUDDataCollator(QASRDataCollator):
             if variant == "audturbo":
                 mel = mel.transpose(1, 2)
             spec_mask = batch["input_features_mask"].clone()
-            if self.processor.config.audio_type_version:
-                for i, feature in enumerate(features):
-                    if feature.get("audio_type") == "silence" or (
-                        feature.get("audio_type") in ("music", "noise")
-                        and not getattr(augmenter, "supports_audio_types", False)
-                    ):
-                        spec_mask[i] = 0
+            for i, feature in enumerate(features):
+                if feature.get("audio_type") == "silence" or (
+                    not feature["text"].strip()
+                    and not getattr(augmenter, "supports_audio_types", False)
+                ):
+                    spec_mask[i] = 0
             mel = augmenter.augment_features(mel, spec_mask)
             batch["input_features"] = mel.transpose(1, 2) if variant == "audturbo" else mel
         self._validate_audio_contract(batch, len(features))

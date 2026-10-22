@@ -104,21 +104,49 @@ def load_recipe(path, model=None, output=None, smoke=False, resume=None):
         "quota_window": virtual_batch,
         "resolved": config.to_dict(),
     }
-    robustness = copy.deepcopy(recipe.get("robustness") or {})
+    robustness = copy.deepcopy(recipe.get("robustness", {}))
+    if robustness is None:
+        robustness = {}
+    if not isinstance(robustness, dict):
+        raise ValueError("robustness must be a mapping")
+    for key in ("augmentation", "non_speech"):
+        if key in robustness and robustness[key] is None:
+            robustness.pop(key)
     if robustness:
         if set(robustness) - {"augmentation", "non_speech"}:
             raise ValueError("Unknown robustness settings")
         if robustness.get("non_speech") and config.non_speech_manifest_specs:
             raise ValueError("Use either controlled non-speech replacement or legacy manifests")
         assets = []
+
+        def asset_path(value):
+            if not isinstance(value, str) or not value.strip():
+                raise ValueError("Robustness asset paths must be nonempty strings")
+            expanded = os.path.expandvars(value)
+            if "$" in expanded:
+                raise ValueError(f"Unset environment variable in robustness path: {value}")
+            asset = Path(expanded).expanduser()
+            asset = asset if asset.is_absolute() else path.parent / asset
+            return str(asset.resolve())
+
         ns = robustness.get("non_speech", {})
-        ns["manifests"] = [os.path.expandvars(str(p)) for p in ns.get("manifests", [])]
+        if not isinstance(ns, dict) or not isinstance(ns.get("manifests", []), list):
+            raise ValueError("non_speech requires a mapping with a list of manifests")
+        ns["manifests"] = [asset_path(p) for p in ns.get("manifests", [])]
         assets.extend(ns["manifests"])
-        for settings in robustness.get("augmentation", {}).get("effects", {}).values():
+        augmentation = robustness.get("augmentation", {})
+        if not isinstance(augmentation, dict) or not isinstance(
+            augmentation.get("effects", {}), dict
+        ):
+            raise ValueError("augmentation and effects must be mappings")
+        for settings in augmentation.get("effects", {}).values():
+            if not isinstance(settings, dict):
+                raise ValueError("Each augmentation effect must be a mapping")
             if "manifest" in settings:
-                settings["manifest"] = os.path.expandvars(settings["manifest"])
+                settings["manifest"] = asset_path(settings["manifest"])
                 assets.append(settings["manifest"])
         receipt["robustness"] = robustness
+        receipt["robustness_version"] = 2
         receipt["robustness_assets"] = {}
         for asset in assets:
             asset = Path(asset).expanduser().resolve()

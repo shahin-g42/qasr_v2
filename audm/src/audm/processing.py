@@ -320,6 +320,11 @@ class AUDProcessor:
         eos = self.config.eos_token_id
         ended = eos in body
         tail = body[: body.index(eos)] if ended else body
+        trailing_valid = ended and all(
+            token in (eos, self.tokenizer.pad_token_id) for token in body[body.index(eos) + 1 :]
+        )
+        if ended and not trailing_valid:
+            tail = body  # Preserve unexpected post-EOS content in diagnostics.
         raw = self.tokenizer.decode(tail, skip_special_tokens=False)
         language = None
         if kind == "speech":
@@ -331,7 +336,7 @@ class AUDProcessor:
             except ValueError:
                 valid_language = False
             valid = bool(
-                ended
+                trailing_valid
                 and separator
                 and valid_language
                 and text.strip()
@@ -341,7 +346,7 @@ class AUDProcessor:
         else:
             # A non-speech category followed by words is a format error, not empty success.
             text = raw.strip()
-            valid = bool(kind and ended and not tail)
+            valid = bool(kind and trailing_valid and not tail)
         return dict(audio_type=kind, language=language, text=text, format_valid=valid)
 
     def decode(self, ids, return_format="transcription_only", **kwargs):

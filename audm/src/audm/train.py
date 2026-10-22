@@ -108,6 +108,12 @@ def run(recipe, model=None, output=None, smoke=False, resume=None):
                 "This release supports DeepSpeed ZeRO-2; ZeRO-3 needs different generation/checkpoint handling"
             )
     args = _training_arguments(config, bool(config.eval_manifest_specs))
+    if args.device.type == "cpu" and args.device.index is not None:
+        # Accelerate's multi-CPU device may be cpu:0, which torch.load rejects
+        # as map_location during optimizer resume. Normalize the cached device
+        # and shared distributed state; CUDA placement is untouched.
+        args.__dict__["_setup_devices"] = torch.device("cpu")
+        args.distributed_state.device = torch.device("cpu")
     if config.expected_world_size is not None and args.world_size != config.expected_world_size:
         raise ValueError(f"Expected {config.expected_world_size} ranks; launched {args.world_size}")
     if torch.distributed.is_initialized():
@@ -291,20 +297,27 @@ def preflight(recipe, model, output, scan=False):
     if config.max_duration_seconds > processor.config.max_audio_seconds:
         raise ValueError("Dataset duration exceeds model limit")
     noise = (config.augmentation or {}).get("noise_injection", {})
-    if noise.get("enabled") and not Path(noise["noise_dir"]).is_dir():
+    policy = config.aud_robustness.get("augmentation")
+    uses_noise = not policy or policy.get("effects", {}).get("noise", {}).get("p", 0)
+    if uses_noise and noise.get("enabled") and not Path(noise["noise_dir"]).is_dir():
         raise FileNotFoundError(noise["noise_dir"])
+    robustness_scan = {}
     if config.aud_robustness:
         from .robustness import NonSpeechPool, RobustAugmenter
 
         if config.aud_robustness.get("augmentation"):
-            RobustAugmenter(config.aud_robustness["augmentation"], config.augmentation)
+            augmenter = RobustAugmenter(config.aud_robustness["augmentation"], config.augmentation)
+            if scan:
+                robustness_scan["augmentation"] = augmenter.scan_assets()
         if config.aud_robustness.get("non_speech"):
-            NonSpeechPool(
+            pool = NonSpeechPool(
                 config.aud_robustness["non_speech"],
                 config.min_duration_seconds,
                 config.max_duration_seconds,
                 require_audio_type=bool(processor.config.audio_type_version),
             )
+            if scan:
+                robustness_scan["non_speech"] = pool.scan_audio()
     if processor.config.audio_type_version and stage == "adapter":
         raise ValueError("Audio-type training requires decoder or full stage")
     report = {
@@ -317,6 +330,7 @@ def preflight(recipe, model, output, scan=False):
         * config.gradient_accumulation_steps,
         "recipe": receipt,
         "scan": scan,
+        "robustness_scan": robustness_scan,
     }
     if scan:
         parts = dataset_parts(config)

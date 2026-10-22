@@ -12,6 +12,7 @@ from qasr.data import parse_record
 from .audio_types import TOKENS
 from .modeling import AUDForConditionalGeneration
 from .processing import AUDProcessor
+from .robustness import validate_negative_record
 
 
 def metrics(rows):
@@ -46,6 +47,10 @@ def metrics(rows):
         / len(negatives)
         if negatives
         else None,
+        false_speech_rate=sum(r["event"]["audio_type"] == "speech" for r in negatives)
+        / len(negatives)
+        if negatives
+        else None,
         token_cap_hits=sum(r["hit_token_cap"] for r in rows),
     )
 
@@ -73,6 +78,8 @@ def evaluate(model_path, manifest, output, device="cpu", limit=400, max_new_toke
             kind = record.get("audio_type")
             if kind not in TOKENS:
                 raise ValueError(f"Missing/invalid audio_type at line {line}")
+            if kind != "speech":
+                validate_negative_record(record, require_audio_type=True)
             parsed = parse_record(
                 record,
                 manifest_path=manifest,

@@ -52,7 +52,8 @@ Speech quotas and batch size retain the behavior documented in [ROBUSTNESS.md](R
 
 Typed silence bypasses waveform effects and SpecAugment. Music/noise examples
 do not receive real-noise mixing, since a mixed noise corpus can contain speech
-or music that changes the label. Other bounded robustness effects remain available.
+or music that changes the label. Music also skips additive white noise. Other
+bounded robustness effects remain available.
 When using the older, non-category-aware augmenter, all typed negatives bypass
 augmentation. Speech retains the configured augmentation and code-switch policy.
 
@@ -174,3 +175,6 @@ of format validity, so inspect both. Continue using the normal multilingual
 WER/CER callback to check transcription regressions; empty references are not
 included in ordinary WER. Full-size quality, GPU memory and throughput must be
 measured on the cluster; local tests use tiny models.
+
+See [ROBUST_CLUSTER.md](ROBUST_CLUSTER.md) for the audited cluster runbook, deeper
+asset scan, distributed validation commands and restart procedure.

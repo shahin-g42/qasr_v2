@@ -95,8 +95,8 @@ def test_upgrade_preserves_native_speech_and_trains_tokens(tmp_path, tokenizer, 
     assert torch.isfinite(loss)
     loss.backward()
     new_ids = list(report["token_ids"].values())
-    assert model.get_output_embeddings().weight.grad[new_ids].abs().sum() > 0
-    assert model.get_input_embeddings().weight.grad[new_ids].abs().sum() > 0
+    assert (model.get_output_embeddings().weight.grad[new_ids].abs().sum(-1) > 0).all()
+    assert (model.get_input_embeddings().weight.grad[new_ids].abs().sum(-1) > 0).all()
     assert all(p.grad is None for p in model.aud_encoder.parameters())
     assert verify(tmp_path / "typed")["offline_reload"]
     with pytest.raises(FileExistsError):

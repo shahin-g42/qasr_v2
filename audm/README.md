@@ -378,3 +378,5 @@ evaluation. Existing production recipes remain unchanged.
 For native decoder tokens that distinguish speech, music, noise and silence,
 see [AUDIO_TYPES.md](AUDIO_TYPES.md). It covers tokenizer/model upgrade, decoder
 warm-up, categorized manifests, structured inference and held-out evaluation.
+Use [ROBUST_CLUSTER.md](ROBUST_CLUSTER.md) for the audited, direct eight-GPU
+workflow with asset scans, smoke runs and checkpoint resume.

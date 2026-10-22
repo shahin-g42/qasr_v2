@@ -71,8 +71,42 @@ The filters reject known human-vocal labels and voice-related metadata. They adm
 instrumental-event labels for music and a conservative list of environmental
 events for noise. Mixed music/noise labels are left out. **Weak labels do not
 prove that a clip contains no speech**: distant voices and vocals can be unannotated.
-The listening step is necessary to create reliable empty-transcript supervision.
+Listening review is recommended to check empty-transcript supervision.
+The explicit metadata-only option below can skip it for an initial experiment.
 No VAD or ASR classifier is claimed to certify these clips.
+
+### Metadata-only finalization (skip listening review)
+
+To use all existing filtered candidates without reviewing them, run:
+
+```bash
+bash audm/scripts/non_speech.sh finalize --metadata-only --silence-per-split 100 --seed 1729
+export AUD_NON_SPEECH_MANIFEST="$AUD_NON_SPEECH_ROOT/corpus-v1/train.jsonl"
+cat "$AUD_NON_SPEECH_ROOT/corpus-v1/report.json"
+```
+
+No decisions file or repeat preparation is needed. This retains the preparation's
+label/tag, vocal, license and duplicate filters, source splits, manifest/audio
+checksum checks, immutable copies and synthetic silence. Final music/noise rows
+have `text: ""` and `review_status: "metadata_only"`. The report records
+`selection_mode: "metadata_only"` and `manually_reviewed: false`; it does not
+fabricate listening decisions. Held-out clips are also unreviewed, so category
+metrics against those labels remain provisional. Do not also run the reviewed
+finalizer into the same output directory.
+
+For the reported 2,000 music + 2,000 noise training candidates and 200 per class
+in each held-out split, this produces 4,100 train rows and 500 rows in each
+held-out split, including 100 synthetic silences per split.
+
+MUSAN is already used independently as background augmentation on speech, from
+`/lustrefs/shared/shahin.konadath/workspace/train/stt/musan`, inherited from stage 02.
+The robust noise effect reads random bounded windows from the discovered audio
+files and mixes at 5–20 dB SNR. This does not add MUSAN as standalone empty-target
+examples. The loader can discover speech, music and noise folders; it does not
+certify all files as speech-free. Real-noise mixing is skipped for negative examples.
+SpecAugment remains enabled on eligible feature rows.
+
+### Optional listening review
 
 Open `review.html` with its sibling `audio/` folder accessible. To review without
 copying audio to your laptop, run this on the cluster:

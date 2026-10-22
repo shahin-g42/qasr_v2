@@ -47,7 +47,8 @@ other training jobs. FFmpeg must include `libopus`, `aac`, `libmp3lame` and
 
 ## 2. Set source, assets and experiment paths
 
-First run the download, listening review and corpus-finalization steps in
+First run the download and corpus-finalization steps (listening review or explicit
+`finalize --metadata-only`) in
 [NON_SPEECH_DATA.md](NON_SPEECH_DATA.md) on one cluster node. The prepared corpus
 lives outside the source checkout. Replace the three `/REPLACE/WITH/...` paths
 below with your remaining immutable assets; the non-speech downloader does not

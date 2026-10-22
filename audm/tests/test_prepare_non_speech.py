@@ -220,3 +220,73 @@ def test_download_uses_pinned_revision_and_resumable_directory(snapshot, monkeyp
     assert calls[0][1]["local_dir"] == str(raw)
     assert "*.py" not in calls[0][1]["allow_patterns"]
     assert prep.download(root)["snapshot"] == str(raw)
+
+
+def test_metadata_only_finalize_without_review(snapshot, tmp_path):
+    root, _ = snapshot
+    review = tmp_path / "candidates"
+    prep.prepare(root, review)
+    output = tmp_path / "corpus"
+    result = prep.finalize(
+        review / "candidates.jsonl", output=output, metadata_only=True, silence_per_split=2
+    )
+    assert result["selection_mode"] == "metadata_only"
+    assert result["manually_reviewed"] is False
+    assert result["decisions_sha256"] is None
+    assert not (output / "decisions.jsonl").exists()
+    for split in prep.SPLITS:
+        rows = list(prep.jsonl(output / f"{split}.jsonl"))
+        assert len(rows) == 4
+        assert {r["review_status"] for r in rows} == {"metadata_only", "synthetic"}
+        assert all(r["text"] == "" for r in rows)
+        for row in rows:
+            validate_negative_record(row, require_audio_type=True)
+    pool = NonSpeechPool(
+        dict(probability=0.03, manifests=[str(output / "train.jsonl")]),
+        1,
+        30,
+        require_audio_type=True,
+    )
+    assert pool.scan_audio()["categories"] == {"noise": 1, "music": 1, "silence": 2}
+    with pytest.raises(FileExistsError):
+        prep.finalize(review / "candidates.jsonl", output=output, metadata_only=True)
+    original = next(prep.jsonl(review / "candidates.jsonl"))
+    Path(original["audio_filepath"]).write_bytes(b"changed")
+    with pytest.raises(ValueError, match="audio changed"):
+        prep.finalize(review / "candidates.jsonl", output=tmp_path / "bad", metadata_only=True)
+    assert not (tmp_path / "bad").exists()
+
+
+def test_finalize_requires_explicit_selection_mode(tmp_path):
+    with pytest.raises(ValueError, match="either"):
+        prep.finalize("missing.jsonl", output=tmp_path / "out")
+    with pytest.raises(ValueError, match="either"):
+        prep.finalize(
+            "missing.jsonl",
+            decisions="decisions.jsonl",
+            output=tmp_path / "out",
+            metadata_only=True,
+        )
+
+
+def test_finalize_wrapper_selects_metadata_mode(tmp_path):
+    import os
+    import subprocess
+
+    executable = tmp_path / "capture-python"
+    executable.write_text('#!/bin/sh\nprintf "%s\\n" "$@"\n')
+    executable.chmod(0o755)
+    script = Path(__file__).resolve().parents[1] / "scripts/non_speech.sh"
+    env = dict(os.environ, AUD_PYTHON=str(executable), AUD_NON_SPEECH_ROOT=str(tmp_path))
+    for flags in ([], ["--metadata-only"]):
+        result = subprocess.run(
+            ["bash", str(script), "finalize", *flags],
+            env=env,
+            capture_output=True,
+            text=True,
+            check=True,
+        )
+        args = result.stdout.splitlines()
+        assert ("--decisions" in args) == (not flags)
+        assert ("--metadata-only" in args) == bool(flags)
+        assert str(tmp_path / "corpus-v1") in args

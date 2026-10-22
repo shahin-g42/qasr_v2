@@ -368,18 +368,25 @@ def prepare(
             train_per_class=train_per_class,
             eval_per_class=eval_per_class,
             candidate_manifest_sha256=sha256(stage / "candidates.jsonl"),
-            status="Candidates only: listening review required; text=null blocks training",
+            status="Candidates only: finalize with decisions or --metadata-only; text=null blocks training",
         )
         dump(stage / "report.json", report)
     return report
 
 
-def finalize(candidates, decisions, output, silence_per_split=100, seed=1729):
+def finalize(
+    candidates, decisions=None, output=None, silence_per_split=100, seed=1729, metadata_only=False
+):
+    if output is None:
+        raise ValueError("An output directory is required")
+    if metadata_only == (decisions is not None):
+        raise ValueError("Choose either listening decisions or metadata_only, not both")
     if silence_per_split < 1:
         raise ValueError("silence_per_split must be positive")
     if seed < 0:
         raise ValueError("seed must be nonnegative")
-    candidate_path, decision_path = Path(candidates).resolve(), Path(decisions).resolve()
+    candidate_path = Path(candidates).resolve()
+    decision_path = Path(decisions).resolve() if decisions is not None else None
     report = json.loads(candidate_path.with_name("report.json").read_text())
     if sha256(candidate_path) != report["candidate_manifest_sha256"]:
         raise ValueError("Candidate manifest changed since preparation")
@@ -390,7 +397,12 @@ def finalize(candidates, decisions, output, silence_per_split=100, seed=1729):
             raise ValueError(f"Duplicate candidate ID: {key}")
         indexed[key] = row
     chosen, seen = [], set()
-    for decision in jsonl(decision_path):
+    selection = (
+        ({"candidate_id": key, "decision": "accept"} for key in indexed)
+        if metadata_only
+        else jsonl(decision_path)
+    )
+    for decision in selection:
         key = decision.get("candidate_id")
         if (
             set(decision) != {"candidate_id", "decision"}
@@ -421,7 +433,9 @@ def finalize(candidates, decisions, output, silence_per_split=100, seed=1729):
                 raise ValueError(f"Candidate audio changed during copy: {path}")
             record = {k: v for k, v in row.items() if k != "review_audio"}
             record.update(
-                audio_filepath=str(destination / relative), text="", review_status="accepted"
+                audio_filepath=str(destination / relative),
+                text="",
+                review_status="metadata_only" if metadata_only else "accepted",
             )
             manifests[row["split"]].append(record)
         for split_index, split in enumerate(SPLITS):
@@ -463,13 +477,16 @@ def finalize(candidates, decisions, output, silence_per_split=100, seed=1729):
             counts=dict(counts),
             seed=seed,
             candidates_sha256=sha256(candidate_path),
-            decisions_sha256=sha256(decision_path),
+            decisions_sha256=sha256(decision_path) if decision_path is not None else None,
+            selection_mode="metadata_only" if metadata_only else "listening_review",
+            manually_reviewed=not metadata_only,
             manifests={s: sha256(stage / f"{s}.jsonl") for s in SPLITS},
             silence="Synthetic digital zeros; not a real-room silence benchmark",
             scope="Non-speech only; add disjoint speech examples for four-class evaluation",
         )
         dump(stage / "report.json", result)
-        shutil.copyfile(decision_path, stage / "decisions.jsonl")
+        if decision_path is not None:
+            shutil.copyfile(decision_path, stage / "decisions.jsonl")
     return result
 
 
@@ -487,10 +504,17 @@ def main():
     prep.add_argument("--train-per-class", type=int, default=2000)
     prep.add_argument("--eval-per-class", type=int, default=200)
     final = sub.add_parser(
-        "finalize", help="Build immutable training manifests from listening decisions"
+        "finalize",
+        help="Build immutable training manifests from reviewed or metadata-filtered candidates",
     )
     final.add_argument("--candidates", required=True)
-    final.add_argument("--decisions", required=True)
+    selection = final.add_mutually_exclusive_group(required=True)
+    selection.add_argument("--decisions")
+    selection.add_argument(
+        "--metadata-only",
+        action="store_true",
+        help="Accept all prepared candidates without listening review; record this provenance",
+    )
     final.add_argument("--output", required=True)
     final.add_argument("--silence-per-split", type=int, default=100)
     final.add_argument("--seed", type=int, default=1729)

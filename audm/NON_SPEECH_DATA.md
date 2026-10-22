@@ -5,8 +5,8 @@ The cluster preparation script downloads from
 `2a60d475f4e2f0db624a902881af2df79d656145`. This is a 16 kHz mono repack of
 FSD50K, with embedded FLAC audio in Parquet, original recording IDs, event labels,
 source splits and per-recording license metadata. The raw shards total about
-6.85 GB. Reserve **25 GB** for raw files, the default candidate selection, the
-final copied WAV files and temporary files. Higher candidate limits need more space.
+6.85 GB. Reserve **25 GB or more** for raw files, candidate extraction, the
+final copied WAV files and temporary files. Preparation is uncapped by default; the full eligible corpus can require more space.
 
 No corpus was downloaded during local code validation. Run the following on
 **one cluster node**, using a shared filesystem. It needs CPU, disk and network;
@@ -54,14 +54,14 @@ the same destination simultaneously.
 ```bash
 bash audm/scripts/non_speech.sh prepare \
   --min-seconds 1 --max-seconds 30 \
-  --train-per-class 2000 --eval-per-class 200
+  --train-per-class 0 --eval-per-class 0
 ```
 
 This writes `$AUD_NON_SPEECH_ROOT/candidates-v1/` with extracted WAV files,
-`candidates.jsonl`, `report.json` and `review.html`. It keeps at most 2,000 music
-and 2,000 noise chunks for train, and 200 of each for each held-out split. These
-are maximums, not guaranteed yields. Selection uses the first eligible clips in
-stable shard order; it is a starter corpus, not a representative random benchmark.
+`candidates.jsonl`, `report.json` and `review.html`. It keeps every eligible music/noise chunk in each source split, with no count cap
+by default (`0` means unlimited). Speech/vocal, label, license, duration, audio
+validity and duplicate filters still apply; raw split counts are not final yields.
+Positive limits remain available only for explicitly requested smaller experiments.
 
 Only CC0 and CC BY URLs from `creativecommons.org` are admitted. The output retains
 the source page, uploader, license URL, labels, recording ID and source revision
@@ -94,7 +94,7 @@ fabricate listening decisions. Held-out clips are also unreviewed, so category
 metrics against those labels remain provisional. Do not also run the reviewed
 finalizer into the same output directory.
 
-For the reported 2,000 music + 2,000 noise training candidates and 200 per class
+For an older capped preparation with 2,000 music + 2,000 noise training candidates and 200 per class
 in each held-out split, this produces 4,100 train rows and 500 rows in each
 held-out split, including 100 synthetic silences per split.
 
@@ -198,3 +198,26 @@ the **non-speech** pool. They do not supply RIRs or replace the existing speech
 datasets. For four-class evaluation, combine disjoint held-out speech rows with
 these held-out negatives; using only this test manifest leaves missed-speech
 metrics undefined. Keep validation for tuning and test for final evaluation.
+
+## Expanding an existing capped preparation
+
+Reuse the downloaded shards and prepare into a new directory. Do not overwrite
+a corpus used by a running job. The wrapper accepts explicit destination overrides:
+
+```bash
+bash audm/scripts/non_speech.sh prepare \
+  --output "$AUD_NON_SPEECH_ROOT/candidates-all-v1"
+
+bash audm/scripts/non_speech.sh finalize --metadata-only \
+  --candidates "$AUD_NON_SPEECH_ROOT/candidates-all-v1/candidates.jsonl" \
+  --output "$AUD_NON_SPEECH_ROOT/corpus-all-v1" \
+  --silence-per-split 100 --seed 1729
+
+export AUD_NON_SPEECH_MANIFEST="$AUD_NON_SPEECH_ROOT/corpus-all-v1/train.jsonl"
+cat "$AUD_NON_SPEECH_ROOT/corpus-all-v1/report.json"
+```
+
+The 100 silences are generated examples, not a cap on downloaded data. As the
+music/noise pool grows their sampling share falls: inspect category counts before
+choosing a different synthetic-silence count in a new output. Pool replacement
+remains 3% of training slots; adding source audio does not change that probability.

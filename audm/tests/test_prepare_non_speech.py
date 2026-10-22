@@ -290,3 +290,25 @@ def test_finalize_wrapper_selects_metadata_mode(tmp_path):
         assert ("--decisions" in args) == (not flags)
         assert ("--metadata-only" in args) == bool(flags)
         assert str(tmp_path / "corpus-v1") in args
+
+
+@pytest.mark.parametrize("limit,expected_music", [(0, 2), (1, 1)])
+def test_candidate_limits_zero_is_unlimited(snapshot, tmp_path, limit, expected_music):
+    root, _ = snapshot
+    report = prep.prepare(
+        root,
+        tmp_path / "out",
+        min_seconds=1,
+        max_seconds=1.5,
+        train_per_class=limit,
+        eval_per_class=limit,
+    )
+    for split in prep.SPLITS:
+        assert report["counts"][f"{split}:music"] == expected_music
+    assert report["train_per_class"] == report["eval_per_class"] == limit
+
+
+@pytest.mark.parametrize("limit", [-1, 1.5, True])
+def test_invalid_candidate_limits(tmp_path, limit):
+    with pytest.raises(ValueError, match="nonnegative integers"):
+        prep.prepare(tmp_path, tmp_path / "out", train_per_class=limit)

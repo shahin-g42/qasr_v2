@@ -254,17 +254,17 @@ render();</script>"""
     )
 
 
-def prepare(
-    root, output, min_seconds=1.0, max_seconds=30.0, train_per_class=2000, eval_per_class=200
-):
+def prepare(root, output, min_seconds=1.0, max_seconds=30.0, train_per_class=0, eval_per_class=0):
     if not (
         math.isfinite(min_seconds)
         and math.isfinite(max_seconds)
         and 0 < min_seconds <= max_seconds <= 30
     ):
         raise ValueError("Require 0 < min_seconds <= max_seconds <= 30")
-    if min(train_per_class, eval_per_class) < 1:
-        raise ValueError("Per-class candidate limits must be positive")
+    if any(type(v) is not int or v < 0 for v in (train_per_class, eval_per_class)):
+        raise ValueError(
+            "Per-class candidate limits must be nonnegative integers; 0 means unlimited"
+        )
     min_frames, max_frames = math.ceil(min_seconds * SR), math.floor(max_seconds * SR)
     if max_frames < min_frames:
         raise ValueError("Duration bounds contain no whole audio samples")
@@ -279,7 +279,7 @@ def prepare(
                 counts[f"excluded:{reason}"] += 1
                 continue
             limit = train_per_class if split == "train" else eval_per_class
-            if counts[f"{split}:{kind}"] >= limit:
+            if limit and counts[f"{split}:{kind}"] >= limit:
                 counts["excluded:candidate_limit"] += 1
                 continue
             identity = row.get("freesound_id")
@@ -305,7 +305,7 @@ def prepare(
                 if len(chunk) < min_frames:
                     counts["excluded:short_tail"] += 1
                     continue
-                if counts[f"{split}:{kind}"] >= limit:
+                if limit and counts[f"{split}:{kind}"] >= limit:
                     break
                 chunk_hash = hashlib.sha256(chunk.astype("<f4").tobytes()).hexdigest()
                 if chunk_hash in hashes and chunk_hash != source_hash:
@@ -367,6 +367,7 @@ def prepare(
             max_seconds=max_seconds,
             train_per_class=train_per_class,
             eval_per_class=eval_per_class,
+            candidate_limit_semantics="0 means unlimited; positive values cap chunks per class/split",
             candidate_manifest_sha256=sha256(stage / "candidates.jsonl"),
             status="Candidates only: finalize with decisions or --metadata-only; text=null blocks training",
         )
@@ -501,8 +502,10 @@ def main():
     prep.add_argument("--output", required=True)
     prep.add_argument("--min-seconds", type=float, default=1)
     prep.add_argument("--max-seconds", type=float, default=30)
-    prep.add_argument("--train-per-class", type=int, default=2000)
-    prep.add_argument("--eval-per-class", type=int, default=200)
+    prep.add_argument("--train-per-class", type=int, default=0, help="0 = unlimited (default)")
+    prep.add_argument(
+        "--eval-per-class", type=int, default=0, help="0 = unlimited per held-out split (default)"
+    )
     final = sub.add_parser(
         "finalize",
         help="Build immutable training manifests from reviewed or metadata-filtered candidates",

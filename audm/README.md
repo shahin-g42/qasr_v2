@@ -3,7 +3,11 @@
 For the exact AudTurbo-only, per-node cluster launch sequence, see
 [AUDTURBO_CLUSTER.md](AUDTURBO_CLUSTER.md) and `scripts/audturbo.sh`.
 
-For the pinned Hugging Face non-speech download, listening review and training
+For the ordered AudFlash token-upgrade → decoder warm-up → full-training steps,
+including the OpenSLR RIR downloader (`scripts/rirs.sh`), see
+[ROBUST_CLUSTER.md](ROBUST_CLUSTER.md).
+
+For the pinned Hugging Face non-speech download, optional listening review and training
 manifests, see [NON_SPEECH_DATA.md](NON_SPEECH_DATA.md) and `scripts/non_speech.sh`.
 
 For the OOM audit, bounded-memory loss, AudFlash microbatch-10 defaults and

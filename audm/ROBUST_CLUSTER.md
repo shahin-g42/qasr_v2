@@ -1,161 +1,240 @@
-# AudFlash: audited robustness and audio-category training
+# AudFlash: ordered cluster runbook
 
-This runbook uses one node with eight H100s, **10 × 8 × 8 = 640** sampled slots per
-update, four DataLoader workers per GPU, BF16, ZeRO-2 and gradient checkpointing.
-The decoder warm-up is 2,000 updates. Full training is three nominal weighted
-coverage epochs; full evaluation/checkpoint saving stays at 3,700 updates.
-Code-switch augmentation stays disabled. `RUN_ID=cs_v1_ml_v2` is retained, although
-these recipes do not load a code-switch index.
+Run each step to completion before starting the next. All GPU commands run directly
+on **one node with eight H100s**, without Slurm/srun. Use a persistent terminal.
+Stop on a failed command; do not continue to production after a failed probe.
 
-The four new category tokens need decoder training. Use an already aligned or
-trained **AudFlash Gemma4 stride-1** checkpoint as the source; choose a completed
-checkpoint, not a directory currently being written by another training process.
-This upgrade starts a separate experiment. It does not change the running
-AudPro/AudTurbo/AudFlash outputs or resume their optimizer state.
+The sequence is **completed AudFlash checkpoint → add category tokens → decoder
+warm-up → full training**. Do not repeat adapter-only training: its frozen decoder
+cannot learn the new tokens. Choose your best completed full-training checkpoint,
+or the completed adapter checkpoint if that is what you have.
 
-## 1. Create an isolated code checkout and activate the existing environment
+Both training stages use **10 × 8 × 8 = 640**, four workers/GPU, BF16, ZeRO-2 and
+checkpointed audio/text layers. Decoder warm-up is 2,000 updates; full training is
+three weighted coverage epochs, with evaluation/checkpoints every 3,700 updates.
+SpecAugment stays enabled; code-switching stays disabled; `RUN_ID=cs_v1_ml_v2`.
 
-While other models are training, leave their source checkout in place. Create
-this experiment's checkout once; on later logins just `cd` to it and restore the
-environment variables. This avoids changing code that an active job's new workers
-could import.
+## 1. Set up the code checkout once
+
+Create this checkout once while leaving other jobs' source checkouts in place.
+If you already created this exact checkout, reuse it rather than running
+`worktree add` again; update it only when no job is using it.
 
 ```bash
 cd /lustrefs/shared/shahin.konadath/workspace/train/stt/v2/qasr_v2
 git fetch origin
 git worktree add --detach ../qasr_v2-aud-robust origin/main
 cd ../qasr_v2-aud-robust
-eval "$(conda shell.bash hook)"
-conda activate /lustrefs/shared/shahin.konadath/workspace/conda/envs/audm
+```
 
-export PYTHONPATH="$PWD/audm/src:$PWD/src${PYTHONPATH:+:$PYTHONPATH}"
+## 2. Save the experiment environment
+
+Run once in the new checkout. The source defaults to your completed adapter;
+edit `AUD_TYPED_SOURCE` if using a better completed full checkpoint. Never select
+a checkpoint still being written. Keep this experiment root for later resumes.
+
+```bash
+cat > audflash-types.env <<'ENV'
+export AUD_REPO_ROOT=/lustrefs/shared/shahin.konadath/workspace/train/stt/v2/qasr_v2-aud-robust
+export AUD_TYPED_SOURCE=/lustrefs/shared/shahin.konadath/workspace/train/stt/v2/qasr_v2/output/audflash-gemma4-v1/adapter
+export AUD_TYPED_ROOT="$AUD_REPO_ROOT/output/audflash-audio-types-v1"
+export AUD_NON_SPEECH_ROOT=/lustrefs/shared/shahin.konadath/workspace/train/stt/v2/aud-data/non-speech-v1
+export AUD_NON_SPEECH_MANIFEST="$AUD_NON_SPEECH_ROOT/corpus-all-v1/train.jsonl"
+export AUD_RIR_ROOT=/lustrefs/shared/shahin.konadath/workspace/train/stt/rirs-noises
+export AUD_RIR_MANIFEST="$AUD_RIR_ROOT/prepared-v1/rir.jsonl"
+export AUD_TYPED_DECODER_CONFIG="$AUD_REPO_ROOT/audm/configs/audflash_audio_types_decoder.yaml"
+export AUD_TYPED_FULL_CONFIG="$AUD_REPO_ROOT/audm/configs/audflash_robust_full.yaml"
 export RUN_ID=cs_v1_ml_v2
+export PYTHONPATH="$AUD_REPO_ROOT/audm/src:$AUD_REPO_ROOT/src${PYTHONPATH:+:$PYTHONPATH}"
 export TOKENIZERS_PARALLELISM=false PYTHONUNBUFFERED=1
 export OMP_NUM_THREADS=2 OPENBLAS_NUM_THREADS=1 MKL_NUM_THREADS=1 NUMBA_NUM_THREADS=1
 export PYTORCH_ALLOC_CONF=expandable_segments:True
 export TRITON_CACHE_DIR="/tmp/$USER/audflash-types-triton-$(hostname)"
-mkdir -p "$TRITON_CACHE_DIR"
+export AUD_USE_SLURM=0 AUD_NNODES=1 AUD_GPUS_PER_NODE=8 AUD_NODE_RANK=0
+export AUD_MASTER_ADDR=127.0.0.1 AUD_MASTER_PORT=29613
+ENV
 
-python -c 'import torch, transformers; print("torch", torch.__version__, "transformers", transformers.__version__); assert transformers.__version__.startswith("5.14."); assert torch.cuda.device_count() == 8; assert torch.cuda.is_bf16_supported()'
+# Edit AUD_TYPED_SOURCE here if needed, before adding the tokens.
+source audflash-types.env
+eval "$(conda shell.bash hook)"
+conda activate /lustrefs/shared/shahin.konadath/workspace/conda/envs/audm
+set -o pipefail
+mkdir -p "$AUD_TYPED_ROOT/logs" "$TRITON_CACHE_DIR"
+
+python -c 'import torch, transformers; print(torch.__version__, transformers.__version__); assert transformers.__version__.startswith("5.14."); assert torch.cuda.device_count() == 8; assert torch.cuda.is_bf16_supported()'
+command -v curl
 command -v ffmpeg
 ffmpeg -hide_banner -version
 ```
 
-Reuse the installed dependencies; do not upgrade the environment underneath
-other training jobs. FFmpeg must include `libopus`, `aac`, `libmp3lame` and
-`pcm_mulaw`. The deeper preflight checks actual encoding and decoding.
+On later logins, `cd` to this checkout, activate the same conda environment and
+`source audflash-types.env` again. Keep the same W&B login or set `WANDB_MODE=offline`.
+Do not upgrade the environment while other jobs are using it.
 
-## 2. Set source, assets and experiment paths
+## 3. Complete the uncapped non-speech corpus
 
-First run the download and corpus-finalization steps (listening review or explicit
-`finalize --metadata-only`) in
-[NON_SPEECH_DATA.md](NON_SPEECH_DATA.md) on one cluster node. The prepared corpus
-lives outside the source checkout. Replace the three `/REPLACE/WITH/...` paths
-below with your remaining immutable assets; the non-speech downloader does not
-provide RIRs or a combined speech/non-speech evaluation set.
+If `corpus-all-v1` is already finalized, skip these first two commands. Existing
+outputs are protected; do not overwrite them. No repeat download is needed when
+the pinned FSD50K shards are already present.
 
 ```bash
-export AUD_TYPED_SOURCE=/lustrefs/shared/shahin.konadath/workspace/train/stt/v2/qasr_v2/output/audflash-gemma4-v1/adapter
-export AUD_TYPED_ROOT="$PWD/output/audflash-audio-types-v1"
-export AUD_NON_SPEECH_ROOT=/lustrefs/shared/shahin.konadath/workspace/train/stt/v2/aud-data/non-speech-v1
-export AUD_NON_SPEECH_MANIFEST="$AUD_NON_SPEECH_ROOT/corpus-v1/train.jsonl"
-export AUD_RIR_MANIFEST=/REPLACE/WITH/rir.jsonl
-export AUD_TYPED_EVAL_MANIFEST=/REPLACE/WITH/audio-types-heldout.jsonl
-export AUD_REHEARSAL_WAV=/REPLACE/WITH/representative-speech.wav
-export AUD_TYPED_DECODER_CONFIG="$PWD/audm/configs/audflash_audio_types_decoder.yaml"
-export AUD_TYPED_FULL_CONFIG="$PWD/audm/configs/audflash_robust_full.yaml"
+bash audm/scripts/non_speech.sh prepare \
+  --output "$AUD_NON_SPEECH_ROOT/candidates-all-v1"
 
-test -f "$AUD_TYPED_SOURCE/model.safetensors"
-test -f "$AUD_NON_SPEECH_MANIFEST"
-test -f "$AUD_RIR_MANIFEST"
-test -f "$AUD_TYPED_EVAL_MANIFEST"
-test -f "$AUD_REHEARSAL_WAV"
-mkdir -p "$AUD_TYPED_ROOT/logs"
+bash audm/scripts/non_speech.sh finalize --metadata-only \
+  --candidates "$AUD_NON_SPEECH_ROOT/candidates-all-v1/candidates.jsonl" \
+  --output "$AUD_NON_SPEECH_ROOT/corpus-all-v1" \
+  --silence-per-split 100 --seed 1729
+
+cat "$AUD_NON_SPEECH_ROOT/corpus-all-v1/report.json"
+test -s "$AUD_NON_SPEECH_MANIFEST"
 ```
 
-If the default adapter path is not the checkpoint you want, change
-`AUD_TYPED_SOURCE` before proceeding. Reuse `AUD_TYPED_ROOT` for this experiment's
-subsequent commands and resumes. Choose a new root for a different recipe or corpus.
+If candidates-all-v1 already exists but the corpus does not, run only finalize.
+No music/noise candidate-count caps apply. The 100 silences are synthetic examples,
+not a limit on downloaded clips. The report records metadata-only selection. Inspect
+the category balance: the pool samples uniformly over records and replaces 3% of
+training slots. Growing the pool reduces the relative share of 100 silence rows.
+Do not put negative manifests under the speech-language keys.
 
-Negative JSONL rows require explicit labels and empty string transcripts:
-
-```json
-{"audio_filepath":"/shared/negative/rain.wav","duration":4.2,"text":"","audio_type":"noise"}
-{"audio_filepath":"/shared/negative/instrumental.wav","duration":8.0,"text":"","audio_type":"music"}
-{"audio_filepath":"/shared/negative/quiet.wav","duration":3.0,"text":"","audio_type":"silence"}
-```
-
-RIR rows require `audio_filepath`; relative audio paths resolve beside their
-manifest. A held-out speech row includes `audio_type: "speech"`, a nonempty
-transcript, and its language. Include all four categories in held-out evaluation.
-Do not put noise/music under language keys. Exclude vocals and uncertain examples
-from the negative pool; speech over noise or music remains speech with a transcript.
-Split by original recording before chunking to avoid train/eval leakage.
-
-The pool replaces 3% of slots in expectation, uniformly over eligible negative
-records. Balance the negative pool deliberately and verify all intended categories
-appear in the scan report. The speech datasets, language-slot sampler and 512-token
-transcript limit are inherited from stage 02. Replacements reduce speech-only
-coverage by approximately 3%; they do not increase the 640-slot update size.
-
-## 3. Upgrade once, then verify and scan
+## 4. Download and prepare RIRs next to MUSAN
 
 ```bash
+bash audm/scripts/rirs.sh all 2>&1 | tee "$AUD_TYPED_ROOT/logs/prepare-rirs.log"
+bash audm/scripts/rirs.sh verify
+cat "$AUD_RIR_ROOT/prepared-v1/report.json"
+test -s "$AUD_RIR_MANIFEST"
+test -d /lustrefs/shared/shahin.konadath/workspace/train/stt/musan
+```
+
+The source is [OpenSLR SLR28](https://www.openslr.org/28/), approximately 1.3 GB
+compressed, with real and simulated RIRs. Reserve space for the archive and expanded
+mono float WAVs (several additional GB). The downloader resumes its partial file and
+checks the publisher's pinned MD5; the receipt also records SHA-256. Preparation
+keeps every nonzero microphone channel separately, excludes the bundled point-source
+and isotropic noise audio, preserves source README/license files, and writes
+`$AUD_RIR_MANIFEST`. No Kaldi installation or new Python dependency is required.
+Only one process should prepare this root at a time. `all` verifies an existing
+preparation instead of overwriting it. `download`, `prepare`, and `verify` are also
+available separately. No waveform or manifest edits after starting a training run.
+
+MUSAN continues to supply background mixing on speech, at 5–20 dB SNR. It is not
+added as standalone empty-target data. RIRs model reverberation, not background noise.
+
+## 5. Add the four special tokens once
+
+```bash
+python - <<'PY'
+import json, os
+from pathlib import Path
+source = Path(os.environ['AUD_TYPED_SOURCE'])
+cfg = json.loads((source / 'config.json').read_text())
+assert cfg['variant'] == 'audflash' and cfg['flash_encoder'] == 'gemma4'
+assert cfg['flash_audio_stride'] == 1
+assert not cfg.get('audio_type_version', 0), 'Source already has category tokens'
+assert (source / 'model.safetensors').is_file()
+print('Source:', source)
+PY
+
 python -m audm add-audio-types \
   --model-path "$AUD_TYPED_SOURCE" --output "$AUD_TYPED_ROOT/export"
 python -m audm verify "$AUD_TYPED_ROOT/export" --device cuda:0
+```
 
-set -o pipefail
+This adds `<|audio_speech|>`, `<|audio_music|>`, `<|audio_noise|>`, and
+`<|audio_silence|>`, seeding their rows from existing category-word embeddings.
+Existing assigned token IDs, encoder, bridge and pretrained decoder weights are
+preserved. A completed export needs no second upgrade. If it already exists,
+verify it and continue; never extend it again.
+
+## 6. Check resolved configuration and scan real assets
+
+```bash
+python - <<'PY'
+import os
+from audm.training_config import load_recipe
+for name, stage in [('AUD_TYPED_DECODER_CONFIG', 'decoder'), ('AUD_TYPED_FULL_CONFIG', 'full')]:
+    cfg, actual, receipt = load_recipe(os.environ[name],
+        model=os.environ['AUD_TYPED_ROOT'] + '/export',
+        output=os.environ['AUD_TYPED_ROOT'] + '/' + stage)
+    assert actual == stage
+    assert (cfg.per_device_train_batch_size, cfg.gradient_accumulation_steps,
+            cfg.expected_world_size, cfg.dataloader_num_workers) == (10, 8, 8, 4)
+    assert cfg.code_switch_probability == 0
+    assert cfg.augmentation['spec_augment']['enabled']
+    assert cfg.aud_robustness['non_speech']['probability'] == 0.03
+    if stage == 'full':
+        assert cfg.num_train_epochs == 3 and cfg.max_steps == -1
+        assert cfg.eval_steps == cfg.save_steps == 3700
+    else:
+        assert cfg.max_steps == 2000
+    print(stage, 'SpecAugment:', cfg.augmentation['spec_augment'])
+    print(stage, 'waveform policy:', cfg.aud_robustness['augmentation'])
+PY
+
 python -m audm preflight --config "$AUD_TYPED_DECODER_CONFIG" \
   --model "$AUD_TYPED_ROOT/export" --output "$AUD_TYPED_ROOT/decoder" --scan \
   2>&1 | tee "$AUD_TYPED_ROOT/logs/preflight-decoder.log"
-
-python -m audm.robustness_smoke --config "$AUD_TYPED_DECODER_CONFIG" \
-  --audio "$AUD_REHEARSAL_WAV" \
-  --output "$AUD_TYPED_ROOT/augmentation-rehearsal" --iterations 64
 ```
 
-Run the upgrade once; rerunning it against the same destination intentionally
-fails. The scan decodes eligible negatives, RIRs and real-noise files and exercises
-all selected codecs. Review category counts, hours and exclusions. Listen to the
-rehearsal WAV files. The rehearsal measures waveform processing plus WAV writing,
-not GPU throughput or SpecAugment; the distributed smoke below exercises the full
-training collator. Inspect its effect counters because the probabilistic rehearsal
-does not guarantee every effect is selected.
+The scan decodes negatives, RIRs and MUSAN assets, and exercises the configured
+Opus/AAC/MP3/G.711 codecs. Check the report's three negative categories and global
+batch 640. It may take time to scan the uncapped corpus. SpecAugment uses p=0.37
+on the non-clean branch, with up to two time/frequency masks (maximum ratios
+0.05/0.15). The policy retains a 20% clean branch and at most two waveform effects.
+Silence and evaluation remain unaugmented.
 
-A missing/broken asset or decoder should be fixed before training. The real-noise
-directory comes from the inherited stage-02 augmentation settings. Never resume
-after editing referenced audio files in place: manifests are hashed, WAV bytes are
-not. Scanning can take time for a large noise corpus.
-
-## 4. Direct eight-GPU smoke and decoder warm-up
+## 7. Check eight-GPU communication
 
 ```bash
-export AUD_USE_SLURM=0 AUD_NNODES=1 AUD_GPUS_PER_NODE=8 AUD_NODE_RANK=0
-export AUD_MASTER_ADDR=127.0.0.1 AUD_MASTER_PORT=29613
-
 AUD_COMMAND=distributed-check bash audm/scripts/train_distributed.sh \
   --expected-world-size 8
+```
 
+## 8. Define the longest-shape memory rehearsal
+
+Run this function definition once per shell. It uses the normal trainer with the
+production batch/accumulation/workers, maximum audio duration and near-maximum
+transcript length. Two updates exercise initialized optimizer state. Synthetic
+probe weights must never be used for training continuation or evaluation.
+
+```bash
+aud_memory_probe() {
+  local stage="$1" config="$2" model="$3"
+  local probe="$AUD_TYPED_ROOT/memory-$stage"
+  python -m audm.memory_probe --config "$config" --model "$model" \
+    --output "$probe" --steps 2 || return
+  AUD_COMMAND=train bash audm/scripts/train_distributed.sh \
+    --config "$probe/recipe.yaml" --model "$model" --output "$probe/run" \
+    2>&1 | tee "$AUD_TYPED_ROOT/logs/memory-$stage.log" || return
+  python - "$probe/run" <<'PY'
+import json, sys
+from pathlib import Path
+paths = sorted(Path(sys.argv[1]).glob('cuda-memory-rank-*.json'))
+assert len(paths) == 8, f'Expected eight reports, got {len(paths)}'
+for path in paths:
+    report = json.loads(path.read_text())
+    assert report['status'] == 'completed', report
+    print('rank', report['rank'], 'peak allocated GiB', report['peak_allocated_gib'],
+          'peak reserved GiB', report['peak_reserved_gib'])
+PY
+}
+
+aud_memory_probe decoder "$AUD_TYPED_DECODER_CONFIG" "$AUD_TYPED_ROOT/export"
+```
+
+Do not pass `--smoke` to this probe. It disables augmentation and evaluation to
+stress model shapes; the next step tests the real data/augmentation pipeline.
+A probe output must be new. If rerunning, choose a new name such as `decoder-retry`.
+
+## 9. Smoke-test real data, then train the decoder
+
+```bash
 AUD_COMMAND=train bash audm/scripts/train_distributed.sh \
   --config "$AUD_TYPED_DECODER_CONFIG" --model "$AUD_TYPED_ROOT/export" \
   --output "$AUD_TYPED_ROOT/decoder" --smoke \
   2>&1 | tee "$AUD_TYPED_ROOT/logs/smoke-decoder.log"
-```
 
-Check that all eight ranks finish, loss/gradients are finite, the saved checkpoint
-reloads and GPU memory is acceptable on representative long recordings. The
-ordinary smoke is short and may not encounter the worst-length batch. It uses at
-most two loader workers per GPU; production uses four. Keep an eye on data-loader
-wait time during the first production updates.
-
-Also run the maximum-duration/transcript rehearsal in
-[MEMORY_AUDIT.md](MEMORY_AUDIT.md) for both the decoder and full-stage recipes.
-The trainer writes per-rank `cuda-memory-rank-N.json` diagnostics. Full training
-has additional encoder activations and optimizer state, so passing decoder
-warm-up does not establish that full training fits.
-
-```bash
 python -m audm verify "$AUD_TYPED_ROOT/decoder/smoke-test" --device cuda:0
 
 AUD_COMMAND=train bash audm/scripts/train_distributed.sh \
@@ -163,23 +242,22 @@ AUD_COMMAND=train bash audm/scripts/train_distributed.sh \
   --output "$AUD_TYPED_ROOT/decoder" \
   2>&1 | tee "$AUD_TYPED_ROOT/logs/train-decoder.log"
 
-python -m audm.eval_audio_types --model-path "$AUD_TYPED_ROOT/decoder" \
-  --manifest "$AUD_TYPED_EVAL_MANIFEST" --device cuda:0 \
-  --limit 1000 --max-new-tokens 768 --output "$AUD_TYPED_ROOT/eval-decoder.json"
+python -m audm verify "$AUD_TYPED_ROOT/decoder" --device cuda:0
 ```
 
-Decoder warm-up trains the decoder, embeddings/LM head and bridge, with the audio
-encoder frozen. Evaluation and saves occur every 500 updates. Review missed-speech
-rate, false-speech rate, non-speech text rate, invalid output formats and per-class
-precision/recall alongside multilingual WER/CER. Generated class labels are not
-calibrated confidence. An accuracy number alone can hide speech being suppressed.
+Decoder warm-up trains the decoder, embeddings/LM head and bridge while the encoder
+stays frozen. Review finite loss/gradients, multilingual WER/CER, data-loader wait
+time, and sample predictions. A smoke run uses fewer workers/shorter generation;
+it does not replace the maximum-shape probe. Completion should report step 2,000.
 
-## 5. Full training for three epochs
+## 10. Scan and rehearse full training separately
 
 ```bash
 python -m audm preflight --config "$AUD_TYPED_FULL_CONFIG" \
   --model "$AUD_TYPED_ROOT/decoder" --output "$AUD_TYPED_ROOT/full" --scan \
   2>&1 | tee "$AUD_TYPED_ROOT/logs/preflight-full.log"
+
+aud_memory_probe full "$AUD_TYPED_FULL_CONFIG" "$AUD_TYPED_ROOT/decoder"
 
 AUD_COMMAND=train bash audm/scripts/train_distributed.sh \
   --config "$AUD_TYPED_FULL_CONFIG" --model "$AUD_TYPED_ROOT/decoder" \
@@ -187,58 +265,63 @@ AUD_COMMAND=train bash audm/scripts/train_distributed.sh \
   2>&1 | tee "$AUD_TYPED_ROOT/logs/smoke-full.log"
 
 python -m audm verify "$AUD_TYPED_ROOT/full/smoke-test" --device cuda:0
+```
 
+Full training adds encoder gradients and optimizer state. Check `AUD architecture`
+in the startup log: both encoder and decoder checkpoint-enabled counts must match
+their layer counts, and decoder cache must be false. In inference-only `verify`,
+checkpoint-enabled counts of zero are normal. Stop if any rank OOMs or fails.
+
+## 11. Start full training for three epochs
+
+```bash
 AUD_COMMAND=train bash audm/scripts/train_distributed.sh \
   --config "$AUD_TYPED_FULL_CONFIG" --model "$AUD_TYPED_ROOT/decoder" \
   --output "$AUD_TYPED_ROOT/full" \
   2>&1 | tee "$AUD_TYPED_ROOT/logs/train-full.log"
 
-python -m audm.eval_audio_types --model-path "$AUD_TYPED_ROOT/full" \
-  --manifest "$AUD_TYPED_EVAL_MANIFEST" --device cuda:0 \
-  --limit 1000 --max-new-tokens 768 --output "$AUD_TYPED_ROOT/eval-full.json"
+python -m audm verify "$AUD_TYPED_ROOT/full" --device cuda:0
 ```
 
-Full training unfreezes the encoder. It needs its own memory smoke; success of
-decoder warm-up does not establish full-training memory headroom. Compare normal
-speech WER/CER against the source checkpoint on the same evaluation data. Final
-evaluation/save also run at training completion, even off the 3,700-step interval.
+Use the completed decoder checkpoint as the input, never the smoke/probe weights.
+Normal speech WER/CER callbacks continue. Final evaluation/save also run on completion,
+even off the 3,700-update interval. Before deploying, evaluate held-out categories
+and speech suppression as well as ASR accuracy; unreviewed negative labels do not
+establish ground-truth quality. A four-class evaluation manifest needs held-out
+speech rows plus the held-out negatives, not only noise/music/silence.
 
-## 6. Restart an interrupted stage
+## 12. Resume only an interrupted stage
 
-Use the same environment, config, assets, model argument and output directory:
+Restore the same environment, code, recipes, assets and output paths first. Run
+only the command for the stage that was interrupted, not both:
 
 ```bash
-# Resume decoder warm-up from its latest complete Trainer checkpoint:
 AUD_COMMAND=train bash audm/scripts/train_distributed.sh \
   --config "$AUD_TYPED_DECODER_CONFIG" --model "$AUD_TYPED_ROOT/export" \
   --output "$AUD_TYPED_ROOT/decoder" --resume auto
 
-# OR resume full training:
+# OR, for full training:
 AUD_COMMAND=train bash audm/scripts/train_distributed.sh \
   --config "$AUD_TYPED_FULL_CONFIG" --model "$AUD_TYPED_ROOT/decoder" \
   --output "$AUD_TYPED_ROOT/full" --resume auto
 ```
 
-Do not run both simultaneously on the same GPUs. `--resume` requires optimizer
-state in a Trainer checkpoint; final weights alone are not sufficient. If a crash
-left the newest checkpoint incomplete, select an earlier completed checkpoint
-explicitly instead of `auto`. Changed recipe/manifest/policy receipts are rejected;
-use weights-only fine-tuning into a new output for such changes. Runs started
-before robustness receipt version 2 also need a new weights-only run.
-Persistent-worker RNG/prefetch state is not restored bit-for-bit.
+Resume requires a complete Trainer checkpoint with optimizer state. If the newest
+checkpoint is incomplete, specify an earlier completed checkpoint explicitly.
+Changed recipes/manifests/robustness policies require weights-only continuation
+into a new output. The current robustness receipt is version 3; persistent-worker
+RNG/prefetch state is not restored bit-for-bit.
 
-## Validation scope
+## Scope and validation
 
-Local tests cover the native token extension, target masking and gradients,
-all three AUD variants, invalid labels/settings/assets, bounded effects and
-codec round trips, clean evaluation, code-switch exclusion and persistent-worker
-distributed save/resume. Two CPU/Gloo ranks exercise decoder and full stages.
-These tests use tiny models and synthetic fixtures, not the pretrained checkpoint
-or the cluster corpus. H100 memory, NCCL/DeepSpeed behavior, corpus label quality,
-throughput and actual WER/category accuracy require the cluster runs above.
+RIR preparation tests cover publisher-checksum enforcement, mono-channel preservation,
+noise exclusion, invalid audio, unsafe ZIP paths, immutable output, verification and
+actual convolution through the training augmenter. Full source assets are downloaded
+on the cluster, not during local tests. See [MEMORY_AUDIT.md](MEMORY_AUDIT.md) for
+memory changes and [NON_SPEECH_DATA.md](NON_SPEECH_DATA.md) for corpus details.
 
-The current waveform effects are speed perturbation, pitch-preserving time
-stretch, boundary-safe shift, RIR convolution, real noise, gain, white noise and
-actual codec round trips, plus existing SpecAugment. Approximate codec degradation
-remains optional. Independent pitch shifting, packet loss, and dedicated microphone
-clipping/compression are not implemented by this audit.
+The waveform policy includes speed perturbation, pitch-preserving time stretch,
+boundary-safe shift, RIR convolution, MUSAN mixing, gain, white noise and real codec
+round trips, followed by feature-level SpecAugment. Independent pitch shifting,
+packet loss and dedicated clipping/compression remain unimplemented. CPU regression
+tests do not establish full-size H100 memory, throughput or accuracy.

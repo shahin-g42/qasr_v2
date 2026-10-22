@@ -72,7 +72,7 @@ supported builds but does not replace reducing live tensor memory.
 | Category training | New category tokens require decoder warm-up before full training. Typed checkpoints reject adapter-only training. The 3% negative pool replaces slots rather than expanding the batch. |
 | Chinese metrics | WER uses whitespace tokens; CER is more informative for Chinese. CER far above 100% still indicates severe insertions/repetition and must not be dismissed as word segmentation. |
 | Augmentation cost | Wave effects stay within duration bounds. RIR/codec effects may be skipped near 30 seconds. CPU augmentation cannot explain the old 11.65 GiB GPU allocation, but FFmpeg, resampling and I/O can bottleneck workers. |
-| Missing features | Dedicated clipping/compression, packet dropouts and independent pitch shifting are not implemented. RIR downloading and real-room silence curation remain separate asset work. Do not advertise these as enabled. |
+| Missing features | Dedicated clipping/compression, packet dropouts and independent pitch shifting are not implemented. Real-room silence curation remains separate asset work. RIR downloading is now provided by `scripts/rirs.sh` (see ROBUST_CLUSTER.md). Do not advertise these as enabled. |
 | Resume compatibility | Random-window noise advances robustness receipts to version 3. Exact resume rejects changed recipes/assets/policies. |
 
 SpecAugment retains the inherited stage-02 settings. The opt-in policy retains

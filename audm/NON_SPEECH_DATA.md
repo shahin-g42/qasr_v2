@@ -194,8 +194,8 @@ Do not mutate a corpus referenced by a running/resumed training job.
 
 Continue with the source-model upgrade, `preflight --scan`, eight-GPU smoke and
 training commands in [ROBUST_CLUSTER.md](ROBUST_CLUSTER.md). These manifests supply
-the **non-speech** pool. They do not supply RIRs or replace the existing speech
-datasets. For four-class evaluation, combine disjoint held-out speech rows with
+the **non-speech** pool. They do not replace the existing speech datasets.
+Use `bash audm/scripts/rirs.sh all` for the separate OpenSLR RIR assets beside MUSAN. For four-class evaluation, combine disjoint held-out speech rows with
 these held-out negatives; using only this test manifest leaves missed-speech
 metrics undefined. Keep validation for tuning and test for final evaluation.
 

@@ -368,3 +368,9 @@ workflow: export, verify, preflight, NCCL, smoke, adapter alignment, full traini
 Both stages use microbatch 20, accumulation 4 and four workers per GPU
 (640 samples/update). Adapter alignment runs 2,000 updates; full training runs
 three epochs. The launcher isolates `AUDFLASH_*` settings from other AUD runs.
+
+## Opt-in robustness experiment
+
+See [ROBUSTNESS.md](ROBUSTNESS.md) for bounded waveform augmentation, actual codec
+round trips, controlled non-speech sampling, CPU rehearsal and separate non-speech
+evaluation. Existing production recipes remain unchanged.

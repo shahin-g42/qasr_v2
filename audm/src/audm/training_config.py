@@ -2,6 +2,7 @@
 
 import copy
 import hashlib
+import os
 from dataclasses import fields
 from pathlib import Path
 
@@ -33,7 +34,7 @@ DATA_KEYS = {
 def load_recipe(path, model=None, output=None, smoke=False, resume=None):
     path = Path(path).resolve()
     recipe = yaml.safe_load(path.read_text())
-    allowed = {"data_recipe", "stage", "training"}
+    allowed = {"data_recipe", "stage", "training", "robustness"}
     if not isinstance(recipe, dict) or set(recipe) - allowed:
         raise ValueError(f"AUD recipe accepts only {sorted(allowed)}")
     data_path = (path.parent / recipe["data_recipe"]).resolve()
@@ -103,4 +104,26 @@ def load_recipe(path, model=None, output=None, smoke=False, resume=None):
         "quota_window": virtual_batch,
         "resolved": config.to_dict(),
     }
+    robustness = copy.deepcopy(recipe.get("robustness") or {})
+    if robustness:
+        if set(robustness) - {"augmentation", "non_speech"}:
+            raise ValueError("Unknown robustness settings")
+        if robustness.get("non_speech") and config.non_speech_manifest_specs:
+            raise ValueError("Use either controlled non-speech replacement or legacy manifests")
+        assets = []
+        ns = robustness.get("non_speech", {})
+        ns["manifests"] = [os.path.expandvars(str(p)) for p in ns.get("manifests", [])]
+        assets.extend(ns["manifests"])
+        for settings in robustness.get("augmentation", {}).get("effects", {}).values():
+            if "manifest" in settings:
+                settings["manifest"] = os.path.expandvars(settings["manifest"])
+                assets.append(settings["manifest"])
+        receipt["robustness"] = robustness
+        receipt["robustness_assets"] = {}
+        for asset in assets:
+            asset = Path(asset).expanduser().resolve()
+            receipt["robustness_assets"][str(asset)] = hashlib.sha256(
+                asset.read_bytes()
+            ).hexdigest()
+    config.aud_robustness = robustness
     return config, stage, receipt

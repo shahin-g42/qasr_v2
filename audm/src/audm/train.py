@@ -163,7 +163,13 @@ def run(recipe, model=None, output=None, smoke=False, resume=None):
     )
     train_dataset = ResilientAudioDataset(combined(train_parts), **resilient)
     eval_dataset = ResilientAudioDataset(combined(eval_parts), **resilient) if eval_parts else None
-    augmenter = build_augmenter(config.augmentation, sampling_rate=16000)
+    robust = config.aud_robustness
+    if robust.get("augmentation"):
+        from .robustness import RobustAugmenter
+
+        augmenter = RobustAugmenter(robust["augmentation"], config.augmentation)
+    else:
+        augmenter = build_augmenter(config.augmentation, sampling_rate=16000)
     collator_options = dict(
         processor=processor,
         language=config.language,
@@ -178,6 +184,12 @@ def run(recipe, model=None, output=None, smoke=False, resume=None):
         code_switcher=mixer,
         code_switch_probability=config.code_switch_probability,
     )
+    if robust.get("non_speech"):
+        from .robustness import NonSpeechPool
+
+        collator.non_speech_pool = NonSpeechPool(
+            robust["non_speech"], config.min_duration_seconds, config.max_duration_seconds
+        )
     clean_collator = AUDDataCollator(**collator_options)
     trainer = AUDTrainer(
         model=model,
@@ -274,6 +286,17 @@ def preflight(recipe, model, output, scan=False):
     noise = (config.augmentation or {}).get("noise_injection", {})
     if noise.get("enabled") and not Path(noise["noise_dir"]).is_dir():
         raise FileNotFoundError(noise["noise_dir"])
+    if config.aud_robustness:
+        from .robustness import NonSpeechPool, RobustAugmenter
+
+        if config.aud_robustness.get("augmentation"):
+            RobustAugmenter(config.aud_robustness["augmentation"], config.augmentation)
+        if config.aud_robustness.get("non_speech"):
+            NonSpeechPool(
+                config.aud_robustness["non_speech"],
+                config.min_duration_seconds,
+                config.max_duration_seconds,
+            )
     report = {
         "variant": processor.config.variant,
         "stage": stage,

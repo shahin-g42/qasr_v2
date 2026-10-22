@@ -49,6 +49,8 @@ class AUDDataCollator(QASRDataCollator):
             features, audits = [m[0] for m in mixed], [m[1] for m in mixed]
         if self.audit_callback is not None:
             self.audit_callback(features, audits)
+        if getattr(self, "non_speech_pool", None) is not None:
+            features = self.non_speech_pool.replace(features)
         # Keep the stage-02/index contract: this limit applies to transcript
         # tokens. Language markers and EOS are additional supervised tokens.
         if any(

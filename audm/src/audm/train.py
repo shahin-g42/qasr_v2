@@ -115,6 +115,8 @@ def run(recipe, model=None, output=None, smoke=False, resume=None):
         torch.distributed.barrier()
     config.resume_from_checkpoint = checkpoint
     processor = AUDProcessor.from_pretrained(checkpoint or config.model_name_or_path)
+    if processor.config.audio_type_version and config.non_speech_manifest_specs:
+        raise ValueError("Typed checkpoints require the categorized robustness.non_speech pool")
     if config.max_duration_seconds > processor.config.max_audio_seconds:
         raise ValueError("Dataset maximum duration exceeds the exported audio contract")
     model = AUDForConditionalGeneration.from_pretrained(
@@ -188,7 +190,10 @@ def run(recipe, model=None, output=None, smoke=False, resume=None):
         from .robustness import NonSpeechPool
 
         collator.non_speech_pool = NonSpeechPool(
-            robust["non_speech"], config.min_duration_seconds, config.max_duration_seconds
+            robust["non_speech"],
+            config.min_duration_seconds,
+            config.max_duration_seconds,
+            require_audio_type=bool(processor.config.audio_type_version),
         )
     clean_collator = AUDDataCollator(**collator_options)
     trainer = AUDTrainer(
@@ -210,7 +215,7 @@ def run(recipe, model=None, output=None, smoke=False, resume=None):
         sampling_strategy=config.sampling_strategy,
         sampling_temperature=config.sampling_temperature,
         language_batch_counts=config.language_batch_counts,
-        allow_partial_epoch=smoke or stage == "adapter",
+        allow_partial_epoch=smoke or stage in ("adapter", "decoder"),
         llm_lr_factor=config.llm_lr_factor,
         embed_lr_factor=config.embed_lr_factor,
     )
@@ -281,6 +286,8 @@ def preflight(recipe, model, output, scan=False):
         indexed = {s["path"] for s in mixer.index["sources"]}
         if not {str(Path(p).resolve()) for p in config.train_manifest_paths}.issubset(indexed):
             raise ValueError("Training manifests are absent from the code-switch index")
+    if processor.config.audio_type_version and config.non_speech_manifest_specs:
+        raise ValueError("Typed checkpoints require the categorized robustness.non_speech pool")
     if config.max_duration_seconds > processor.config.max_audio_seconds:
         raise ValueError("Dataset duration exceeds model limit")
     noise = (config.augmentation or {}).get("noise_injection", {})
@@ -296,7 +303,10 @@ def preflight(recipe, model, output, scan=False):
                 config.aud_robustness["non_speech"],
                 config.min_duration_seconds,
                 config.max_duration_seconds,
+                require_audio_type=bool(processor.config.audio_type_version),
             )
+    if processor.config.audio_type_version and stage == "adapter":
+        raise ValueError("Audio-type training requires decoder or full stage")
     report = {
         "variant": processor.config.variant,
         "stage": stage,

@@ -22,6 +22,11 @@ def main(argv=None):
     )
     export.add_argument("--flash-audio-stride", type=int, choices=(1, 2), default=1)
     export.add_argument("--seed", type=int, default=42)
+    upgrade = sub.add_parser(
+        "add-audio-types", help="Extend an AUD checkpoint with four category tokens"
+    )
+    upgrade.add_argument("--model-path", required=True)
+    upgrade.add_argument("--output", required=True)
     verify = sub.add_parser(
         "verify", help="Strict offline reload, checksums and forward/generation smoke"
     )
@@ -50,6 +55,10 @@ def main(argv=None):
         from .export import export_model
 
         result = export_model(**values)
+    elif command == "add-audio-types":
+        from .audio_types import upgrade
+
+        result = upgrade(**values)
     elif command == "verify":
         from .verify import verify
 

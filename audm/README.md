@@ -374,3 +374,7 @@ three epochs. The launcher isolates `AUDFLASH_*` settings from other AUD runs.
 See [ROBUSTNESS.md](ROBUSTNESS.md) for bounded waveform augmentation, actual codec
 round trips, controlled non-speech sampling, CPU rehearsal and separate non-speech
 evaluation. Existing production recipes remain unchanged.
+
+For native decoder tokens that distinguish speech, music, noise and silence,
+see [AUDIO_TYPES.md](AUDIO_TYPES.md). It covers tokenizer/model upgrade, decoder
+warm-up, categorized manifests, structured inference and held-out evaluation.

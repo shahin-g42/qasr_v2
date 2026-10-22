@@ -199,6 +199,10 @@ class AUDForConditionalGeneration(PreTrainedModel, GenerationMixin):
     def configure_training(self, stage="full"):
         if stage not in ("adapter", "full", "decoder"):
             raise ValueError("stage must be adapter, full or decoder")
+        if self.config.audio_type_version and stage == "adapter":
+            raise ValueError(
+                "Audio-type training requires an unfrozen decoder: use decoder or full stage"
+            )
         self.aud_encoder.requires_grad_(stage == "full")
         self.aud_decoder.requires_grad_(stage in ("full", "decoder"))
         self.aud_projector.requires_grad_(True)

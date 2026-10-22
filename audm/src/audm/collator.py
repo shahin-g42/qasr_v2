@@ -62,30 +62,58 @@ class AUDDataCollator(QASRDataCollator):
         waves = [self._load_waveform(f) for f in features]
         augmenter = self.augmenter
         if augmenter is not None and augmenter.has_waveform_augmentation:
-            waves = [
-                augmenter.augment_waveform(
-                    w,
-                    min_audio_seconds=self.min_audio_seconds,
-                    max_audio_seconds=self.max_audio_seconds,
+            augmented = []
+            for wave, feature in zip(waves, features, strict=True):
+                kind = (
+                    feature.get("audio_type") if self.processor.config.audio_type_version else None
                 )
-                for w in waves
-            ]
+                supports_types = getattr(augmenter, "supports_audio_types", False)
+                if kind in ("music", "noise", "silence") and not supports_types:
+                    augmented.append(wave)
+                    continue
+                augmented.append(
+                    augmenter.augment_waveform(
+                        wave,
+                        min_audio_seconds=self.min_audio_seconds,
+                        max_audio_seconds=self.max_audio_seconds,
+                        **({"audio_type": kind} if supports_types else {}),
+                    )
+                )
+            waves = augmented
         variant = self.processor.config.variant
         raw_audio = variant == "audflash" and self.processor.config.flash_encoder == "moonshine"
         if raw_audio and augmenter is not None and augmenter.has_spec_augmentation:
-            waves = [spectral_mask_waveform(w, augmenter) for w in waves]
+            waves = [
+                w
+                if self.processor.config.audio_type_version
+                and f.get("audio_type") in ("music", "noise", "silence")
+                and not getattr(augmenter, "supports_audio_types", False)
+                else spectral_mask_waveform(w, augmenter)
+                for w, f in zip(waves, features, strict=True)
+            ]
         batch = dict(
             self.processor.prepare_training_batch(
                 audio=waves,
                 text=[f["text"] for f in features],
                 language=[f.get("language") or self.language for f in features],
+                audio_type=[f.get("audio_type", "speech") for f in features]
+                if self.processor.config.audio_type_version
+                else None,
             )
         )
         if not raw_audio and augmenter is not None and augmenter.has_spec_augmentation:
             mel = batch["input_features"]
             if variant == "audturbo":
                 mel = mel.transpose(1, 2)
-            mel = augmenter.augment_features(mel, batch["input_features_mask"])
+            spec_mask = batch["input_features_mask"].clone()
+            if self.processor.config.audio_type_version:
+                for i, feature in enumerate(features):
+                    if feature.get("audio_type") == "silence" or (
+                        feature.get("audio_type") in ("music", "noise")
+                        and not getattr(augmenter, "supports_audio_types", False)
+                    ):
+                        spec_mask[i] = 0
+            mel = augmenter.augment_features(mel, spec_mask)
             batch["input_features"] = mel.transpose(1, 2) if variant == "audturbo" else mel
         self._validate_audio_contract(batch, len(features))
         allowed = set(self.processor.model_input_names) | {"labels"}

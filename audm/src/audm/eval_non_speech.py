@@ -21,7 +21,10 @@ def evaluate(
         raise FileExistsError(output)
     processor = AUDProcessor.from_pretrained(model_path)
     pool = NonSpeechPool(
-        dict(probability=0.5, manifests=manifests), 0.1, processor.config.max_audio_seconds
+        dict(probability=0.5, manifests=manifests),
+        0.1,
+        processor.config.max_audio_seconds,
+        require_audio_type=bool(processor.config.audio_type_version),
     )
     model = (
         AUDForConditionalGeneration.from_pretrained(model_path, local_files_only=True, dtype="auto")
@@ -29,9 +32,9 @@ def evaluate(
         .eval()
     )
     rows = []
-    for part in pool.parts:
+    for part_number, part in enumerate(pool.parts):
         for index in range(len(part)):
-            record = part[index]
+            record = pool.record(part_number, index)
             wave = load_mono_audio(record["audio_path"], 16000)
             batch = processor.apply_transcription_request([wave], language=[language])
             batch = {k: v.to(device) for k, v in batch.items() if k in processor.model_input_names}
@@ -41,9 +44,16 @@ def evaluate(
                 )
             tokens = result[0, batch["input_ids"].shape[1] :].tolist()
             text = processor.decode(tokens)
+            event = (
+                processor.decode_audio_event(tokens)
+                if processor.config.audio_type_version
+                else None
+            )
             rows.append(
                 dict(
                     audio_path=record["audio_path"],
+                    expected_audio_type=record.get("audio_type"),
+                    event=event,
                     prediction=text,
                     nonempty=bool(text.strip()),
                     generated_tokens=len(tokens),
@@ -64,6 +74,13 @@ def evaluate(
         selection="first eligible records in manifest order",
         examples=rows,
     )
+    if processor.config.audio_type_version:
+        report["category_accuracy"] = sum(
+            r["event"]["audio_type"] == r["expected_audio_type"] for r in rows
+        ) / len(rows)
+        report["invalid_format_rate"] = sum(not r["event"]["format_valid"] for r in rows) / len(
+            rows
+        )
     output.parent.mkdir(parents=True, exist_ok=True)
     with output.open("x") as handle:
         json.dump(report, handle, indent=2, ensure_ascii=False)

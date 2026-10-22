@@ -62,10 +62,28 @@ class AUDConfig(PreTrainedConfig):
         max_audio_seconds=35.0,
         requires_alignment=False,
         format_version=1,
+        audio_type_version=0,
+        audio_type_token_ids=None,
         **kwargs,
     ):
         if variant not in ENCODERS or format_version != 1:
             raise ValueError("Unsupported AUD variant or format version")
+        if audio_type_version not in (0, 1):
+            raise ValueError("Unsupported audio-type target version")
+        self.audio_type_version = audio_type_version
+        self.audio_type_token_ids = dict(audio_type_token_ids or {})
+        if audio_type_version == 1:
+            from .audio_types import TOKENS
+
+            ids = list(self.audio_type_token_ids.values())
+            if (
+                set(self.audio_type_token_ids) != set(TOKENS)
+                or len(set(ids)) != 4
+                or any(type(i) is not int or i < 0 for i in ids)
+            ):
+                raise ValueError("Invalid audio-type token map")
+        elif self.audio_type_token_ids:
+            raise ValueError("Audio-type IDs require version 1")
         self.variant = variant
         if flash_encoder not in ("moonshine", "gemma4") or flash_audio_stride not in (1, 2):
             raise ValueError("Unsupported Flash encoder or temporal stride")

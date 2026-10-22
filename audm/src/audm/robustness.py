@@ -22,6 +22,7 @@ class RobustAugmenter:
     """Worker-local policy. Fail on broken assets/codecs, never silently fall back."""
 
     has_waveform_augmentation = True
+    supports_audio_types = True
 
     def __init__(self, policy, legacy):
         if set(policy) - {"clean_probability", "max_effects", "effects"}:
@@ -223,15 +224,25 @@ class RobustAugmenter:
             raise RuntimeError("Configured real-noise file failed; refusing Gaussian fallback")
         return result
 
-    def augment_waveform(self, wave, min_audio_seconds=None, max_audio_seconds=None):
+    def augment_waveform(
+        self, wave, min_audio_seconds=None, max_audio_seconds=None, audio_type=None
+    ):
         self.stats["samples"] += 1
-        clean = random.random() < self.clean_probability
+        # Silence must not become labeled silence with added audible noise/music.
+        clean = audio_type == "silence" or random.random() < self.clean_probability
         if self.has_spec_augmentation:
             self.clean_rows.append(clean)
         if clean:
             self.stats["clean"] += 1
             return wave
-        choices = [k for k, v in self.effects.items() if random.random() < v.get("p", 0)]
+        choices = [
+            k
+            for k, v in self.effects.items()
+            if random.random() < v.get("p", 0)
+            and not (audio_type in ("music", "noise") and k == "noise")
+        ]
+        # The configured real-noise corpus may contain speech/music. Do not mix it
+        # into typed negatives and silently invalidate their category labels.
         random.shuffle(choices)
         chosen = []
         for name in choices:
@@ -293,16 +304,27 @@ class RobustAugmenter:
 class NonSpeechPool:
     """Replace a controlled fraction of training slots; retain each slot's language tag."""
 
-    def __init__(self, cfg, minimum, maximum):
+    def __init__(self, cfg, minimum, maximum, require_audio_type=False):
         if set(cfg) - {"probability", "manifests"}:
             raise ValueError("Unknown non-speech pool setting")
         self.probability = cfg.get("probability", 0)
         if not 0 < self.probability < 1:
             raise ValueError("Non-speech probability must be between 0 and 1")
+        self.categories = []
         for path in cfg.get("manifests", []):
-            for line in Path(path).read_text().splitlines():
+            categories = {}
+            self.categories.append(categories)
+            for line_number, line in enumerate(Path(path).read_text().splitlines(), 1):
                 if line.strip():
                     row = json.loads(line)
+                    kind = row.get("audio_type")
+                    if (require_audio_type and kind is None) or (
+                        kind is not None and kind not in ("music", "noise", "silence")
+                    ):
+                        raise ValueError(
+                            "Non-speech records require audio_type music, noise or silence"
+                        )
+                    categories[line_number] = kind
                     if any(str(row.get(k) or "").strip() for k in ("text", "transcript")):
                         raise ValueError("Non-speech manifests require explicitly empty text")
                     if "text" not in row and "transcript" not in row:
@@ -323,6 +345,10 @@ class NonSpeechPool:
                 if part[i]["text"].strip():
                     raise ValueError("Non-speech manifests must contain only empty transcripts")
 
+    def record(self, part, index):
+        row = self.parts[part][index]
+        return dict(row, audio_type=self.categories[part][row["line_number"]])
+
     def replace(self, records):
         output = []
         for record in records:
@@ -330,7 +356,7 @@ class NonSpeechPool:
             if random.random() < self.probability:
                 index = random.randrange(int(self.ends[-1]))
                 part = int(np.searchsorted(self.ends, index, side="right"))
-                row = self.parts[part][index - (int(self.ends[part - 1]) if part else 0)]
+                row = self.record(part, index - (int(self.ends[part - 1]) if part else 0))
                 output.append(dict(row, language=record["language"], text=""))
                 self.stats["replaced"] += 1
             else:

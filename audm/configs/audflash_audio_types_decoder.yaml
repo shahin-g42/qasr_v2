@@ -1,0 +1,64 @@
+# Audio-category warm-up: decoder and bridge train; encoder stays frozen.
+# 1 node x 8 GPUs. 20 x 4 = 80 examples/GPU/update (four 20-example quota windows).
+data_recipe: ../../configs/v8.1/02_full_12node.yaml
+stage: decoder
+training:
+  # Gemma audio context: filter longer recordings without truncation.
+  max_duration_seconds: 30.0
+  # Optional code-switch mixing is disabled by default.
+  code_switch_index: null
+  code_switch_probability: 0.0
+  per_device_train_batch_size: 20
+  per_device_eval_batch_size: 1
+  gradient_accumulation_steps: 4
+  num_train_epochs: 1.0
+  max_steps: 2000
+  learning_rate: 2.0e-05
+  llm_lr_factor: 0.5
+  embed_lr_factor: 0.25
+  weight_decay: 0.01
+  warmup_steps: 100
+  lr_scheduler_type: cosine
+  label_smoothing: 0.0
+  logging_steps: 10
+  eval_steps: 500
+  save_steps: 500
+  save_total_limit: 4
+  eval_log_samples: 2
+  eval_generation_max_new_tokens: 768
+  eval_wer_samples_per_language: 100
+  dataloader_num_workers: 4
+  dataloader_persistent_workers: true
+  dataloader_pin_memory: true
+  gradient_checkpointing: true
+  bf16: true
+  fp16: false
+  tf32: true
+  attn_implementation: sdpa
+  deepspeed: deepspeed_zero2.json
+  expected_world_size: 8
+  report_to: wandb
+  wandb_project: audm
+  seed: 42
+  data_seed: 42
+  ctc_loss_weight: 0.0
+  run_name: audflash-audio-types-decoder-1node
+
+# Requires an add-audio-types checkpoint and explicitly categorized negative rows.
+# Set both manifest environment variables before preflight.
+robustness:
+  non_speech:
+    probability: 0.03
+    manifests: ["${AUD_NON_SPEECH_MANIFEST}"]
+  augmentation:
+    clean_probability: 0.20
+    max_effects: 2
+    effects:
+      speed: {p: 0.20}
+      time_stretch: {p: 0.15, rate: [0.9, 1.1]}
+      shift: {p: 0.15, max_ms: 5, boundary_peak: 0.001}
+      rir: {p: 0.20, manifest: "${AUD_RIR_MANIFEST}"}
+      noise: {p: 0.25}
+      gain: {p: 0.25, db: [-6, 6]}
+      white_noise: {p: 0.10, db: [-70, -46]}
+      transcode: {p: 0.10, codecs: [opus, aac, mp3, g711]}

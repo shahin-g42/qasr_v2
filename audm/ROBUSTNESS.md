@@ -48,10 +48,18 @@ The manifest must explicitly contain empty `text` or `transcript`:
 {"audio_filepath":"/shared/negatives/room-tone.wav","duration":4.2,"text":""}
 ```
 
+For checkpoints upgraded with [audio-category tokens](AUDIO_TYPES.md), every
+negative row additionally requires `audio_type: "music"`, `"noise"` or
+`"silence"`. Its supervised output is the category token plus EOS, without a
+language marker. Typed silence bypasses all augmentation; typed music/noise
+skip real-noise mixing to preserve their labels. The legacy manifest example
+above remains valid for checkpoints without the token extension.
+
 Training replaces each sampled slot independently with probability 0.03. This
 is **3% in expectation**, not an exact per-batch quota. Total batch size remains
-unchanged. Each replacement retains the original slot's language tag, emits
-empty transcript content with task markers and EOS, and is never code-switched.
+unchanged. Each replacement retains the original slot's language tag and is
+never code-switched. Legacy checkpoints emit empty transcript content with
+native language/task markers and EOS; typed checkpoints emit category plus EOS.
 Language quotas describe sampled slots; speech-only counts and effective speech
 coverage decrease by approximately 3%. Existing speech rows are not deleted.
 A separate clean evaluation collator never injects non-speech replacements.

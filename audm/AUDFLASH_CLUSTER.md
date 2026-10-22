@@ -19,7 +19,9 @@ Exact `--resume auto` requires the original recipe and data. A run started with
 microbatch 20 cannot resume optimizer state under the new microbatch-10 recipe.
 Its checkpoint remains usable as a weights-only source in a new output directory.
 See [MEMORY_AUDIT.md](MEMORY_AUDIT.md) for the memory fix, longest-shape rehearsal
-and safe restart instructions. The existing YAML filenames and launcher defaults
+and safe restart instructions. The update also restores Gemma audio-layer
+checkpointing that was missing from the AUD port; existing exports need no
+re-export. The existing YAML filenames and launcher defaults
 are retained; no alternative production config is needed.
 
 The same stage-02 training/evaluation manifests and augmentations are reused.

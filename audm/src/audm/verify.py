@@ -36,6 +36,7 @@ def verify(directory, device="cpu", smoke=True):
         "checksums": "verified" if checksum_file.is_file() else "not present (training checkpoint)",
         "offline_reload": True,
         "requires_alignment": model.config.requires_alignment,
+        "architecture": model.architecture_report(),
     }
     if smoke:
         # Unequal waveforms exercise independent lengths and placeholder boundaries.

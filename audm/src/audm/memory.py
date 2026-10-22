@@ -37,6 +37,21 @@ def write_memory_report(args, output, status, step):
 
 class CUDAMemoryCallback(TrainerCallback):
     def on_train_begin(self, args, state, control, **kwargs):
+        model = kwargs.get("model")
+        if hasattr(model, "architecture_report"):
+            logging.getLogger("audm").info(
+                "AUD architecture: %s", json.dumps(model.architecture_report())
+            )
+            if (
+                args.gradient_checkpointing
+                and model.config.variant == "audflash"
+                and model.config.flash_encoder == "gemma4"
+            ):
+                if any(
+                    not getattr(layer, "gradient_checkpointing", False)
+                    for layer in model.aud_encoder.layers
+                ):
+                    raise RuntimeError("Gemma audio-layer checkpointing is not enabled")
         if args.device.type == "cuda":
             torch.cuda.reset_peak_memory_stats(args.device)
 

@@ -21,6 +21,15 @@ prompts and padding, then upcast logits to FP32. For example,
 Softmax/backward buffers and the rest of the model add to that. Encoder/decoder
 layer checkpointing does not remove these output-head tensors.
 
+A second defect was confirmed in the layer audit: Transformers 5.14.1's
+`Gemma4AudioLayer` is a plain module without a checkpoint hook. The outer
+checkpoint setting enabled the Qwen decoder, but not the Gemma encoder. The
+GQASR implementation had a custom audio-layer checkpoint wrapper; that behavior
+was missing from the AUD port. AUD now adds the standard Transformers checkpoint
+layer behavior around the unchanged native Gemma forward. Every trainable audio
+block recomputes during backward. State-dict names and weights are unchanged;
+existing Gemma AUD artifacts do not need re-exporting.
+
 Training and loss-only evaluation now project only supervised next-token
 positions, in chunks of at most 128. The projection and cross-entropy are
 checkpointed together: simply summing chunk losses would retain every softmax
@@ -55,7 +64,8 @@ supported builds but does not replace reducing live tensor memory.
 |---|---|
 | Bad speech samples | A replacement at a manifest boundary could enter the next language. Replacements now stay within the original source. An entirely unusable source fails instead of borrowing another language. |
 | Real background noise | The inherited loader decoded whole files and always took their beginning. The opt-in policy now reads bounded random windows, tiles short clips and uses polyphase resampling. Decode errors propagate. |
-| Frozen components | Frozen encoders remain in eval mode; frozen decoders remain in train mode for checkpointed bridge gradients. Full-stage encoder and decoder gradients were tested. |
+| Checkpoint coverage | Fixed missing Gemma audio-block checkpointing. Tests observe one forward plus one backward recomputation in every encoder/decoder block during full training, under both checkpoint modes. Frozen encoders remain in eval mode; adapter gradients pass through a checkpointed frozen decoder. |
+| Layer wiring | Export/reload tests compare all encoder and bridge tensors with their sources; decoder weight sharing, valid audio-token counts, masks, stride and causal targets are covered. No duplicate text decoder or imported Gemma text model was found. |
 | Smoke coverage | Ordinary smoke can sample short clips and uses fewer workers. The new longest-shape probe exercises the normal trainer/optimizer at maximum duration and near-maximum target length for two updates. |
 | CUDA diagnostics | Each rank writes peak allocated/reserved memory to `cuda-memory-rank-N.json`, including the caught-OOM path. Diagnostic writing requires no collectives after failure. |
 | Non-speech data | Only reviewed candidates become empty targets. Digital silence is synthetic; it does not establish accuracy on quiet real-world recordings. Include held-out speech when measuring speech suppression. |
@@ -136,6 +146,14 @@ DeepSpeed behavior cannot be certified by CPU tests. If it fails, retain the
 full operator traceback, `probe.json`, logs, installed package versions and
 per-rank memory reports.
 
+Startup also logs `AUD architecture` with parameter counts, parameter dtypes,
+layer counts, checkpoint coverage, weight tying, decoder attention and cache
+settings. For full Gemma training, encoder and decoder checkpoint-enabled counts
+must equal their layer counts. `verify` prints the same structure before training,
+where checkpoint-enabled counts of zero are expected. Gemma audio attention
+uses its native local relative-position computation with FP32 intermediates;
+`sdpa` selects the Qwen decoder backend, not a replacement for that audio math.
+
 ## Continuing an old run
 
 Changing microbatch 20 to 10 changes the resume contract. Existing checkpoints
@@ -172,3 +190,15 @@ evaluation, save and optimizer resume). The broader model, augmentation, data
 preparation and audio-type regression suite also passed. Ruff and runbook Bash
 syntax checks passed. Tests use tiny models; no full-size H100/DeepSpeed run has
 been performed locally.
+
+The layer follow-up adds seven regression cases for actual per-block backward
+recomputation, native-equivalent gradients, adapter/decoder/full freeze behavior,
+both reentrant and non-reentrant modes, and reduced encoder saved-tensor volume.
+The convolutional audio frontend remains native and is not checkpointed by this
+block wrapper. It still contributes activation memory. No GPU memory-fit claim
+is made without the eight-H100 rehearsal.
+
+After the audio-layer fix, 69 focused model/loss/training/audio-type tests and
+three process-based checks passed: two-rank decoder/full training with
+checkpoint save/resume, plus the four-worker probe. Ruff and runbook syntax
+checks passed again.

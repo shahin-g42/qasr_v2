@@ -7,7 +7,9 @@ from torch import nn
 from transformers import Gemma4AudioModel, PreTrainedModel, Qwen3ForCausalLM
 from transformers.activations import ACT2FN
 from transformers.generation import GenerationMixin
+from transformers.modeling_layers import GradientCheckpointingLayer
 from transformers.modeling_outputs import CausalLMOutputWithPast
+from transformers.models.gemma4.modeling_gemma4 import Gemma4AudioLayer
 from transformers.models.moonshine_streaming.modeling_moonshine_streaming import (
     MoonshineStreamingCausalConv1d,
     MoonshineStreamingEncoder,
@@ -21,6 +23,15 @@ from transformers.models.qwen3_omni_moe.modeling_qwen3_omni_moe import (
 from .configuration import AUDConfig
 from .lengths import get_projector_pool_output_lengths
 from .losses import chunked_causal_loss
+
+
+class AUDGemma4AudioLayer(Gemma4AudioLayer, GradientCheckpointingLayer):
+    """Keep the native Gemma math while enabling HF's per-layer checkpoint hook.
+
+    The upstream audio layer is an ordinary nn.Module even though its parent
+    advertises checkpoint support. The model-level flag otherwise only affects
+    our text decoder. Instance renaming below preserves every parameter key.
+    """
 
 
 class AUDMoonshineCausalConv1d(MoonshineStreamingCausalConv1d):
@@ -197,6 +208,37 @@ class AUDForConditionalGeneration(PreTrainedModel, GenerationMixin):
 
     def set_output_embeddings(self, value):
         self.aud_decoder.set_output_embeddings(value)
+
+    def architecture_report(self):
+        components = {}
+        for name in ("aud_encoder", "aud_projector", "aud_decoder"):
+            module = getattr(self, name)
+            parameters = list(module.parameters())
+            blocks = (
+                self.aud_decoder.model.layers
+                if name == "aud_decoder"
+                else getattr(module, "layers", [])
+            )
+            components[name] = dict(
+                parameters=sum(p.numel() for p in parameters),
+                trainable=sum(p.numel() for p in parameters if p.requires_grad),
+                dtypes=sorted({str(p.dtype) for p in parameters}),
+                layers=len(blocks),
+                checkpoint_capable=sum(hasattr(b, "gradient_checkpointing") for b in blocks),
+                checkpoint_enabled=sum(
+                    bool(getattr(b, "gradient_checkpointing", False)) for b in blocks
+                ),
+            )
+        return dict(
+            components=components,
+            tied_embeddings=self.get_input_embeddings().weight
+            is self.get_output_embeddings().weight,
+            decoder_attention=self.aud_decoder.config._attn_implementation,
+            decoder_cache=self.aud_decoder.config.use_cache,
+            flash_audio_stride=self.config.flash_audio_stride
+            if self.config.variant == "audflash"
+            else None,
+        )
 
     def configure_training(self, stage="full"):
         if stage not in ("adapter", "full", "decoder"):

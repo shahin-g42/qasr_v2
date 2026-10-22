@@ -10,6 +10,7 @@ from collections import Counter, deque
 from pathlib import Path
 
 import numpy as np
+import soundfile as sf
 from qasr.audio import load_mono_audio, validate_audio_duration
 from qasr.augmentation import build_augmenter
 from qasr.data import JsonlSpeechDataset
@@ -272,6 +273,34 @@ class RobustAugmenter:
         self.stats[f"codec:{name}"] += 1
         return result
 
+    def mix_noise(self, wave):
+        """Read a random bounded window, not an entire multi-minute recording."""
+        source = self.base.noise_injection
+        paths = source._noise_files[random.choice(source.noise_types)]
+        path = random.choice(paths)
+        with sf.SoundFile(path) as handle:
+            if not len(handle) or handle.samplerate <= 0:
+                raise ValueError(f"Invalid noise asset: {path}")
+            frames = math.ceil(len(wave) * handle.samplerate / SR)
+            handle.seek(random.randint(0, max(0, len(handle) - frames)))
+            noise = handle.read(min(frames, len(handle)), dtype="float32", always_2d=True).mean(1)
+            if handle.samplerate != SR:
+                divisor = math.gcd(handle.samplerate, SR)
+                noise = signal.resample_poly(noise, SR // divisor, handle.samplerate // divisor)
+        noise = _waveform(noise)
+        if len(noise) < len(wave):
+            noise = np.tile(noise, math.ceil(len(wave) / len(noise)))
+        noise = noise[: len(wave)]
+        source.last_noise_source = str(path)
+        signal_power, noise_power = np.mean(wave**2), np.mean(noise**2)
+        if signal_power < 1e-10 or noise_power < 1e-10:
+            self.stats["noise:quiet_window_skip"] += 1
+            return wave
+        snr = random.uniform(*source.snr_range)
+        result = wave + noise * np.sqrt(signal_power / (noise_power * 10 ** (snr / 10)))
+        peak = np.max(np.abs(result))
+        return result * (0.95 / peak) if peak > 1 else result
+
     def apply(self, name, wave, cfg):
         if name == "gain":
             return wave * 10 ** (random.uniform(*cfg.get("db", [-6, 6])) / 20)
@@ -306,16 +335,13 @@ class RobustAugmenter:
             )
         if name == "transcode":
             return self.transcode(wave, cfg)
+        if name == "noise":
+            return self.mix_noise(wave)
         obj = getattr(
             self.base,
-            {"speed": "speed_perturb", "noise": "noise_injection", "codec_approx": "codec_augment"}[
-                name
-            ],
+            {"speed": "speed_perturb", "codec_approx": "codec_augment"}[name],
         )
-        result = obj(wave, SR)
-        if name == "noise" and getattr(obj, "last_noise_source", None) == "gaussian":
-            raise RuntimeError("Configured real-noise file failed; refusing Gaussian fallback")
-        return result
+        return obj(wave, SR)
 
     def augment_waveform(
         self, wave, min_audio_seconds=None, max_audio_seconds=None, audio_type=None

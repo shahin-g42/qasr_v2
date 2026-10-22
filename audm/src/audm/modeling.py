@@ -7,6 +7,7 @@ from torch import nn
 from transformers import Gemma4AudioModel, PreTrainedModel, Qwen3ForCausalLM
 from transformers.activations import ACT2FN
 from transformers.generation import GenerationMixin
+from transformers.modeling_outputs import CausalLMOutputWithPast
 from transformers.models.moonshine_streaming.modeling_moonshine_streaming import (
     MoonshineStreamingCausalConv1d,
     MoonshineStreamingEncoder,
@@ -19,6 +20,7 @@ from transformers.models.qwen3_omni_moe.modeling_qwen3_omni_moe import (
 
 from .configuration import AUDConfig
 from .lengths import get_projector_pool_output_lengths
+from .losses import chunked_causal_loss
 
 
 class AUDMoonshineCausalConv1d(MoonshineStreamingCausalConv1d):
@@ -286,6 +288,9 @@ class AUDForConditionalGeneration(PreTrainedModel, GenerationMixin):
         past_key_values=None,
         use_cache=None,
         logits_to_keep=0,
+        loss_only=False,
+        loss_chunk_size=128,
+        loss_smoothing=0.0,
         **kwargs,
     ):
         if inputs_embeds is None:
@@ -307,6 +312,26 @@ class AUDForConditionalGeneration(PreTrainedModel, GenerationMixin):
             position_ids = attention_mask.long().cumsum(-1) - 1
             position_ids.masked_fill_(attention_mask == 0, 0)
             position_ids = position_ids[:, -inputs_embeds.shape[1] :]
+        if loss_only:
+            if labels is None or past_key_values is not None or use_cache:
+                raise ValueError("loss_only requires labels, no past cache and use_cache=False")
+            denominator = kwargs.pop("num_items_in_batch", None)
+            output = self.aud_decoder.model(
+                inputs_embeds=inputs_embeds,
+                attention_mask=attention_mask,
+                position_ids=position_ids,
+                use_cache=False,
+                **kwargs,
+            )
+            loss = chunked_causal_loss(
+                output.last_hidden_state,
+                self.aud_decoder.lm_head,
+                labels,
+                chunk_size=loss_chunk_size,
+                epsilon=loss_smoothing,
+                num_items_in_batch=denominator,
+            )
+            return CausalLMOutputWithPast(loss=loss)
         return self.aud_decoder(
             inputs_embeds=inputs_embeds,
             attention_mask=attention_mask,

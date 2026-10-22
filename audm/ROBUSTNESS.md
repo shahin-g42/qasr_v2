@@ -2,7 +2,7 @@
 
 Existing production recipes are unchanged. `configs/audflash_robust_full.yaml`
 is a separately selected experiment based on single-node AudFlash full training:
-20 × 4 × 8 = 640 examples/update, four workers/GPU, three nominal weighted
+10 × 4 × 8 = 320 examples/update, four workers/GPU, three nominal weighted
 coverage epochs, evaluation and checkpoint saving every 3,700 updates.
 
 ## Implemented policy
@@ -80,7 +80,9 @@ replacement happens before code-switching; empty-target rows are never mixed.
 Relative robustness manifest paths resolve beside the AUD recipe. Unset environment
 variables produce an explicit error.
 
-The audited policy uses `robustness_version: 2` in its run receipt. Resume within
+The audited policy uses `robustness_version: 3` in its run receipt. Real-noise
+augmentation reads random bounded windows and resamples with a polyphase filter,
+instead of decoding whole files and repeatedly using their first seconds. Resume within
 the same run keeps optimizer/scheduler progress and checks the recipe/assets.
 An experiment started with the earlier robustness code needs a new weights-only
 run (`--model` and a new `--output`), because its augmentation semantics changed.

@@ -146,7 +146,7 @@ def load_recipe(path, model=None, output=None, smoke=False, resume=None):
                 settings["manifest"] = asset_path(settings["manifest"])
                 assets.append(settings["manifest"])
         receipt["robustness"] = robustness
-        receipt["robustness_version"] = 2
+        receipt["robustness_version"] = 3
         receipt["robustness_assets"] = {}
         for asset in assets:
             asset = Path(asset).expanduser().resolve()

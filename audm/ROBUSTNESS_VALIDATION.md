@@ -1,5 +1,12 @@
 # Robustness and non-speech audit — 22 October 2026
 
+The later OOM follow-up is documented in [MEMORY_AUDIT.md](MEMORY_AUDIT.md).
+It adds bounded-memory causal loss, per-source bad-sample replacement, random
+noise windows and a longest-shape cluster rehearsal. AudFlash's four single-node
+recipes now use microbatch 10 with accumulation eight (640 slots/update).
+Robustness receipts advance to version 3. The initial audit below predates those
+changes; its test totals describe that earlier snapshot.
+
 The audit found and fixed concrete defects. Passing local tests is evidence for
 the implementation paths below; it is not a guarantee of pretrained-model quality
 or full-size H100 memory use.

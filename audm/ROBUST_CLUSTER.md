@@ -1,6 +1,6 @@
 # AudFlash: audited robustness and audio-category training
 
-This runbook uses one node with eight H100s, **20 × 4 × 8 = 640** sampled slots per
+This runbook uses one node with eight H100s, **10 × 8 × 8 = 640** sampled slots per
 update, four DataLoader workers per GPU, BF16, ZeRO-2 and gradient checkpointing.
 The decoder warm-up is 2,000 updates. Full training is three nominal weighted
 coverage epochs; full evaluation/checkpoint saving stays at 3,700 updates.
@@ -147,6 +147,12 @@ reloads and GPU memory is acceptable on representative long recordings. The
 ordinary smoke is short and may not encounter the worst-length batch. It uses at
 most two loader workers per GPU; production uses four. Keep an eye on data-loader
 wait time during the first production updates.
+
+Also run the maximum-duration/transcript rehearsal in
+[MEMORY_AUDIT.md](MEMORY_AUDIT.md) for both the decoder and full-stage recipes.
+The trainer writes per-rank `cuda-memory-rank-N.json` diagnostics. Full training
+has additional encoder activations and optimizer state, so passing decoder
+warm-up does not establish that full training fits.
 
 ```bash
 python -m audm verify "$AUD_TYPED_ROOT/decoder/smoke-test" --device cuda:0

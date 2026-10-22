@@ -7,7 +7,7 @@ never invokes `srun` or `scontrol`. Node rank is always 0; master defaults to
 127.0.0.1:29611. The other AUD launchers and recipes are unchanged.
 
 Both `audflash_adapter_1node.yaml` and `audflash_full_1node.yaml` use microbatch
-20, accumulation 4 and eight GPUs: **640 samples per optimizer update**.
+10, accumulation 8 and eight GPUs: **640 samples per optimizer update**.
 There are four DataLoader workers per GPU (32 total), with persistent workers
 and pinned memory. BF16, ZeRO-2 and gradient checkpointing are enabled.
 Evaluation batch size is one per GPU. The transcript limit is **512 tokens**,
@@ -15,15 +15,18 @@ inherited from the stage-02 data recipe; evaluation can generate up to 768 token
 including language markers and EOS. Transcripts above 512 are replaced by the
 resilient loader unless removed in a separately prepared filtered manifest.
 
-Changes do not affect an already running process. Exact `--resume auto` requires
-the original recipe and data; a run started with the temporary 1,024-token recipe
-cannot resume with the restored recipe. The single-node YAML files are restored
-to their pre-increase contents.
+Exact `--resume auto` requires the original recipe and data. A run started with
+microbatch 20 cannot resume optimizer state under the new microbatch-10 recipe.
+Its checkpoint remains usable as a weights-only source in a new output directory.
+See [MEMORY_AUDIT.md](MEMORY_AUDIT.md) for the memory fix, longest-shape rehearsal
+and safe restart instructions. The existing YAML filenames and launcher defaults
+are retained; no alternative production config is needed.
 
 The same stage-02 training/evaluation manifests and augmentations are reused.
-Code-switching is disabled; no code-switch index is needed. Each microbatch
-contains the 20-example language quota (10 Arabic, 6 English, 2 Hindi,
-1 Malayalam, 1 Chinese), repeated four times per optimizer update. Gemma SpecAugment operates on log-mel features. Recordings longer than 30 seconds
+Code-switching is disabled; no code-switch index is needed. Each pair of
+10-example microbatches contains the 20-example language quota (10 Arabic,
+6 English, 2 Hindi, 1 Malayalam, 1 Chinese), repeated four times per optimizer update.
+Gemma SpecAugment operates on log-mel features. Recordings longer than 30 seconds
 are filtered to respect the audio tower's context limit; manifest paths stay the same.
 
 ## 1. Shared setup — on the AudFlash node
@@ -137,9 +140,9 @@ bash audm/scripts/audflash.sh adapter "$NODE_RANK" --resume auto
 bash audm/scripts/audflash.sh full "$NODE_RANK" --resume auto
 ```
 
-The 20-sample microbatch is the requested configuration, not a measured H100
-memory guarantee. Local tests validate models, recipes and launcher arguments;
-actual memory and throughput must be checked on the cluster.
+Microbatch 10 is a conservative starting point, not a measured H100 memory
+guarantee. Run the longest-shape rehearsal in [MEMORY_AUDIT.md](MEMORY_AUDIT.md)
+before restarting a long run; ordinary smoke batches may contain only short clips.
 
 ## Audit Malayalam transcript lengths (CPU only)
 

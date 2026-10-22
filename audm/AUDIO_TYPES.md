@@ -102,7 +102,7 @@ every 500 updates. Base LR is 2e-5, decoder factor 0.5 and embedding factor 0.25
 Use category metrics and ordinary multilingual WER/CER to decide whether the
 warm-up is sufficient before full training.
 
-Both stages retain **20 × 4 × 8 = 640** examples/update and four loader workers
+Both stages retain **10 × 8 × 8 = 640** examples/update and four loader workers
 per GPU. Full training uses three nominal weighted coverage epochs, with
 evaluation and checkpoints every 3,700 updates. Production configs and run roots
 are unchanged. FFmpeg, RIR assets and the real-noise corpus inherited from the

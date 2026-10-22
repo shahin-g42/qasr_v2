@@ -8,7 +8,7 @@ from pathlib import Path
 
 import torch
 from qasr.augmentation import build_augmenter
-from qasr.data import CombinedSpeechDataset, JsonlSpeechDataset, ResilientAudioDataset
+from qasr.data import JsonlSpeechDataset, ResilientAudioDataset
 from qasr.eval_callback import WEREvalCallback
 from qasr.losses import make_smoothed_causal_lm_loss
 from qasr.train import _build_code_switcher, _sample_subset, _StatsSubset, _training_arguments
@@ -17,6 +17,7 @@ from transformers.trainer_utils import get_last_checkpoint
 
 from .collator import AUDDataCollator
 from .export import write_json
+from .memory import CUDAMemoryCallback, write_memory_report
 from .modeling import AUDForConditionalGeneration
 from .processing import AUDProcessor
 from .trainer import AUDTrainer
@@ -42,8 +43,16 @@ def dataset_parts(config, evaluation=False):
     return parts
 
 
-def combined(parts):
-    return (parts[0] if len(parts) == 1 else CombinedSpeechDataset(parts)) if parts else None
+def resilient_parts(parts, **options):
+    # Substitute bad samples within the same source manifest. Wrapping the
+    # concatenation could replace the last bad Malayalam row with Chinese and
+    # silently violate the sampler's language quota.
+    wrapped = [ResilientAudioDataset(part, **options) for part in parts]
+    return (
+        (wrapped[0] if len(wrapped) == 1 else torch.utils.data.ConcatDataset(wrapped))
+        if wrapped
+        else None
+    )
 
 
 def resume_contract(receipt):
@@ -169,8 +178,8 @@ def run(recipe, model=None, output=None, smoke=False, resume=None):
         max_target_length=config.max_target_length,
         truncate_long_transcripts=config.truncate_long_transcripts,
     )
-    train_dataset = ResilientAudioDataset(combined(train_parts), **resilient)
-    eval_dataset = ResilientAudioDataset(combined(eval_parts), **resilient) if eval_parts else None
+    train_dataset = resilient_parts(train_parts, **resilient)
+    eval_dataset = resilient_parts(eval_parts, **resilient)
     robust = config.aud_robustness
     if robust.get("augmentation"):
         from .robustness import RobustAugmenter
@@ -226,6 +235,8 @@ def run(recipe, model=None, output=None, smoke=False, resume=None):
         embed_lr_factor=config.embed_lr_factor,
     )
     trainer.aud_receipt = receipt
+    trainer.aud_label_smoothing = config.label_smoothing
+    trainer.add_callback(CUDAMemoryCallback())
     trainer.aud_source = str(Path(checkpoint or config.model_name_or_path).resolve())
     if eval_parts and config.eval_wer_samples_per_language:
         callback = WEREvalCallback(
@@ -252,7 +263,17 @@ def run(recipe, model=None, output=None, smoke=False, resume=None):
         args.world_size * args.per_device_train_batch_size * args.gradient_accumulation_steps,
         f"{sum(p.numel() for p in model.parameters() if p.requires_grad):,}",
     )
-    result = trainer.train(resume_from_checkpoint=checkpoint)
+    LOGGER.info(
+        "AUD loss uses supervised-token chunks of 128; label_smoothing=%s", config.label_smoothing
+    )
+    try:
+        result = trainer.train(resume_from_checkpoint=checkpoint)
+    except torch.OutOfMemoryError:
+        try:
+            write_memory_report(args, root, "oom", trainer.state.global_step)
+        except Exception:
+            LOGGER.exception("Could not write CUDA memory diagnostics")
+        raise
     trainer.log_metrics("train", result.metrics)
     trainer.save_metrics("train", result.metrics)
     if eval_dataset is not None:

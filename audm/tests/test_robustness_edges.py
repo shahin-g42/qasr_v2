@@ -18,6 +18,69 @@ from audm.robustness import NonSpeechPool, RobustAugmenter, validate_negative_re
 from audm.training_config import load_recipe
 
 
+def test_bad_boundary_sample_stays_in_its_source_manifest(tokenizer):
+    from audm.train import resilient_parts
+
+    ar = [
+        dict(audio_path="unused-ar.wav", text="hello", language="ar", waveform=np.ones(3200)),
+        dict(audio_path="bad-ar.wav", text="hello", language="ar", waveform=np.ones(1)),
+    ]
+    ml = [dict(audio_path="unused-ml.wav", text="hello", language="ml", waveform=np.ones(3200))]
+    dataset = resilient_parts(
+        [ar, ml],
+        sampling_rate=16000,
+        min_audio_seconds=0.1,
+        max_audio_seconds=30,
+        tokenizer=tokenizer,
+        max_target_length=512,
+    )
+    assert len(dataset) == 3
+    assert dataset[1]["language"] == "ar"
+    assert dataset[1]["audio_path"] == "unused-ar.wav"
+    assert dataset[2]["language"] == "ml"
+
+
+@pytest.mark.parametrize("rate", [8000, 16000, 44100])
+def test_noise_reads_random_bounded_window(tmp_path, monkeypatch, rate):
+    noise = np.zeros(rate * 10, dtype=np.float32)
+    noise[rate * 5 :] = 0.05
+    path = tmp_path / "long-noise.wav"
+    sf.write(path, noise, rate, subtype="FLOAT")
+    aug = RobustAugmenter(
+        dict(clean_probability=0, effects={"noise": {"p": 1}}),
+        dict(noise_injection=dict(enabled=True, noise_dir=str(tmp_path), snr_range=[10, 10])),
+    )
+    monkeypatch.setattr(random, "randint", lambda lo, hi: hi)
+    original_read = sf.SoundFile.read
+    frames_read = []
+
+    def read(handle, frames=-1, **kwargs):
+        frames_read.append(frames)
+        return original_read(handle, frames=frames, **kwargs)
+
+    monkeypatch.setattr(sf.SoundFile, "read", read)
+    wave = np.full(16000, 0.1, dtype=np.float32)
+    result = aug.apply("noise", wave, {})
+    assert frames_read == [rate]  # One second, not the full ten-second file.
+    assert np.isfinite(result).all() and result.shape == wave.shape
+    assert np.abs(result - wave).mean() > 0.02  # Random window reaches the nonzero tail.
+    assert aug.base.noise_injection.last_noise_source == str(path)
+
+
+def test_noise_short_clip_and_decode_failure(tmp_path):
+    path = tmp_path / "short.wav"
+    sf.write(path, np.full(100, 0.05), 16000)
+    aug = RobustAugmenter(
+        dict(effects={"noise": {"p": 1}}),
+        dict(noise_injection=dict(enabled=True, noise_dir=str(tmp_path))),
+    )
+    result = aug.apply("noise", np.full(1600, 0.1, dtype=np.float32), {})
+    assert len(result) == 1600 and np.isfinite(result).all()
+    path.write_bytes(b"broken")
+    with pytest.raises(sf.LibsndfileError):
+        aug.apply("noise", np.ones(1600, dtype=np.float32), {})
+
+
 @pytest.mark.parametrize(
     "policy",
     [

@@ -8,6 +8,24 @@ from qasr.train import PredictionLoggingTrainer, _SamplerEpochDataLoader
 
 
 class AUDTrainer(PredictionLoggingTrainer):
+    def compute_loss(self, model, inputs, return_outputs=False, num_items_in_batch=None):
+        # Training and loss-only evaluation do not need vocabulary logits for
+        # the audio prompt, padding, or the entire supervised sequence at once.
+        # Public model forward/generate keep the native Transformers behavior.
+        if "labels" in inputs and (model.training or self.args.prediction_loss_only):
+            inputs = dict(
+                inputs,
+                loss_only=True,
+                use_cache=False,
+                loss_smoothing=getattr(self, "aud_label_smoothing", 0.0),
+            )
+        return super().compute_loss(
+            model,
+            inputs,
+            return_outputs=return_outputs,
+            num_items_in_batch=num_items_in_batch,
+        )
+
     def get_train_dataloader(self):
         if self._sampling_strategy != "weighted_stratified" or not self._balanced_sampling:
             return super().get_train_dataloader()

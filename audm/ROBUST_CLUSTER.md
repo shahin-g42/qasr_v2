@@ -47,14 +47,17 @@ other training jobs. FFmpeg must include `libopus`, `aac`, `libmp3lame` and
 
 ## 2. Set source, assets and experiment paths
 
-Replace the four `/REPLACE/WITH/...` paths below with real, immutable assets.
-The dataset download/curation job is separate; these commands do not download
-or invent a non-speech corpus.
+First run the download, listening review and corpus-finalization steps in
+[NON_SPEECH_DATA.md](NON_SPEECH_DATA.md) on one cluster node. The prepared corpus
+lives outside the source checkout. Replace the three `/REPLACE/WITH/...` paths
+below with your remaining immutable assets; the non-speech downloader does not
+provide RIRs or a combined speech/non-speech evaluation set.
 
 ```bash
 export AUD_TYPED_SOURCE=/lustrefs/shared/shahin.konadath/workspace/train/stt/v2/qasr_v2/output/audflash-gemma4-v1/adapter
 export AUD_TYPED_ROOT="$PWD/output/audflash-audio-types-v1"
-export AUD_NON_SPEECH_MANIFEST=/REPLACE/WITH/categorized-non-speech-train.jsonl
+export AUD_NON_SPEECH_ROOT=/lustrefs/shared/shahin.konadath/workspace/train/stt/v2/aud-data/non-speech-v1
+export AUD_NON_SPEECH_MANIFEST="$AUD_NON_SPEECH_ROOT/corpus-v1/train.jsonl"
 export AUD_RIR_MANIFEST=/REPLACE/WITH/rir.jsonl
 export AUD_TYPED_EVAL_MANIFEST=/REPLACE/WITH/audio-types-heldout.jsonl
 export AUD_REHEARSAL_WAV=/REPLACE/WITH/representative-speech.wav

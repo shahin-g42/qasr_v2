@@ -65,3 +65,19 @@ not a promise of bit-identical augmentations. Earlier robustness receipts cannot
 resume under the new policy; start a weights-only run with a new output instead.
 
 Follow [ROBUST_CLUSTER.md](ROBUST_CLUSTER.md) for the full cluster sequence.
+
+## Non-speech corpus preparation follow-up
+
+The cluster downloader and review/finalization pipeline now have 27 additional
+tests. The combined targeted run passed 91 tests across dataset preparation,
+robustness, audio types and edge cases, including real FFmpeg round trips.
+Preparation tests use actual Parquet files with embedded FLAC bytes, exercise
+the existing `NonSpeechPool.scan_audio()` contract, and verify license/vocal
+filters, source-split deduplication, bad checksums, invalid decisions, changed
+files, duration bounds and immutable final copies. Ruff and all Bash blocks in
+the dataset/training runbooks passed syntax checks.
+
+The pinned Hub metadata and label vocabulary were inspected. The full 6.85 GB
+dataset was not downloaded or listened to locally; corpus yields, speech-free
+labels and cluster throughput remain checks for the cluster preparation run.
+See [NON_SPEECH_DATA.md](NON_SPEECH_DATA.md) for the exact commands and paths.

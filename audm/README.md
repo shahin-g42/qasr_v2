@@ -3,6 +3,9 @@
 For the exact AudTurbo-only, per-node cluster launch sequence, see
 [AUDTURBO_CLUSTER.md](AUDTURBO_CLUSTER.md) and `scripts/audturbo.sh`.
 
+For the pinned Hugging Face non-speech download, listening review and training
+manifests, see [NON_SPEECH_DATA.md](NON_SPEECH_DATA.md) and `scripts/non_speech.sh`.
+
 `audm` exports and fine-tunes three complete speech models. It uses the **trained
 local QASR/GQASR decoders**, not fresh upstream replacements.
 

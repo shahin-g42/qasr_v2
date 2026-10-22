@@ -16,6 +16,7 @@ dependencies = [
 [project.optional-dependencies]
 train = ["deepspeed>=0.18", "wandb>=0.19", "tqdm>=4.66"]
 dev = ["pytest>=8.3", "ruff>=0.16"]
+data = ["pyarrow>=17"]
 
 [project.scripts]
 audm = "audm.cli:main"

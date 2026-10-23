@@ -279,7 +279,7 @@ def test_numeric_debug_traces_backward(monkeypatch):
     monkeypatch.setattr(PredictionLoggingTrainer, "training_step", step)
     trainer = object.__new__(AUDTrainer)
     with pytest.raises(RuntimeError, match="returned nan values"):
-        trainer.training_step(None, {})
+        trainer._aud_training_step(None, {})
 
 
 def test_numeric_debug_default_preserves_training_step(monkeypatch):
@@ -292,4 +292,4 @@ def test_numeric_debug_default_preserves_training_step(monkeypatch):
         assert not torch.is_anomaly_enabled()
         return num_items_in_batch
     monkeypatch.setattr(PredictionLoggingTrainer, "training_step", step)
-    assert object.__new__(AUDTrainer).training_step(None, {}, 7) == 7
+    assert object.__new__(AUDTrainer)._aud_training_step(None, {}, 7) == 7

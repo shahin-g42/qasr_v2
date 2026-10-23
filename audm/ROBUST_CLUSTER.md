@@ -12,7 +12,10 @@ or the completed adapter checkpoint if that is what you have.
 Both training stages use **10 × 8 × 8 = 640**, four workers/GPU, BF16, ZeRO-2 and
 checkpointed audio/text layers. Decoder warm-up is 2,000 updates; full training is
 three weighted coverage epochs, with evaluation/checkpoints every 3,700 updates.
-SpecAugment stays enabled; code-switching stays disabled; `RUN_ID=cs_v1_ml_v2`.
+SpecAugment stays enabled with GQASR-style per-frequency mean fill for Gemma;
+code-switching stays disabled; `RUN_ID=cs_v1_ml_v2`.
+All-rank finite-loss and gradient guards are enabled by default, including
+inside the DeepSpeed ZeRO-2 update path. Anomaly tracing is optional.
 
 ## 1. Set up the code checkout once
 

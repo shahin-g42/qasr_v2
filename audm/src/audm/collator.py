@@ -26,22 +26,17 @@ def spectral_mask_waveform(wave, augmenter):
     return result.numpy().astype(np.float32, copy=False)
 
 
-def gemma_specaugment(features, mask, augmenter, frontend):
-    """Mask with acoustic silence, avoiding zero-prefix gradient amplification.
+def gemma_specaugment(features, mask, augmenter):
+    """Use GQASR's per-frequency mean of original valid frames as the fill.
 
-    Sample the existing augmentation policy on ones so only selected bins change.
-    A log-mel value of zero is not silence. Preserve native frontend normalization.
+    Sample the unchanged policy on ones to preserve clean gates and mask draws.
+    Never compute the mean from already-masked features or include padding.
     """
     keep = augmenter.augment_features(torch.ones_like(features), mask).bool()
-    floor = np.log(np.asarray(frontend.mel_floor, dtype=np.float64))
-    if frontend.per_bin_mean is not None:
-        floor = floor - frontend.per_bin_mean
-    if frontend.per_bin_stddev is not None:
-        floor = floor / frontend.per_bin_stddev
-    fill = torch.as_tensor(floor, dtype=features.dtype, device=features.device)
-    if not torch.isfinite(fill).all():
-        raise ValueError("Gemma SpecAugment silence floor must be finite")
-    selected = ~keep & mask.bool().unsqueeze(-1)
+    valid = mask.bool().unsqueeze(-1)
+    fill = features.masked_fill(~valid, 0).sum(dim=1, keepdim=True)
+    fill = fill / valid.sum(dim=1, keepdim=True).clamp_min(1)
+    selected = ~keep & valid
     return torch.where(selected, fill, features)
 
 
@@ -136,7 +131,7 @@ class AUDDataCollator(QASRDataCollator):
                     spec_mask[i] = 0
             if variant == "audflash" and self.processor.config.flash_encoder == "gemma4":
                 mel = gemma_specaugment(
-                    mel, spec_mask, augmenter, self.processor.feature_extractor
+                    mel, spec_mask, augmenter
                 )
             else:
                 mel = augmenter.augment_features(mel, spec_mask)

@@ -175,10 +175,12 @@ Inherited production behavior includes:
   audio/adapter, decoder, and token embeddings.
 
 SpecAugment uses time-major mel features for Pro and a transposed view of Turbo's
-mel features. Flash has no mel frontend: its equivalent masks STFT time/frequency
-bins and reconstructs waveforms with the original phase before the learned
-frontend. This is an explicit AUD adaptation. Disable `spec_augment` in a recipe
-override if an ablation shows it harms Flash. Evaluation never uses these masks.
+mel features. Gemma-based Flash uses per-frequency mean fill over the original
+valid log-mel frames, matching GQASR and avoiding unstable exact-zero prefixes.
+Legacy Moonshine-based Flash instead masks STFT time/frequency bins and
+reconstructs waveforms before its learned frontend. Evaluation never uses these
+masks. Default all-rank loss and gradient guards abort before a nonfinite update;
+AUD_DEBUG_NUMERICS=1 adds optional anomaly tracing and failing-batch capture.
 
 For optional code-switching after the Malayalam cleanup, use the stage-03
 `code_switch_indexes/cs_v1_ml_v2/assembled/index.json` revision, not stale `cs_v1`.

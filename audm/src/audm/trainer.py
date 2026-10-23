@@ -8,9 +8,19 @@ import torch
 from qasr.sampling import WeightedStratifiedLanguageSampler
 from qasr.train import PredictionLoggingTrainer, _SamplerEpochDataLoader
 
+from .numerics import check_gradients, check_loss, install_zero2_guard
+
 
 class AUDTrainer(PredictionLoggingTrainer):
     def training_step(self, model, inputs, num_items_in_batch=None):
+        if self.is_deepspeed_enabled:
+            install_zero2_guard(model.optimizer)
+        result = self._aud_training_step(model, inputs, num_items_in_batch)
+        if not self.is_deepspeed_enabled and self.accelerator.sync_gradients:
+            check_gradients(model)
+        return result
+
+    def _aud_training_step(self, model, inputs, num_items_in_batch=None):
         if os.environ.get("AUD_DEBUG_NUMERICS") == "1":
             # Enclose forward AND backward so the traceback identifies the
             # forward operation whose backward first generated NaNs.
@@ -42,12 +52,15 @@ class AUDTrainer(PredictionLoggingTrainer):
                 use_cache=False,
                 loss_smoothing=getattr(self, "aud_label_smoothing", 0.0),
             )
-        return super().compute_loss(
+        result = super().compute_loss(
             model,
             inputs,
             return_outputs=return_outputs,
             num_items_in_batch=num_items_in_batch,
         )
+        if model.training and torch.is_grad_enabled():
+            check_loss(result[0] if return_outputs else result)
+        return result
 
     def get_train_dataloader(self):
         if self._sampling_strategy != "weighted_stratified" or not self._balanced_sampling:

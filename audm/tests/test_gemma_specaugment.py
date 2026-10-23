@@ -1,6 +1,3 @@
-from types import SimpleNamespace
-
-import numpy as np
 import pytest
 import torch
 from transformers import Gemma4AudioConfig, Gemma4AudioModel
@@ -16,32 +13,36 @@ class PrefixMask:
         return result
 
 
-def frontend():
-    return SimpleNamespace(mel_floor=1e-3, per_bin_mean=None, per_bin_stddev=None)
-
-
 def test_fill_preserves_unselected_bins_padding_and_clean_rows():
     x = torch.randn(2, 32, 8)
     x[1, 0] = 0  # legitimate zeros must not be mistaken for selected bins
     mask = torch.ones(2, 32, dtype=torch.bool)
     mask[0, 15:] = False
-    result = gemma_specaugment(x, mask, PrefixMask(), frontend())
-    torch.testing.assert_close(result[0, :15], torch.full_like(result[0, :15], np.log(1e-3)))
+    result = gemma_specaugment(x, mask, PrefixMask())
+    torch.testing.assert_close(result[0, :15], x[0, :15].mean(0).expand_as(result[0, :15]))
     torch.testing.assert_close(result[0, 15:], x[0, 15:])
     torch.testing.assert_close(result[1], x[1])
     torch.testing.assert_close(
-        gemma_specaugment(x, torch.zeros_like(mask), PrefixMask(), frontend()), x
+        gemma_specaugment(x, torch.zeros_like(mask), PrefixMask()), x
     )
 
 
-def test_fill_uses_frontend_normalization():
-    x = torch.ones(1, 24, 8)
-    f = frontend()
-    f.per_bin_mean = np.arange(8).reshape(1, 1, 8)
-    f.per_bin_stddev = np.ones((1, 1, 8)) * 2
-    result = gemma_specaugment(x, torch.ones(1, 24, dtype=torch.bool), PrefixMask(), f)
-    expected = torch.tensor((np.log(1e-3) - f.per_bin_mean) / 2, dtype=x.dtype)
-    torch.testing.assert_close(result[:, :20], expected.expand(1, 20, 8))
+def test_fill_uses_original_per_frequency_mean_for_both_masks():
+    class BothMasks:
+        def augment_features(self, features, mask):
+            out = features.clone()
+            out[:, :3] = 0
+            out[:, :, 2:5] = 0
+            return out
+
+    x = torch.arange(1, 193, dtype=torch.float32).reshape(1, 24, 8)
+    mask = torch.ones(1, 24, dtype=torch.bool)
+    mask[:, 20:] = False
+    result = gemma_specaugment(x, mask, BothMasks())
+    mean = x[:, :20].mean(1, keepdim=True)
+    torch.testing.assert_close(result[:, :3], mean.expand(1, 3, 8))
+    torch.testing.assert_close(result[:, :20, 2:5], mean[:, :, 2:5].expand(1, 20, 3))
+    torch.testing.assert_close(result[:, 20:], x[:, 20:])
 
 
 @pytest.mark.parametrize("dtype", [torch.float32, torch.bfloat16])
@@ -67,7 +68,7 @@ def test_zero_prefix_regression(dtype, checkpointed):
     assert any(p.grad is not None and not p.grad.isfinite().all() for p in model.parameters())
 
     model.zero_grad(set_to_none=True)
-    safe = gemma_specaugment(x, mask, PrefixMask(), frontend())
+    safe = gemma_specaugment(x, mask, PrefixMask())
     output = model(input_features=safe, attention_mask=mask)
     output.last_hidden_state.square().mean().backward()
     assert all(p.grad is None or p.grad.isfinite().all() for p in model.parameters())

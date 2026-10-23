@@ -213,13 +213,37 @@ A synthetic prefix regression also reproduces the failure with and without
 gradient checkpointing. This is distinct from the earlier activation-memory OOM.
 
 For Gemma only, AUD now samples the existing SpecAugment mask on an all-ones
-tensor, then fills selected valid bins with log(frontend.mel_floor), applying
-the frontend's optional per-bin normalization. Unselected bins, padding,
+tensor, then fills selected valid bins with the per-frequency mean of the
+original valid frames, matching GQASR's recipe. Unselected bins, padding,
 silence exclusions, clean-example selection, and masking probabilities are
 preserved. No RMSNorm epsilon, model weights, or checkpointing policy changes.
-Synthetic regressions and the captured-batch reduced-encoder replay have finite
-gradients with the silence-floor fill. A full-size H100 smoke run remains needed.
+The initial silence-floor repair and GQASR's mean fill both have finite gradients
+in the reduced-encoder prefix reproduction; mean fill is now the default for
+recipe consistency, not a claim of measured WER superiority. A full-size H100
+smoke run remains needed.
 
 Restart from the verified decoder checkpoint. Do not resume optimizer state or
 weights from a nonfinite full-training checkpoint. Existing datasets and token
 exports need no regeneration.
+
+
+## Default numerical guards
+
+Training losses are checked across all ranks before each backward. DDP/plain
+Trainer checks the accumulated gradient norm at the update boundary before
+clipping. For ZeRO-2, the guard wraps its native norm calculation: nonfinite
+or negative per-group norms are rejected before any optimizer group is updated.
+In the inspected cluster DeepSpeed implementation, invalid group norms become
+-1; combining five such values gives sqrt(5), explaining how an apparently
+finite norm can conceal failure. Explicit DeepSpeed overflow detection also
+aborts instead of silently skipping an update. Unsupported norm APIs fail closed.
+
+These guards are always enabled. AUD_DEBUG_NUMERICS=1 adds slower autograd
+anomaly tracing and failure-batch capture; it is not needed for protection.
+Normal paths add scalar checks/collectives, without scanning every parameter
+for diagnostics or changing gradient clipping. Loss checks synchronize once per
+microbatch; gradient checks synchronize at update boundaries.
+
+Robustness receipts are version 4 for mean-fill semantics. Start a new
+weights-only run from a verified checkpoint rather than resuming an older
+robustness optimizer checkpoint under a changed recipe.

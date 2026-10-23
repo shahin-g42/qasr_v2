@@ -1,5 +1,6 @@
 """QASR Trainer behavior with AUD optimizer groups and accumulation-window quotas."""
 
+import logging
 import math
 import os
 
@@ -13,8 +14,21 @@ class AUDTrainer(PredictionLoggingTrainer):
         if os.environ.get("AUD_DEBUG_NUMERICS") == "1":
             # Enclose forward AND backward so the traceback identifies the
             # forward operation whose backward first generated NaNs.
-            with torch.autograd.detect_anomaly(check_nan=True):
-                return super().training_step(model, inputs, num_items_in_batch)
+            try:
+                with torch.autograd.detect_anomaly(check_nan=True):
+                    return super().training_step(model, inputs, num_items_in_batch)
+            except Exception as error:
+                from .numerics import save_failure
+
+                try:
+                    report = save_failure(
+                        self.args.output_dir, inputs,
+                        rank=self.args.process_index, step=self.state.global_step, error=error,
+                    )
+                    logging.getLogger("audm").error("Saved failing batch: %s", report["batch"])
+                except Exception:
+                    logging.getLogger("audm").exception("Could not save failing batch")
+                raise
         return super().training_step(model, inputs, num_items_in_batch)
 
     def compute_loss(self, model, inputs, return_outputs=False, num_items_in_batch=None):

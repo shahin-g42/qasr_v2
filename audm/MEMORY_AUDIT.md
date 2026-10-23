@@ -68,12 +68,12 @@ supported builds but does not replace reducing live tensor memory.
 | Layer wiring | Export/reload tests compare all encoder and bridge tensors with their sources; decoder weight sharing, valid audio-token counts, masks, stride and causal targets are covered. No duplicate text decoder or imported Gemma text model was found. |
 | Smoke coverage | Ordinary smoke can sample short clips and uses fewer workers. The new longest-shape probe exercises the normal trainer/optimizer at maximum duration and near-maximum target length for two updates. |
 | CUDA diagnostics | Each rank writes peak allocated/reserved memory to `cuda-memory-rank-N.json`, including the caught-OOM path. Diagnostic writing requires no collectives after failure. |
-| Non-speech data | Only reviewed candidates become empty targets. Digital silence is synthetic; it does not establish accuracy on quiet real-world recordings. Include held-out speech when measuring speech suppression. |
+| Non-speech data | Finalization records listening review or explicit metadata-only selection; candidates with null text cannot train. Digital silence is synthetic; it does not establish accuracy on quiet real-world recordings. Include held-out speech when measuring speech suppression. |
 | Category training | New category tokens require decoder warm-up before full training. Typed checkpoints reject adapter-only training. The 3% negative pool replaces slots rather than expanding the batch. |
 | Chinese metrics | WER uses whitespace tokens; CER is more informative for Chinese. CER far above 100% still indicates severe insertions/repetition and must not be dismissed as word segmentation. |
 | Augmentation cost | Wave effects stay within duration bounds. RIR/codec effects may be skipped near 30 seconds. CPU augmentation cannot explain the old 11.65 GiB GPU allocation, but FFmpeg, resampling and I/O can bottleneck workers. |
-| Missing features | Dedicated clipping/compression, packet dropouts and independent pitch shifting are not implemented. Real-room silence curation remains separate asset work. RIR downloading is now provided by `scripts/rirs.sh` (see ROBUST_CLUSTER.md). Do not advertise these as enabled. |
-| Resume compatibility | Random-window noise advances robustness receipts to version 3. Exact resume rejects changed recipes/assets/policies. |
+| Additional effects | Silence padding is enabled in the robust recipes. Clipping, compression, zero-filled dropouts and independent pitch shifting are implemented but disabled by default (see ROBUSTNESS.md). Real-room silence curation remains separate asset work. RIR downloading is provided by `scripts/rirs.sh`. |
+| Resume compatibility | Mean-fill SpecAugment and expanded waveform policies use robustness receipt version 5. Exact resume rejects changed recipes/assets/policies. |
 
 SpecAugment retains the inherited stage-02 settings. The opt-in policy retains
 its clean branch and maximum of two waveform effects. Measure CPU wait time

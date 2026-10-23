@@ -54,9 +54,15 @@ robustness:
     effects:
       speed: {p: 0.20}
       time_stretch: {p: 0.15, rate: [0.9, 1.1]}
+      silence: {p: 0.20, start_ms: [0, 100], end_ms: [0, 100]}
       shift: {p: 0.15, max_ms: 5, boundary_peak: 0.001}
       rir: {p: 0.20, manifest: "${AUD_RIR_MANIFEST}"}
       noise: {p: 0.25}
       gain: {p: 0.25, db: [-6, 6]}
       white_noise: {p: 0.10, db: [-70, -46]}
       transcode: {p: 0.10, codecs: [opus, aac, mp3, g711]}
+      # Optional experiments; enable individually after an accuracy/performance ablation.
+      pitch: {p: 0.0, semitones: [-1, 1]}
+      clipping: {p: 0.0, peak_fraction: [0.7, 0.95]}
+      dropout: {p: 0.0, duration_ms: [5, 20], max_drops: 2, max_fraction: 0.01}
+      compression: {p: 0.0, threshold_db: [-24, -12], ratio: [2, 4], attack_ms: 5, release_ms: 50}

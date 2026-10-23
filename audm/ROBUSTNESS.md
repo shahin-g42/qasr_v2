@@ -2,7 +2,7 @@
 
 Existing production recipes are unchanged. `configs/audflash_robust_full.yaml`
 is a separately selected experiment based on single-node AudFlash full training:
-10 × 4 × 8 = 320 examples/update, four workers/GPU, three nominal weighted
+10 × 8 × 8 = 640 examples/update, four workers/GPU, three nominal weighted
 coverage epochs, evaluation and checkpoint saving every 3,700 updates.
 
 ## Implemented policy
@@ -11,10 +11,12 @@ coverage epochs, evaluation and checkpoint saving every 3,700 updates.
 - Remaining slots draw configured effect candidates; at most two waveform
   effects are selected. Candidate probabilities are conditional on the non-clean
   branch; the selection budget reduces actual application rates.
-- Speed and pitch-preserving time stretch are mutually exclusive. Actual codecs
-  and approximate codec degradation are also mutually exclusive.
-- Order: speed/tempo, boundary-safe shift, RIR, real noise, gain, white noise,
-  codec. Existing SpecAugment follows feature extraction, with a per-example gate.
+- Speed, pitch-preserving time stretch and independent pitch shift are mutually
+  exclusive. So are shift/silence padding, and actual/approximate codec degradation.
+- Order: speed/tempo/pitch, silence padding or boundary-safe shift, RIR, real noise,
+  gain, white noise, compression, clipping, dropouts, codec. Existing SpecAugment
+  follows feature extraction, with a per-example gate and per-frequency mean fill
+  for Gemma audio features.
 - Gain uses floating-point scaling without automatic clipping. White noise has
   an absolute noise level independent of speech SNR. RIR uses mono 16-kHz input,
   aligns to its dominant path, normalizes response energy, convolves with the
@@ -22,6 +24,11 @@ coverage epochs, evaluation and checkpoint saving every 3,700 updates.
   inspired by the NeMo categories, not an exact NeMo reproduction.
 - Shifts preserve length using zeros and only discard boundary samples below
   the configured peak threshold. They never wrap audio around.
+- Silence padding preserves **every original sample** and adds independently
+  sampled 0–100 ms zero padding at each end in the shipped robust recipes.
+  Only the added padding is shortened when the 30-second budget is tight.
+  This shifts speech within a longer recording without deleting phonemes.
+  The category/transcript stay unchanged: it does not create a `silence` label.
 - Length-changing effects that exceed the recipe bounds are rejected; speech
   is never cropped to make a perturbation fit. Near-maximum-length recordings
   may therefore skip slow-down, RIR or codec-tail augmentation.
@@ -37,6 +44,37 @@ coverage epochs, evaluation and checkpoint saving every 3,700 updates.
 - Worker-local counters report attempted/changed/duration-skipped effects,
   shift boundary skips, codec selections and non-speech replacements. These
   are diagnostics, not distributed aggregate statistics.
+- Startup logs show the complete effective AUD policy. Earlier QASR component
+  initialization logs do not describe the final waveform selection probabilities.
+
+## Extra waveform effects
+
+Both `audflash_audio_types_decoder.yaml` and `audflash_robust_full.yaml` enable
+silence padding with candidate probability `p: 0.20`. The 20% clean branch and
+two-effect cap still apply; `p` is not the final observed application rate.
+Existing shift remains ±5 ms with its boundary check. SpecAugment remains enabled.
+
+The following implementations are available with `p: 0.0` in both recipes. Enable
+one at a time in a separate experiment and compare multilingual WER/CER, category
+errors and throughput before making it a production default.
+
+| Effect | Configured range if enabled | Behavior |
+|---|---|---|
+| `pitch` | −1 to +1 semitone | Librosa pitch shift with unchanged duration; excludes speed/time stretch on the same sample. |
+| `clipping` | 70–95% of input peak | Symmetric hard clipping; no automatic gain recovery. Models one type of microphone overload. |
+| `dropout` | 5–20 ms, at most two, total ≤1% | Zero-filled gaps, bounded by total original samples. Does not model a codec's packet-loss concealment. May hide a brief phoneme, so disabled by default. |
+| `compression` | −24 to −12 dBFS threshold, 2:1–4:1 ratio, 5 ms attack, 50 ms release | Real FFmpeg RMS compressor, no makeup gain, unchanged length. Requires the `acompressor` filter. |
+
+Independent pitch shift and compression cost CPU time; disabled effects perform
+no DSP work. Bounds are validated even when disabled. Silence padding accepts
+up to 1,000 ms per end for explicit experiments; that is a supported bound, not
+a recommended training setting. Cropping/random segments are deliberately absent:
+unaligned cropping can remove words while keeping their transcript as the target.
+
+**Impulse augmentation is already implemented as `rir`.** It convolves the input
+with a sampled room impulse response from `AUD_RIR_MANIFEST`; no second impulse
+effect or new download is needed. Its full reverberation tail is kept when it fits
+the duration budget. This differs from injecting isolated clicks or impulse noise.
 
 ## Non-speech data
 
@@ -80,7 +118,7 @@ replacement happens before code-switching; empty-target rows are never mixed.
 Relative robustness manifest paths resolve beside the AUD recipe. Unset environment
 variables produce an explicit error.
 
-The audited policy uses `robustness_version: 3` in its run receipt. Real-noise
+The audited policy uses `robustness_version: 5` in its run receipt. Real-noise
 augmentation reads random bounded windows and resamples with a polyphase filter,
 instead of decoding whole files and repeatedly using their first seconds. Resume within
 the same run keeps optimizer/scheduler progress and checks the recipe/assets.
@@ -120,7 +158,8 @@ This reports single-process waveform time including WAV output writing. It does
 not establish eight-GPU throughput or test SpecAugment. Listen for intelligibility
 and measure data-loader wait time on the cluster before a long training run.
 `preflight --scan` decodes every eligible negative, every RIR and every selected
-real-noise asset, and runs an actual round trip for every selected codec. It checks
+real-noise asset, runs an actual round trip for every selected codec, and exercises
+enabled extra effects (reported as `extra_effects_checked`). It checks
 decoded negative durations against the training limits and reports eligible
 category counts, hours and metadata duration exclusions. It does not decode all
 98M sampled speech slots or determine whether a recording acoustically contains

@@ -16,6 +16,8 @@ from qasr.augmentation import build_augmenter
 from qasr.data import JsonlSpeechDataset
 from scipy import signal
 
+from . import audio_effects
+
 LOG = logging.getLogger("audm.robustness")
 SR = 16000
 
@@ -100,6 +102,7 @@ class RobustAugmenter:
             raise ValueError("max_effects must be a positive integer")
         self.effects = policy.get("effects", {})
         supported = {
+            **audio_effects.SETTINGS,
             "gain": {"p", "db"},
             "shift": {"p", "max_ms", "boundary_peak"},
             "rir": {"p", "manifest"},
@@ -121,6 +124,13 @@ class RobustAugmenter:
                     f"Unknown/invalid settings for {name}; allowed: {sorted(supported[name])}"
                 )
             _number(settings.get("p", 0), f"{name}.p", 0, 1)
+            if name in audio_effects.SETTINGS:
+                audio_effects.validate(name, settings)
+                if name == "compression" and settings.get("p", 0):
+                    if not shutil.which("ffmpeg"):
+                        raise RuntimeError("Compression requires ffmpeg on PATH")
+                    # Fail before launch if this build lacks the requested filter.
+                    audio_effects.apply(name, np.ones(1600, dtype=np.float32) * 0.1, settings)
             for key in ("db", "rate"):
                 if key in settings:
                     bounds = settings[key]
@@ -197,9 +207,15 @@ class RobustAugmenter:
                     if encoder not in available:
                         raise RuntimeError(f"FFmpeg encoder unavailable: {encoder}")
         self.has_spec_augmentation = bool(self.base and self.base.has_spec_augmentation)
+        LOG.info(
+            "AUD waveform policy: clean_probability=%s max_effects=%s effects=%s. "
+            "Effect p values are candidate probabilities before the clean gate/effect cap; "
+            "earlier QASR logs describe component initialization, not this effective policy.",
+            self.clean_probability, self.max_effects, json.dumps(self.effects, sort_keys=True),
+        )
 
     def scan_assets(self):
-        """Decode selected assets and exercise every configured codec, before training."""
+        """Decode selected assets and exercise enabled extra effects/codecs before training."""
         for path in self.rirs:
             _rir(path)
         noise_files = []
@@ -211,13 +227,21 @@ class RobustAugmenter:
                 wave = load_mono_audio(path, SR)
                 if not np.any(wave):
                     raise ValueError(f"Real-noise asset is all-zero: {path}")
+        wave = (0.05 * np.sin(2 * np.pi * 440 * np.arange(SR) / SR)).astype(np.float32)
+        extra_effects = []
+        for name, cfg in self.effects.items():
+            if name in audio_effects.SETTINGS and cfg.get("p", 0):
+                _waveform(audio_effects.apply(name, wave, cfg, max_audio_seconds=3))
+                extra_effects.append(name)
         codecs = []
         if self.effects.get("transcode", {}).get("p", 0):
-            wave = (0.05 * np.sin(2 * np.pi * 440 * np.arange(SR) / SR)).astype(np.float32)
             for codec in self.effects["transcode"].get("codecs", ["opus"]):
                 self.transcode(wave, {"codecs": [codec]})
                 codecs.append(codec)
-        return dict(rirs=len(self.rirs), noise_files=len(noise_files), codec_round_trips=codecs)
+        return dict(
+            rirs=len(self.rirs), noise_files=len(noise_files), codec_round_trips=codecs,
+            extra_effects_checked=extra_effects,
+        )
 
     @staticmethod
     def codec(name):
@@ -318,6 +342,8 @@ class RobustAugmenter:
         return result * (0.95 / peak) if peak > 1 else result
 
     def apply(self, name, wave, cfg):
+        if name in audio_effects.SETTINGS:
+            return audio_effects.apply(name, wave, cfg)
         if name == "gain":
             return wave * 10 ** (random.uniform(*cfg.get("db", [-6, 6])) / 20)
         if name == "white_noise":
@@ -376,6 +402,7 @@ class RobustAugmenter:
             if self.has_spec_augmentation:
                 self.clean_rows.append(True)
             self.stats["clean"] += 1
+            self.log_stats()
             return wave
         choices = [
             k
@@ -389,13 +416,15 @@ class RobustAugmenter:
         random.shuffle(choices)
         chosen = []
         for name in choices:
-            if name in ("speed", "time_stretch") and any(
-                n in chosen for n in ("speed", "time_stretch")
+            if name in ("speed", "time_stretch", "pitch") and any(
+                n in chosen for n in ("speed", "time_stretch", "pitch")
             ):
                 continue
             if name in ("transcode", "codec_approx") and any(
                 n in chosen for n in ("transcode", "codec_approx")
             ):
+                continue
+            if name in ("shift", "silence") and any(n in chosen for n in ("shift", "silence")):
                 continue
             chosen.append(name)
             if len(chosen) == self.max_effects:
@@ -403,17 +432,26 @@ class RobustAugmenter:
         order = [
             "speed",
             "time_stretch",
+            "pitch",
+            "silence",
             "shift",
             "rir",
             "noise",
             "gain",
             "white_noise",
+            "compression",
+            "clipping",
+            "dropout",
             "codec_approx",
             "transcode",
         ]
         for name in sorted(chosen, key=order.index):
             self.stats[f"{name}:attempted"] += 1
-            result = np.asarray(self.apply(name, wave, self.effects[name]), dtype=np.float32)
+            if name == "silence":
+                result = audio_effects.apply(name, wave, self.effects[name], max_audio_seconds)
+            else:
+                result = self.apply(name, wave, self.effects[name])
+            result = np.asarray(result, dtype=np.float32)
             if result.ndim != 1 or not len(result) or not np.isfinite(result).all():
                 raise ValueError(f"{name} produced invalid waveform")
             duration = len(result) / SR
@@ -427,9 +465,12 @@ class RobustAugmenter:
             wave = result
         if self.has_spec_augmentation:
             self.clean_rows.append(False)
+        self.log_stats()
+        return wave
+
+    def log_stats(self):
         if self.stats["samples"] % 1000 == 0:
             LOG.info("Worker-local augmentation counts: %s", dict(self.stats))
-        return wave
 
     def augment_features(self, features, mask):
         if not self.has_spec_augmentation:

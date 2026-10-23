@@ -14,6 +14,11 @@ checkpointed audio/text layers. Decoder warm-up is 2,000 updates; full training 
 three weighted coverage epochs, with evaluation/checkpoints every 3,700 updates.
 SpecAugment stays enabled with GQASR-style per-frequency mean fill for Gemma;
 code-switching stays disabled; `RUN_ID=cs_v1_ml_v2`.
+Both robust recipes include silence padding (0–100 ms per end, candidate p=0.20)
+without cutting speech or exceeding 30 seconds. Independent pitch, clipping,
+dropouts and compression are available but disabled by default; see
+[ROBUSTNESS.md](ROBUSTNESS.md) for settings and behavior. Existing `rir` is the
+impulse-response convolution augmentation.
 All-rank finite-loss and gradient guards are enabled by default, including
 inside the DeepSpeed ZeRO-2 update path. Anomaly tracing is optional.
 
@@ -181,11 +186,11 @@ python -m audm preflight --config "$AUD_TYPED_DECODER_CONFIG" \
 ```
 
 The scan decodes negatives, RIRs and MUSAN assets, and exercises the configured
-Opus/AAC/MP3/G.711 codecs. Check the report's three negative categories and global
+Opus/AAC/MP3/G.711 codecs and enabled extra effects. Check the report's three negative categories and global
 batch 640. It may take time to scan the uncapped corpus. SpecAugment uses p=0.37
 on the non-clean branch, with up to two time/frequency masks (maximum ratios
 0.05/0.15). The policy retains a 20% clean branch and at most two waveform effects.
-Silence and evaluation remain unaugmented.
+Examples labeled `silence` and evaluation remain unaugmented.
 
 ## 7. Check eight-GPU communication
 
@@ -312,8 +317,50 @@ AUD_COMMAND=train bash audm/scripts/train_distributed.sh \
 Resume requires a complete Trainer checkpoint with optimizer state. If the newest
 checkpoint is incomplete, specify an earlier completed checkpoint explicitly.
 Changed recipes/manifests/robustness policies require weights-only continuation
-into a new output. The current robustness receipt is version 3; persistent-worker
+into a new output. The current robustness receipt is version 5; persistent-worker
 RNG/prefetch state is not restored bit-for-bit.
+
+## Updating an existing experiment for silence padding
+
+For an experiment with finalized datasets, added tokens and a completed healthy
+decoder checkpoint, do not repeat those preparations or decoder warm-up. This
+policy change requires a new full-training output and weights-only continuation;
+do not resume optimizer state from the earlier robustness version or use a failed
+smoke checkpoint. Keep the existing experiment root and decoder source.
+
+When no job is using this source checkout, update it and restore your existing
+environment. The examples assume the same conda environment is active. Run one
+command at a time and stop if any command fails:
+
+```bash
+cd /lustrefs/shared/shahin.konadath/workspace/train/stt/v2/qasr_v2-aud-robust
+git pull --ff-only origin main
+source audflash-types.env
+set -o pipefail
+export AUD_SILENCE_FULL_OUTPUT="$AUD_TYPED_ROOT/full-silence-v1"
+
+python -m audm preflight --config "$AUD_TYPED_FULL_CONFIG" \
+  --model "$AUD_TYPED_ROOT/decoder" --output "$AUD_SILENCE_FULL_OUTPUT"
+
+AUD_DEBUG_NUMERICS=0 AUD_COMMAND=train bash audm/scripts/train_distributed.sh \
+  --config "$AUD_TYPED_FULL_CONFIG" --model "$AUD_TYPED_ROOT/decoder" \
+  --output "$AUD_SILENCE_FULL_OUTPUT" --smoke \
+  2>&1 | tee "$AUD_TYPED_ROOT/logs/smoke-full-silence-v1.log"
+
+python -m audm verify "$AUD_SILENCE_FULL_OUTPUT/smoke-test" --device cuda:0
+
+AUD_DEBUG_NUMERICS=0 AUD_COMMAND=train bash audm/scripts/train_distributed.sh \
+  --config "$AUD_TYPED_FULL_CONFIG" --model "$AUD_TYPED_ROOT/decoder" \
+  --output "$AUD_SILENCE_FULL_OUTPUT" \
+  2>&1 | tee "$AUD_TYPED_ROOT/logs/train-full-silence-v1.log"
+```
+
+Add `--scan` to preflight if assets have not already been scanned or have changed.
+All-rank numerical guards remain on when anomaly tracing is off. The smoke run
+tests the stochastic policy on a small sample; it does not guarantee every effect
+is selected or establish production accuracy/throughput. Do not use its weights
+as the full-training source. Batch, workers, epochs and save/evaluation intervals
+remain unchanged.
 
 ## Scope and validation
 
@@ -323,8 +370,9 @@ actual convolution through the training augmenter. Full source assets are downlo
 on the cluster, not during local tests. See [MEMORY_AUDIT.md](MEMORY_AUDIT.md) for
 memory changes and [NON_SPEECH_DATA.md](NON_SPEECH_DATA.md) for corpus details.
 
-The waveform policy includes speed perturbation, pitch-preserving time stretch,
-boundary-safe shift, RIR convolution, MUSAN mixing, gain, white noise and real codec
-round trips, followed by feature-level SpecAugment. Independent pitch shifting,
-packet loss and dedicated clipping/compression remain unimplemented. CPU regression
-tests do not establish full-size H100 memory, throughput or accuracy.
+The default waveform policy includes speed perturbation, pitch-preserving time
+stretch, silence padding, boundary-safe shift, RIR convolution, MUSAN mixing, gain,
+white noise and real codec round trips, followed by feature-level SpecAugment.
+Independent pitch shifting, zero-filled dropouts, clipping and compression are
+implemented as optional experiments, disabled by default. CPU regression tests
+do not establish full-size H100 memory, throughput or accuracy.

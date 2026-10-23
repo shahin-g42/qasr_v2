@@ -234,3 +234,22 @@ def test_opt_in_trainer_and_asset_receipts(tmp_path, tokenizer):
     manifest.write_text(manifest.read_text() + "\n")
     _, _, after = load_recipe(recipe, tmp_path / "aud", tmp_path / "run")
     assert before["robustness_assets"] != after["robustness_assets"]
+
+
+@pytest.mark.parametrize("separator", ["\u0085", "\u2028", "\u2029"])
+def test_negative_unicode_metadata_preserves_physical_lines(tmp_path, separator):
+    manifest = non_speech(tmp_path)
+    row = json.loads(manifest.read_text())
+    row.update(audio_type="noise", description="before" + separator + "after")
+    manifest.write_text("\n" + json.dumps(row, ensure_ascii=False) + "\n", encoding="utf-8")
+    pool = NonSpeechPool(dict(probability=0.03, manifests=[str(manifest)]), 0.1, 30,
+                         require_audio_type=True)
+    assert pool.record(0, 0)["audio_type"] == "noise"
+    assert pool.record(0, 0)["line_number"] == 2
+
+
+def test_negative_malformed_json_identifies_file_and_line(tmp_path):
+    manifest = tmp_path / "broken.jsonl"
+    manifest.write_text('\n{"description": "unfinished\n')
+    with pytest.raises(ValueError, match=r"broken.jsonl:2: invalid JSON at column"):
+        NonSpeechPool(dict(probability=0.03, manifests=[str(manifest)]), 0.1, 30)

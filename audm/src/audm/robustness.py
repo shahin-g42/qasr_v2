@@ -20,6 +20,23 @@ LOG = logging.getLogger("audm.robustness")
 SR = 16000
 
 
+def _manifest_rows(path):
+    # JSONL records end at physical newlines, not Unicode separators in metadata.
+    with Path(path).open(encoding="utf-8") as handle:
+        for line_number, line in enumerate(handle, 1):
+            if not line.strip():
+                continue
+            try:
+                row = json.loads(line)
+            except json.JSONDecodeError as exc:
+                raise ValueError(
+                    f"{path}:{line_number}: invalid JSON at column {exc.colno}: {exc.msg}"
+                ) from exc
+            if not isinstance(row, dict):
+                raise ValueError(f"{path}:{line_number}: expected a JSON object")
+            yield line_number, row
+
+
 def _number(value, name, minimum=None, maximum=None):
     if isinstance(value, bool) or not isinstance(value, (int, float)) or not math.isfinite(value):
         raise ValueError(f"{name} must be a finite number")
@@ -154,13 +171,12 @@ class RobustAugmenter:
                 ):
                     raise ValueError("Enabled RIR augmentation requires a manifest path")
                 manifest = Path(settings["manifest"]).resolve()
-                for line in manifest.read_text().splitlines():
-                    if line.strip():
-                        p = Path(json.loads(line)["audio_filepath"])
-                        p = p if p.is_absolute() else manifest.parent / p
-                        if not p.is_file():
-                            raise FileNotFoundError(p)
-                        self.rirs.append(p)
+                for _, row in _manifest_rows(manifest):
+                    p = Path(row["audio_filepath"])
+                    p = p if p.is_absolute() else manifest.parent / p
+                    if not p.is_file():
+                        raise FileNotFoundError(p)
+                    self.rirs.append(p)
                 if not self.rirs:
                     raise ValueError("RIR manifest is empty")
             if name == "transcode":
@@ -455,13 +471,9 @@ class NonSpeechPool:
         for path in manifests:
             categories = {}
             self.categories.append(categories)
-            for line_number, line in enumerate(Path(path).read_text().splitlines(), 1):
-                if line.strip():
-                    row = json.loads(line)
-                    if not isinstance(row, dict):
-                        raise ValueError(f"{path}:{line_number}: expected a JSON object")
-                    kind = validate_negative_record(row, require_audio_type)
-                    categories[line_number] = kind
+            for line_number, row in _manifest_rows(path):
+                kind = validate_negative_record(row, require_audio_type)
+                categories[line_number] = kind
         self.parts = [
             JsonlSpeechDataset(
                 p, min_duration_seconds=minimum, max_duration_seconds=maximum, empty_target_ok=True

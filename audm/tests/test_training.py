@@ -254,3 +254,42 @@ def test_raw_spectral_identity_when_probability_zero():
     wave = np.random.default_rng(42).normal(0, 0.01, 3217).astype(np.float32)
     masked = spectral_mask_waveform(wave, augmenter)
     np.testing.assert_allclose(masked, wave, atol=1e-8, rtol=1e-5)
+
+
+def test_numeric_debug_traces_backward(monkeypatch):
+    from qasr.train import PredictionLoggingTrainer
+
+    from audm.trainer import AUDTrainer
+
+    class BadBackward(torch.autograd.Function):
+        @staticmethod
+        def forward(ctx, value):
+            return value.clone()
+
+        @staticmethod
+        def backward(ctx, grad):
+            return grad * float("nan")
+
+    def step(self, model, inputs, num_items_in_batch=None):
+        value = torch.ones((), requires_grad=True)
+        BadBackward.apply(value).backward()
+        return value
+
+    monkeypatch.setenv("AUD_DEBUG_NUMERICS", "1")
+    monkeypatch.setattr(PredictionLoggingTrainer, "training_step", step)
+    trainer = object.__new__(AUDTrainer)
+    with pytest.raises(RuntimeError, match="returned nan values"):
+        trainer.training_step(None, {})
+
+
+def test_numeric_debug_default_preserves_training_step(monkeypatch):
+    from qasr.train import PredictionLoggingTrainer
+
+    from audm.trainer import AUDTrainer
+
+    monkeypatch.delenv("AUD_DEBUG_NUMERICS", raising=False)
+    def step(self, model, inputs, num_items_in_batch=None):
+        assert not torch.is_anomaly_enabled()
+        return num_items_in_batch
+    monkeypatch.setattr(PredictionLoggingTrainer, "training_step", step)
+    assert object.__new__(AUDTrainer).training_step(None, {}, 7) == 7

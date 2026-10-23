@@ -1,6 +1,7 @@
 """QASR Trainer behavior with AUD optimizer groups and accumulation-window quotas."""
 
 import math
+import os
 
 import torch
 from qasr.sampling import WeightedStratifiedLanguageSampler
@@ -8,6 +9,14 @@ from qasr.train import PredictionLoggingTrainer, _SamplerEpochDataLoader
 
 
 class AUDTrainer(PredictionLoggingTrainer):
+    def training_step(self, model, inputs, num_items_in_batch=None):
+        if os.environ.get("AUD_DEBUG_NUMERICS") == "1":
+            # Enclose forward AND backward so the traceback identifies the
+            # forward operation whose backward first generated NaNs.
+            with torch.autograd.detect_anomaly(check_nan=True):
+                return super().training_step(model, inputs, num_items_in_batch)
+        return super().training_step(model, inputs, num_items_in_batch)
+
     def compute_loss(self, model, inputs, return_outputs=False, num_items_in_batch=None):
         # Training and loss-only evaluation do not need vocabulary logits for
         # the audio prompt, padding, or the entire supervised sequence at once.

@@ -202,3 +202,24 @@ After the audio-layer fix, 69 focused model/loss/training/audio-type tests and
 three process-based checks passed: two-rank decoder/full training with
 checkpoint save/resume, plus the four-worker probe. Ruff and runbook syntax
 checks passed again.
+
+## Gemma SpecAugment numerical failure (2026-10-23)
+
+A captured real-data batch contained 20 consecutive all-zero valid log-mel
+frames at the start of one sample, introduced by time masking. A reduced
+12-layer Gemma encoder reproduced finite forward activations but overflowing
+backward gradients with this prefix, in FP32 and BF16 and without DeepSpeed.
+A synthetic prefix regression also reproduces the failure with and without
+gradient checkpointing. This is distinct from the earlier activation-memory OOM.
+
+For Gemma only, AUD now samples the existing SpecAugment mask on an all-ones
+tensor, then fills selected valid bins with log(frontend.mel_floor), applying
+the frontend's optional per-bin normalization. Unselected bins, padding,
+silence exclusions, clean-example selection, and masking probabilities are
+preserved. No RMSNorm epsilon, model weights, or checkpointing policy changes.
+Synthetic regressions and the captured-batch reduced-encoder replay have finite
+gradients with the silence-floor fill. A full-size H100 smoke run remains needed.
+
+Restart from the verified decoder checkpoint. Do not resume optimizer state or
+weights from a nonfinite full-training checkpoint. Existing datasets and token
+exports need no regeneration.

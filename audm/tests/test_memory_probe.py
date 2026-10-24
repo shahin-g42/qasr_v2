@@ -69,7 +69,8 @@ def test_probe_has_max_shapes_and_keeps_training_contract(tmp_path, tokenizer, m
         prepare(recipe, source, tmp_path / "probe")
 
 
-def test_ctc_probe_preserves_efficiency_and_guarantees_eligible_quota(tmp_path, tokenizer):
+@pytest.mark.parametrize("version", [1, 2])
+def test_ctc_probe_preserves_efficiency_and_guarantees_eligible_quota(tmp_path, tokenizer, version):
     from test_ctc import small_tokenizer
 
     from audm.ctc import export
@@ -78,13 +79,14 @@ def test_ctc_probe_preserves_efficiency_and_guarantees_eligible_quota(tmp_path, 
     tok = tmp_path / "tok"
     tok.mkdir()
     small_tokenizer().save(str(tok / "tokenizer.json"))
-    export(source, tok, tmp_path / "ctc")
+    export(source, tok if version == 1 else None, tmp_path / "ctc")
     path = tmp_path / "recipe.yaml"
     path.write_text(
         yaml.safe_dump(
             dict(
                 data_recipe=str(data_recipe(tmp_path)),
                 stage="full",
+                ctc={"tokenizer": "decoder"} if version == 2 else {},
                 efficiency={
                     "loss_chunk_size": 512,
                     "duration_bucketing": True,
@@ -108,6 +110,8 @@ def test_ctc_probe_preserves_efficiency_and_guarantees_eligible_quota(tmp_path, 
     assert cfg.aud_efficiency["loss_chunk_size"] == 512
     assert cfg.aud_efficiency["decoder_checkpoint_every"] == 2
     assert cfg.ctc_loss_weight == 0.1 and cfg.aud_ctc["warmup_steps"] == 0
+    if version == 2:
+        assert cfg.aud_ctc["tokenizer"] == "decoder"
     assert cfg.language_batch_counts == {"ar": 1, "en": 1}
     assert report["feasible_ctc_tokens"] > 0
     run(report["config"])

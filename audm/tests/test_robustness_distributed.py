@@ -31,14 +31,9 @@ def test_two_ranks_persistent_workers_save_resume_and_eval(tmp_path, tokenizer, 
     upgrade(source, tmp_path / "typed")
     model_path = tmp_path / "typed"
     if ctc:
-        from test_ctc import small_tokenizer
-
         from audm.ctc import export
 
-        token_path = tmp_path / "ctc-tokenizer"
-        token_path.mkdir()
-        small_tokenizer().save(str(token_path / "tokenizer.json"))
-        export(model_path, token_path, tmp_path / "ctc")
+        export(model_path, output=tmp_path / "ctc")
         model_path = tmp_path / "ctc"
     negatives = []
     for kind in ("music", "noise", "silence"):
@@ -60,7 +55,7 @@ def test_two_ranks_persistent_workers_save_resume_and_eval(tmp_path, tokenizer, 
             dict(
                 data_recipe=str(data_recipe(tmp_path)),
                 stage=stage,
-                ctc={"warmup_steps": 0},
+                ctc={"warmup_steps": 0, **({"tokenizer": "decoder"} if ctc else {})},
                 efficiency={
                     "distributed_wer": True,
                     "duration_bucketing": True,

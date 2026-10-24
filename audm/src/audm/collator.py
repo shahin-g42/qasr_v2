@@ -142,7 +142,9 @@ class AUDDataCollator(QASRDataCollator):
         allowed = set(self.processor.model_input_names) | {"labels"}
         if self.processor.config.ctc_version:
             sequences = [
-                self.processor.ctc_tokenizer.encode(f["text"], add_special_tokens=False).ids
+                self.processor.encode_ctc(
+                    f["text"], f.get("transcript_ids") if not audits else None
+                )
                 if f.get("audio_type", "speech") == "speech" and f["text"].strip()
                 else []
                 for f in features

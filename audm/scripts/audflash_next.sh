@@ -5,7 +5,7 @@ AUD_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
 export PYTHONPATH="$AUD_ROOT/audm/src:$AUD_ROOT/src${PYTHONPATH:+:$PYTHONPATH}"
 export AUD_PYTHON="${AUD_PYTHON:-python}"
 export AUD_NEXT_SOURCE="${AUD_NEXT_SOURCE:-$AUD_ROOT/output/audflash-audio-types-v1/full/checkpoint-3700}"
-export AUD_NEXT_ROOT="${AUD_NEXT_ROOT:-$AUD_ROOT/output/audflash-stride1-ctc-v1}"
+export AUD_NEXT_ROOT="${AUD_NEXT_ROOT:-$AUD_ROOT/output/audflash-stride1-decoder-ctc-v1}"
 export AUD_LOG_DIR="${AUD_LOG_DIR:-$AUD_NEXT_ROOT/logs}"
 export AUD_USE_SLURM=0 AUD_NNODES=1 AUD_NODE_RANK=0 AUD_GPUS_PER_NODE=8 AUD_COMMAND=train
 export AUD_MASTER_ADDR="${AUD_MASTER_ADDR:-127.0.0.1}"
@@ -33,12 +33,14 @@ case "$command" in
   prepare)
     exec "$AUD_PYTHON" -m audm.next_run --source "$AUD_NEXT_SOURCE" --output "$AUD_NEXT_ROOT" "$@" ;;
   tokenizer)
-    logged tokenizer "$AUD_PYTHON" -m audm.ctc tokenizer --config "$AUD_NEXT_ROOT/adaptation.yaml" --output "$AUD_NEXT_ROOT/ctc-tokenizer" "$@" ;;
+    echo "Tokenizer training is no longer needed: CTC reuses the decoder tokenizer. Run export next." ;;
   export)
-    logged export "$AUD_PYTHON" -m audm.ctc export --model-path "$AUD_NEXT_SOURCE" --tokenizer-path "$AUD_NEXT_ROOT/ctc-tokenizer" --output "$AUD_NEXT_ROOT/export" "$@" ;;
+    logged export "$AUD_PYTHON" -m audm.ctc export --model-path "$AUD_NEXT_SOURCE" --output "$AUD_NEXT_ROOT/export" "$@" ;;
+  inference-export)
+    logged inference-export "$AUD_PYTHON" -m audm.ctc inference-export --model-path "$AUD_NEXT_ROOT/full" --output "$AUD_NEXT_ROOT/inference" "$@" ;;
   verify)
     directory="${1:-export}"; shift || true
-    case "$directory" in export|adaptation|full) ;; *) echo 'Verify export, adaptation or full' >&2; exit 2 ;; esac
+    case "$directory" in export|adaptation|full|inference) ;; *) echo 'Verify export, adaptation, full or inference' >&2; exit 2 ;; esac
     logged "verify-$directory" "$AUD_PYTHON" -m audm verify "$AUD_NEXT_ROOT/$directory" --device "${AUD_VERIFY_DEVICE:-cuda:0}" "$@" ;;
   health)
     exec "$AUD_PYTHON" -m audm.health "$@" ;;
@@ -68,9 +70,9 @@ case "$command" in
     cat <<'HELP'
 Usage: bash audm/scripts/audflash_next.sh COMMAND
   prepare                    Prepare fresh stride-one CTC recipes from checkpoint-3700
-  tokenizer                  Train compact CTC tokenizer on training transcripts (no audio)
-  export                     Add new CTC head; retain existing speech weights/tokenizer
-  verify [export|adaptation|full]
+  export                     Add CTC head using the existing decoder tokenizer
+  inference-export           Strip CTC from full output for deployment
+  verify [export|adaptation|full|inference]
   health [--require-idle]     GPU/thermal check; does not terminate jobs
   distributed-check          NCCL collective test on eight GPUs
   preflight adaptation|full --scan

@@ -24,6 +24,8 @@ def prepare(source, output, adaptation_steps=2000, loss_backend="chunked"):
         1,
     ):
         raise ValueError("This recipe preserves a stride-one Gemma AudFlash source")
+    if config.ctc_version or config.ctc_vocab_size:
+        raise ValueError("Start this fresh CTC run from the original checkpoint-3700 without CTC")
     if not (source / "model.safetensors").is_file():
         raise ValueError("Source must contain complete AUD model weights")
     receipt_path = source / "training_recipe.json"
@@ -80,7 +82,7 @@ def prepare(source, output, adaptation_steps=2000, loss_backend="chunked"):
                 output / "export" if name == "adaptation" else output / "adaptation"
             ),
             output_dir=str(output / name),
-            run_name=f"audflash-stride1-ctc-{name}",
+            run_name=f"audflash-stride1-decoder-ctc-{name}",
             max_steps=adaptation_steps if name == "adaptation" else -1,
             num_train_epochs=1.0 if name == "adaptation" else 3.0,
             warmup_steps=min(100, max(1, adaptation_steps // 10)) if name == "adaptation" else 500,
@@ -92,7 +94,7 @@ def prepare(source, output, adaptation_steps=2000, loss_backend="chunked"):
             common,
             stage="decoder" if name == "adaptation" else "full",
             training=resolved,
-            ctc={"warmup_steps": 100 if name == "adaptation" else 500},
+            ctc={"tokenizer": "decoder", "warmup_steps": 100 if name == "adaptation" else 500},
         )
     # Publish only after all validation/serialization succeeds.
     rendered = {
@@ -108,6 +110,11 @@ def prepare(source, output, adaptation_steps=2000, loss_backend="chunked"):
         stride=1,
         architecture_changed="Auxiliary CTC head only; encoder/stride-one bridge/decoder unchanged",
         ctc_weight=0.1,
+        ctc_tokenizer="decoder",
+        ctc_blank_id=config.text_config.vocab_size,
+        ctc_vocab_size=config.text_config.vocab_size + 1,
+        ctc_parameters=config.audio_config.output_proj_dims * (config.text_config.vocab_size + 1),
+        inference_export="Strip auxiliary CTC after training; retain all inference weights",
         optimizer_resume=False,
         adaptation_steps=adaptation_steps,
         full_epochs=3,

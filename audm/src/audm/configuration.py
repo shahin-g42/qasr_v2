@@ -59,6 +59,7 @@ class AUDConfig(PreTrainedConfig):
         ctc_vocab_size=0,
         ctc_version=0,
         ctc_tokenizer_sha256=None,
+        ctc_blank_id=None,
         prompt_prefix=None,
         prompt_suffix=None,
         max_audio_seconds=35.0,
@@ -106,14 +107,24 @@ class AUDConfig(PreTrainedConfig):
         self.ctc_vocab_size = int(ctc_vocab_size)
         self.ctc_version = ctc_version
         self.ctc_tokenizer_sha256 = ctc_tokenizer_sha256
-        if ctc_version not in (0, 1):
+        self.ctc_blank_id = 0 if ctc_version == 1 and ctc_blank_id is None else ctc_blank_id
+        if ctc_version not in (0, 1, 2):
             raise ValueError("Unsupported CTC version")
         if ctc_version and (
             (variant, flash_encoder, flash_audio_stride) != ("audflash", "gemma4", 1)
             or ctc_vocab_size < 2
             or not ctc_tokenizer_sha256
         ):
-            raise ValueError("CTC v1 requires stride-one Gemma, a vocabulary and tokenizer digest")
+            raise ValueError("CTC requires stride-one Gemma, a vocabulary and tokenizer digest")
+        if ctc_version == 1 and self.ctc_blank_id != 0:
+            raise ValueError("Legacy CTC requires blank ID 0")
+        if ctc_version == 2 and (
+            self.ctc_blank_id != self.text_config.vocab_size
+            or self.ctc_vocab_size != self.text_config.vocab_size + 1
+        ):
+            raise ValueError(
+                "Decoder CTC requires the full decoder vocabulary plus a final blank class"
+            )
         self.prompt_prefix = list(prompt_prefix or [])
         self.prompt_suffix = list(prompt_suffix or [])
         self.max_audio_seconds = float(max_audio_seconds)

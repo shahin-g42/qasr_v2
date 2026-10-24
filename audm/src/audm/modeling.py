@@ -243,6 +243,8 @@ class AUDForConditionalGeneration(PreTrainedModel, GenerationMixin):
             )
         return dict(
             ctc_version=self.config.ctc_version,
+            ctc_blank_id=self.config.ctc_blank_id,
+            ctc_vocab_size=self.config.ctc_vocab_size,
             components=components,
             tied_embeddings=self.get_input_embeddings().weight
             is self.get_output_embeddings().weight,
@@ -408,7 +410,12 @@ class AUDForConditionalGeneration(PreTrainedModel, GenerationMixin):
                 ):
                     raise ValueError("CTC encoder/collator lengths disagree")
                 ctc_loss, stats = auxiliary_loss(
-                    encoder_hidden, self.aud_ctc_head, encoder_mask, ctc_targets, ctc_num_items
+                    encoder_hidden,
+                    self.aud_ctc_head,
+                    encoder_mask,
+                    ctc_targets,
+                    ctc_num_items,
+                    blank_id=self.config.ctc_blank_id,
                 )
                 loss = loss + ctc_weight * ctc_loss
                 if self.training:

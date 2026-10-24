@@ -11,7 +11,14 @@ from tokenizers import Tokenizer, models, pre_tokenizers
 
 from audm import AUDForConditionalGeneration, AUDProcessor
 from audm.collator import AUDDataCollator
-from audm.ctc import attach_head, auxiliary_loss, eligibility, export, train_tokenizer
+from audm.ctc import (
+    attach_head,
+    auxiliary_loss,
+    eligibility,
+    export,
+    inference_export,
+    train_tokenizer,
+)
 from audm.train import run
 
 
@@ -80,15 +87,16 @@ def test_ctc_export_keeps_all_pretrained_weights_and_logits(tmp_path, tokenizer)
         AUDProcessor.from_pretrained(tmp_path / "new")
 
 
+@pytest.mark.parametrize("version", [1, 2])
 @pytest.mark.parametrize("stage", ["decoder", "full"])
-def test_ctc_stage_backprop_and_nonspeech_targets(tmp_path, tokenizer, stage):
+def test_ctc_stage_backprop_and_nonspeech_targets(tmp_path, tokenizer, stage, version):
     source = artifact(tmp_path, tokenizer, "audflash")
     model = AUDForConditionalGeneration.from_pretrained(source)
     processor = AUDProcessor.from_pretrained(source)
     from audm.audio_types import extend_audio_types
 
     extend_audio_types(model, processor)
-    attach_head(model, processor, small_tokenizer())
+    attach_head(model, processor, small_tokenizer() if version == 1 else None)
     model.configure_training(stage)
     model.train()
     model.gradient_checkpointing_enable(gradient_checkpointing_kwargs={"use_reentrant": True})
@@ -105,7 +113,12 @@ def test_ctc_stage_backprop_and_nonspeech_targets(tmp_path, tokenizer, stage):
         dict(text="", audio_type="noise", language="en"),
     ]
     batch = collator(features)
-    assert batch["ctc_targets"].tolist() == [[2, 3], [-100, -100]]
+    expected = (
+        [2, 3]
+        if version == 1
+        else processor.tokenizer.encode("hello world", add_special_tokens=False)
+    )
+    assert batch["ctc_targets"].tolist() == [expected, [-100] * len(expected)]
     loss = model(**batch, loss_only=True, ctc_weight=0.1).loss
     loss.backward()
     assert torch.isfinite(loss)
@@ -116,7 +129,8 @@ def test_ctc_stage_backprop_and_nonspeech_targets(tmp_path, tokenizer, stage):
     assert model.aud_ctc_totals[1:].tolist() == [1, 1, 2]
 
 
-def test_tokenizer_and_adaptation_to_full_workflow(tmp_path, tokenizer):
+@pytest.mark.parametrize("version", [1, 2])
+def test_tokenizer_and_adaptation_to_full_workflow(tmp_path, tokenizer, version):
     source = artifact(tmp_path, tokenizer, "audflash")
     data = data_recipe(tmp_path)
     training = dict(
@@ -160,7 +174,9 @@ def test_tokenizer_and_adaptation_to_full_workflow(tmp_path, tokenizer):
         encoded = tok.encode(text, add_special_tokens=False)
         assert 1 not in encoded.ids
         assert tok.decode(encoded.ids) == text
-    export(source, tmp_path / "ctc", tmp_path / "new")
+    if version == 2:
+        recipe["ctc"]["tokenizer"] = "decoder"
+    export(source, tmp_path / "ctc" if version == 1 else None, tmp_path / "new")
     before = AUDForConditionalGeneration.from_pretrained(tmp_path / "new")
     training["model_name_or_path"] = str(tmp_path / "new")
     path.write_text(yaml.safe_dump(recipe))
@@ -222,6 +238,7 @@ def test_next_recipe_keeps_source_objective_and_batch_contract(tmp_path, tokeniz
         cfg, actual_stage, _ = load_recipe(tmp_path / "next" / f"{name}.yaml")
         assert actual_stage == stage
         assert cfg.ctc_loss_weight == 0.1
+        assert cfg.aud_ctc["tokenizer"] == "decoder"
         assert (
             cfg.per_device_train_batch_size
             * cfg.gradient_accumulation_steps
@@ -240,3 +257,120 @@ def test_next_recipe_keeps_source_objective_and_batch_contract(tmp_path, tokeniz
             assert cfg.eval_steps == cfg.save_steps == 3700
     with pytest.raises(FileExistsError):
         prepare(source, tmp_path / "next")
+
+
+def test_decoder_ctc_blank_accepts_zero_and_matches_torch_loss():
+    torch.manual_seed(42)
+    hidden = torch.randn(2, 7, 3, requires_grad=True)
+    head = torch.nn.Linear(3, 5, bias=False)
+    targets = torch.tensor([[0, 0, 2], [1, 2, -100]])
+    mask = torch.arange(7)[None] < torch.tensor([7, 5])[:, None]
+    loss, _ = auxiliary_loss(hidden, head, mask, targets, blank_id=4)
+    loss.backward()
+    expected_hidden = hidden.detach().clone().requires_grad_()
+    expected_head = copy.deepcopy(head)
+    expected_head.zero_grad()
+    logits = expected_head(expected_hidden).log_softmax(-1).transpose(0, 1)
+    expected = torch.nn.functional.ctc_loss(
+        logits,
+        targets[targets != -100],
+        mask.sum(-1),
+        targets.ne(-100).sum(-1),
+        blank=4,
+        reduction="mean",
+    )
+    expected.backward()
+    torch.testing.assert_close(loss, expected)
+    torch.testing.assert_close(hidden.grad, expected_hidden.grad)
+    torch.testing.assert_close(head.weight.grad, expected_head.weight.grad)
+    for bad in (4, -1, 5):
+        with pytest.raises(ValueError, match="blank"):
+            auxiliary_loss(hidden[:1], head, mask[:1], torch.tensor([[bad]]), blank_id=4)
+
+
+def test_decoder_ctc_export_and_inference_roundtrip(tmp_path, tokenizer):
+    source = artifact(tmp_path, tokenizer, "audflash")
+    original = AUDForConditionalGeneration.from_pretrained(source).eval()
+    original_processor = AUDProcessor.from_pretrained(source)
+    report = export(source, output=tmp_path / "ctc")
+    model = AUDForConditionalGeneration.from_pretrained(tmp_path / "ctc").eval()
+    processor = AUDProcessor.from_pretrained(tmp_path / "ctc")
+    assert report["ctc_version"] == 2 and report["ctc_tokenizer"] == "decoder"
+    assert model.config.ctc_blank_id == original.config.text_config.vocab_size
+    assert model.config.ctc_vocab_size == original.config.text_config.vocab_size + 1
+    assert processor.ctc_tokenizer is processor.tokenizer
+    assert processor.tokenizer.get_vocab() == original_processor.tokenizer.get_vocab()
+    assert not (tmp_path / "ctc/ctc_tokenizer.json").exists()
+    assert processor.encode_ctc("hello world") == processor.tokenizer.encode(
+        "hello world", add_special_tokens=False
+    )
+    with pytest.raises(ValueError, match="reserved"):
+        processor.encode_ctc("hello <|im_end|>")
+    with pytest.raises(ValueError, match="reserved"):
+        processor.encode_ctc("hello", transcript_ids=[model.config.ctc_blank_id])
+    for name, value in original.state_dict().items():
+        torch.testing.assert_close(value, model.state_dict()[name], rtol=0, atol=0)
+    batch = processor.apply_transcription_request([np.zeros(16000)], language="en")
+    batch = {k: v for k, v in batch.items() if k in processor.model_input_names}
+    # Exercise processor batch padding before save; transient tokenizer state
+    # must not invalidate the stable token-ID/segmentation fingerprint.
+    processor.tokenizer(["hello", "hello world"], padding=True)
+    processor.save_pretrained(tmp_path / "ctc")
+    AUDProcessor.from_pretrained(tmp_path / "ctc")
+    model.aud_ctc_head.forward = lambda *a, **k: pytest.fail("CTC executed during inference")
+    with torch.no_grad():
+        expected_logits = model(**batch).logits
+        expected_tokens = model.generate(**batch, max_new_tokens=3, do_sample=False)
+    report = inference_export(tmp_path / "ctc", tmp_path / "deployment")
+    deployed = AUDForConditionalGeneration.from_pretrained(tmp_path / "deployment").eval()
+    deployed_processor = AUDProcessor.from_pretrained(tmp_path / "deployment")
+    assert report["removed_ctc_parameters"] == model.aud_ctc_head.weight.numel()
+    assert deployed.aud_ctc_head is None and deployed.config.ctc_version == 0
+    assert deployed.config.ctc_blank_id is None
+    assert deployed_processor.ctc_tokenizer is None
+    assert deployed_processor.tokenizer.get_vocab() == processor.tokenizer.get_vocab()
+    assert set(deployed.state_dict()) == set(original.state_dict())
+    with torch.no_grad():
+        torch.testing.assert_close(deployed(**batch).logits, expected_logits, rtol=0, atol=0)
+        assert torch.equal(
+            deployed.generate(**batch, max_new_tokens=3, do_sample=False), expected_tokens
+        )
+    from audm.verify import verify
+
+    assert verify(tmp_path / "deployment")["checksums"] == "verified"
+    with pytest.raises(ValueError, match="no auxiliary"):
+        inference_export(tmp_path / "deployment", tmp_path / "again")
+    with pytest.raises(FileExistsError):
+        export(source, output=tmp_path / "ctc")
+    processor.tokenizer.add_tokens(["new_token_invalidates_fixed_ctc"])
+    with pytest.raises(ValueError, match="mismatch"):
+        processor.save_pretrained(tmp_path / "changed")
+
+
+def test_decoder_ctc_rejects_changed_tokenizer_on_reload(tmp_path, tokenizer):
+    source = artifact(tmp_path, tokenizer, "audflash")
+    export(source, output=tmp_path / "ctc")
+    path = tmp_path / "ctc/tokenizer.json"
+    data = json.loads(path.read_text())
+    vocab = data["model"]["vocab"]
+    a, b = next(
+        (a, b)
+        for a in vocab
+        for b in vocab
+        if a != b and not a.startswith("<") and not b.startswith("<")
+    )
+    vocab[a], vocab[b] = vocab[b], vocab[a]
+    path.write_text(json.dumps(data))
+    with pytest.raises(ValueError, match="mismatch"):
+        AUDProcessor.from_pretrained(tmp_path / "ctc")
+
+
+def test_decoder_ctc_recipe_rejects_legacy_ctc():
+    from types import SimpleNamespace
+
+    from audm.ctc import validate_training_tokenizer
+
+    recipe = SimpleNamespace(ctc_loss_weight=0.1, aud_ctc={"tokenizer": "decoder"})
+    with pytest.raises(ValueError, match="new export"):
+        validate_training_tokenizer(recipe, SimpleNamespace(ctc_version=1))
+    validate_training_tokenizer(recipe, SimpleNamespace(ctc_version=2))

@@ -249,3 +249,37 @@ def test_next_run_direct_launcher_uses_fresh_stage_sources(tmp_path):
         assert record["slurm"] == "0" and "--nnodes=1" in args and "--nproc-per-node=8" in args
         assert args[args.index("--model") + 1] == str(tmp_path / "new run" / source)
         assert "--resume" not in args
+
+
+def test_next_run_reuses_decoder_and_exports_for_inference(tmp_path):
+    import json
+
+    capture = tmp_path / "args.json"
+    python = tmp_path / "python"
+    python.write_text(
+        "#!/usr/bin/env python3\nimport json, os, sys\n"
+        "if sys.argv[1].endswith('/console.py'): os.execv(sys.executable, [sys.executable, *sys.argv[1:]])\n"
+        "with open(os.environ['CAPTURE'], 'w') as f: json.dump(sys.argv[1:], f)\n"
+    )
+    python.chmod(0o755)
+    root = tmp_path / "decoder ctc run"
+    env = dict(os.environ, AUD_PYTHON=str(python), CAPTURE=str(capture), AUD_NEXT_ROOT=str(root))
+    script = SCRIPT.with_name("audflash_next.sh")
+    for command in ("export", "inference-export"):
+        result = subprocess.run(
+            ["bash", str(script), command], env=env, text=True, capture_output=True
+        )
+        assert result.returncode == 0, result.stderr
+        args = json.loads(capture.read_text())
+        assert args[:3] == ["-m", "audm.ctc", command]
+        assert "--tokenizer-path" not in args
+        assert args[args.index("--output") + 1] == str(
+            root / ("export" if command == "export" else "inference")
+        )
+        if command == "inference-export":
+            assert args[args.index("--model-path") + 1] == str(root / "full")
+    result = subprocess.run(
+        ["bash", str(script), "tokenizer"], env=env, text=True, capture_output=True
+    )
+    assert result.returncode == 0 and "no longer needed" in result.stdout
+    assert not (root / "ctc-tokenizer").exists()

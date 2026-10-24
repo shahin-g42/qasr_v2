@@ -36,7 +36,8 @@ def prepare(config, model, output, steps=2):
     world = training["expected_world_size"]
     if type(steps) is not int or steps < 2:
         raise ValueError("Use at least two updates to exercise initialized optimizer state")
-    ids = processor.tokenizer.encode("hello " * limit, add_special_tokens=False)[:limit]
+    phrase = "hello world " if processor.config.ctc_version == 2 else "hello "
+    ids = processor.tokenizer.encode(phrase * limit, add_special_tokens=False)[:limit]
     text = processor.tokenizer.decode(ids, skip_special_tokens=True).strip()
     while len(processor.tokenizer.encode(text, add_special_tokens=False)) > limit:
         text = text[:-1]
@@ -51,7 +52,7 @@ def prepare(config, model, output, steps=2):
             0
         ].item()
         while True:
-            ctc_ids = processor.ctc_tokenizer.encode(ctc_text, add_special_tokens=False).ids
+            ctc_ids = processor.encode_ctc(ctc_text)
             required = len(ctc_ids) + sum(a == b for a, b in zip(ctc_ids, ctc_ids[1:]))
             if ctc_ids and required <= frames:
                 ctc_count = len(ctc_ids)
@@ -143,7 +144,7 @@ def prepare(config, model, output, steps=2):
                     stage=recipe["stage"],
                     training=training,
                     efficiency=copy.deepcopy(recipe.get("efficiency", {})),
-                    ctc={"warmup_steps": 0},
+                    ctc=dict(recipe.get("ctc", {}), warmup_steps=0),
                 )
             )
         )
@@ -160,7 +161,9 @@ def prepare(config, model, output, steps=2):
                 else token_count
             ),
             feasible_ctc_tokens=ctc_count,
-            guaranteed_ctc_examples_per_microbatch=1 if ctc_count is not None else 0,
+            guaranteed_ctc_examples_per_microbatch=(micro if ctc_text == text else 1)
+            if ctc_count is not None
+            else 0,
             ctc_vocab_size=processor.config.ctc_vocab_size,
             microbatch=micro,
             accumulation=accumulation,

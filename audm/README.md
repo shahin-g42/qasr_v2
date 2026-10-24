@@ -1,8 +1,10 @@
 # AUD models and training
 
-For the **new AudFlash run from checkpoint-3700**, auxiliary CTC, stride-one
+For the **new AudFlash run from checkpoint-3700**, decoder-tokenizer CTC, stride-one
 architecture, 40 × 2 × 8 training, and direct cluster commands, use
 [NEXT_RUN_CLUSTER.md](NEXT_RUN_CLUSTER.md) and `scripts/audflash_next.sh`.
+This workflow reuses decoder token IDs, needs no tokenizer-training step, and
+provides `inference-export` to remove CTC weights after training.
 
 For the exact AudTurbo-only, per-node cluster launch sequence, see
 [AUDTURBO_CLUSTER.md](AUDTURBO_CLUSTER.md) and `scripts/audturbo.sh`.

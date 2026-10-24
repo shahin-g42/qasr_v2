@@ -10,15 +10,24 @@ It does not resume the old optimizer, scheduler, or step counter.
   striding, frame stacking, merging or pruning. The encoder's pretrained native
   frontend is unchanged. Roughly 750 audio embeddings for 30 seconds still enter
   the decoder; no claim of raw-waveform information preservation is made.
-- A separate `aud_ctc_head` consumes the encoder's native output **before the
-  bridge**. A dedicated multilingual byte-level BPE vocabulary has at most 16,000
-  tokens, including CTC blank. With a 1536-wide encoder output, this adds at most
-  **24,576,000 parameters**. It is saved in the same AUD model; generation does not
-  execute this head. The original decoder tokenizer and audio-category tokens do
-  not change.
-- The CTC tokenizer scans **training transcripts only**, with no record cap and
-  no audio decoding. This can take time over the full corpus; progress is shown
-  per manifest. Byte coverage supports all languages without unknown characters.
+- An independent `aud_ctc_head` consumes the encoder's native output **before
+  the bridge**, using the **existing decoder tokenizer and exact token IDs**.
+  There is no tokenizer training, transcript scan for vocabulary building, or
+  vocabulary restricted to today's languages. Decoder tokenization stays fixed
+  when adding languages. The existing text-normalization/tokenization behavior
+  is preserved; CTC targets contain transcript text only.
+- CTC blank is a new **CTC-only output class** at `text_config.vocab_size`. It is
+  never inserted into the decoder tokenizer or embeddings. Token ID 0 remains
+  a valid ordinary CTC target if it is ordinary in the decoder tokenizer.
+  With 151,936 decoder rows and encoder width 1536, the new CTC head contains
+  **233,375,232 parameters**, bringing training parameters to about **1.135B**.
+  Export reports the actual sizes from the source config. Tokenizer fingerprints
+  detect changed segmentation/IDs on save and reload.
+- Normal autoregressive generation does not execute CTC. The final
+  `inference-export` removes its weights and configuration, leaving the trained
+  encoder, stride-one bridge, decoder, and tokenizer. This returns the deployment
+  artifact to about **901.9M parameters** for this source, without changing any
+  retained weight. Keep the full training artifact for further CTC training.
 - Objective: `autoregressive_loss + lambda × CTC_loss`. CTC uses transcript text
   only, excludes non-speech and impossible alignments (including repeated-token
   requirements), and never truncates a target to make it fit. Those examples keep
@@ -78,7 +87,8 @@ git pull --ff-only origin main
 python -m pip install -e ./audm
 
 export AUD_NEXT_SOURCE="$PWD/output/audflash-audio-types-v1/full/checkpoint-3700"
-export AUD_NEXT_ROOT="$PWD/output/audflash-stride1-ctc-v1"
+export AUD_NEXT_ROOT="$PWD/output/audflash-stride1-decoder-ctc-v1"
+export AUD_LOG_DIR="$AUD_NEXT_ROOT/logs"
 export AUD_MASTER_ADDR=127.0.0.1
 export AUD_MASTER_PORT=29579
 export PYTHONPATH="$PWD/audm/src:$PWD/src${PYTHONPATH:+:$PYTHONPATH}"
@@ -94,13 +104,17 @@ augmentation code discovers its bundled executable. No admin installation is
 needed. Existing RIR/MUSAN/non-speech assets are reused from the saved recipe;
 there is no download or corpus-finalization step here.
 
-## 2. Prepare recipes, tokenizer and model
+Use this **new run root** even if you already prepared the earlier 16k-CTC run.
+Its files remain intact. Start from the original checkpoint-3700 above, not an
+old CTC export, synthetic probe, or smoke-test model. New recipes explicitly
+require decoder-tokenizer CTC and reject legacy CTC artifacts. Run each command
+below individually; proceed only after it succeeds.
+
+## 2. Prepare recipes and model (no tokenizer-training step)
 
 ```bash
 bash audm/scripts/audflash_next.sh prepare
 cat "$AUD_NEXT_ROOT/plan.json"
-
-bash audm/scripts/audflash_next.sh tokenizer
 
 bash audm/scripts/audflash_next.sh export
 
@@ -109,7 +123,10 @@ bash audm/scripts/audflash_next.sh verify export
 
 The export checks source tensors, preserves legitimate Gemma infinite clamp
 bounds, validates an exact weight round trip, and records source weight hashes.
-It refuses to overwrite existing output or an existing CTC head. Do **not** run
+It refuses to overwrite existing output or an existing CTC head. Expect
+`ctc_version: 2`, `ctc_blank_id: 151936` and `ctc_vocab_size: 151937` for this
+source. The exact export report is in `export/provenance.json`; full verification
+output is also retained in the printed debug-log directory. Do **not** run
 `add-audio-types` again: checkpoint-3700 already contains those tokens.
 
 ```bash
@@ -140,13 +157,16 @@ bash audm/scripts/audflash_next.sh smoke adaptation
 python -m audm verify "$AUD_NEXT_ROOT/adaptation/smoke-test" --device cuda:0
 ```
 
-The probe retains the production batch/efficiency settings, exercises CTC at full
-weight, and mixes feasible CTC targets with near-limit autoregressive targets at
-maximum audio duration. It disables augmentation and evaluation. **Discard probe
+The probe retains the production batch/efficiency settings and exercises CTC at
+full weight and maximum audio duration. It uses alternating transcript words to
+make near-limit decoder-tokenizer CTC targets feasible when possible; otherwise
+it guarantees at least one feasible CTC example alongside near-limit AR targets
+in every microbatch. The report records the actual eligible quota. It disables augmentation and evaluation. **Discard probe
 weights.** The real-data smoke test covers augmentation, non-speech integration,
 evaluation and save/reload, but random sampling does not guarantee every rare
 effect/class appears in two updates. Check the per-rank memory reports before
-production; previous batch-10 results cannot establish batch-40 memory safety.
+production; previous batch-10 or 16k-CTC results cannot establish memory safety
+for this larger head at batch 40. GPU validation must run on your cluster.
 
 A successful smoke test stays in `adaptation/smoke-test`; production writes its
 parent without loading smoke weights. For repeat probes, set `AUD_PROBE_ROOT` to
@@ -185,6 +205,20 @@ probe/smoke output. It starts a fresh optimizer and runs three coverage epochs.
 On a later interruption of this *new* run, `full --resume auto` is available;
 that is separate from the weights-only initialization described above.
 
+## Deployment export after full training
+
+```bash
+bash audm/scripts/audflash_next.sh inference-export
+bash audm/scripts/audflash_next.sh verify inference
+```
+
+Serve `$AUD_NEXT_ROOT/inference`. It contains no `aud_ctc_head` tensors and uses
+the original decoder tokenizer. Export verifies exact retained-tensor equality
+and strict offline reload; the verify command exercises forward/generation on
+CUDA. `inference/provenance.json` records the source and removed parameter count.
+Use `$AUD_NEXT_ROOT/full` for further CTC fine-tuning; inference export does not
+include optimizer state. Export refuses to overwrite existing destinations.
+
 ## 6. Console and troubleshooting logs
 
 The launchers print one timestamped rank-zero progress stream: loss, learning
@@ -202,7 +236,7 @@ Each invocation creates a **new** timestamped directory under
 - `rank-000.log`, `rank-001.log`, etc.: full training stdout/stderr, Python/native
   messages, warnings, tracebacks and DataLoader subprocess output for that rank.
 - `launcher.log`: torchrun startup/shutdown and any output emitted before worker
-  capture starts. Single-process tokenizer/export output is also captured here.
+  capture starts. Export/verification details are in their rank-000.log files.
 - `command.json`: the exact command used; environment secrets are not dumped.
 
 No extra `tee` is needed. Failures retain a nonzero exit status and a short error
@@ -267,10 +301,11 @@ not enabled. No architectural compression is included in this run.
 
 ## Validation for this implementation
 
-Local validation passed 278 tests, including two-rank CPU/Gloo training with
+Local validation passed 298 tests, including two-rank CPU/Gloo training with
 persistent workers, CTC and non-speech integration, distributed WER, save/resume,
 exact pretrained-weight preservation, native-rate frame lengths, accumulation
-normalization, numerical guards and the direct launcher. Ten dataset-preparation
+normalization, numerical guards, decoder-tokenizer identity, inference-export
+logit/generation equivalence and the direct launcher. Ten dataset-preparation
 cases require optional PyArrow and were skipped in the local test environment.
 Lint, whitespace checks and shell syntax checks passed. H100/ZeRO-2 memory,
 throughput and optional Liger validation must be measured with the supplied

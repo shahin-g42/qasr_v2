@@ -153,7 +153,7 @@ class AUDProcessor:
         result = cls(
             config, tokenizer, frontend, template.read_text() if template.is_file() else None
         )
-        if config.ctc_version:
+        if config.ctc_version == 1:
             import hashlib
 
             from tokenizers import Tokenizer
@@ -166,13 +166,46 @@ class AUDProcessor:
                 or result.ctc_tokenizer.token_to_id("<ctc_blank>") != 0
             ):
                 raise ValueError("CTC tokenizer/config mismatch")
+        elif config.ctc_version == 2:
+            result.ctc_tokenizer = result.tokenizer
+            result._validate_decoder_ctc()
         return result
+
+    def _validate_decoder_ctc(self):
+        from .ctc import decoder_tokenizer_digest
+
+        if (
+            self.ctc_tokenizer is not self.tokenizer
+            or decoder_tokenizer_digest(self.tokenizer) != self.config.ctc_tokenizer_sha256
+            or self.config.ctc_blank_id != self.config.text_config.vocab_size
+            or self.config.ctc_vocab_size != self.config.ctc_blank_id + 1
+        ):
+            raise ValueError("Decoder CTC tokenizer/config mismatch; token IDs must remain fixed")
+
+    def encode_ctc(self, text, transcript_ids=None):
+        if self.config.ctc_version == 1:
+            return self.ctc_tokenizer.encode(text, add_special_tokens=False).ids
+        if self.config.ctc_version != 2:
+            raise ValueError("This processor has no auxiliary CTC tokenizer")
+        ids = (
+            list(transcript_ids)
+            if transcript_ids is not None
+            else self.tokenizer.encode(text, add_special_tokens=False)
+        )
+        # Transcript only: never turn prompts, EOS or category markers into CTC
+        # targets. A literal reserved marker is malformed training text.
+        forbidden = set(self.tokenizer.all_special_ids)
+        if any(i in forbidden or i < 0 or i >= self.config.ctc_blank_id for i in ids):
+            raise ValueError("CTC transcript contains a reserved or out-of-vocabulary token")
+        return ids
 
     def save_pretrained(self, directory, **kwargs):
         directory = Path(directory)
         directory.mkdir(parents=True, exist_ok=True)
+        if self.config.ctc_version == 2:
+            self._validate_decoder_ctc()
         self.tokenizer.save_pretrained(directory)
-        if self.config.ctc_version:
+        if self.config.ctc_version == 1:
             if self.ctc_tokenizer is None:
                 raise ValueError("CTC tokenizer missing")
             self.ctc_tokenizer.save(str(directory / "ctc_tokenizer.json"))

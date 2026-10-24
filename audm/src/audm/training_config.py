@@ -85,12 +85,16 @@ def load_recipe(path, model=None, output=None, smoke=False, resume=None):
         values["resume_from_checkpoint"] = resume
     config = TrainConfig(**values)
     ctc = recipe.get("ctc", {})
-    if not isinstance(ctc, dict) or set(ctc) - {"warmup_steps"}:
-        raise ValueError("ctc accepts only warmup_steps")
+    if not isinstance(ctc, dict) or set(ctc) - {"warmup_steps", "tokenizer"}:
+        raise ValueError("ctc accepts only warmup_steps and tokenizer")
     warmup = ctc.get("warmup_steps", 100)
     if type(warmup) is not int or warmup < 0:
         raise ValueError("ctc.warmup_steps must be a nonnegative integer")
     config.aud_ctc = dict(warmup_steps=warmup)
+    if "tokenizer" in ctc:
+        if ctc["tokenizer"] != "decoder":
+            raise ValueError("ctc.tokenizer must be decoder when specified")
+        config.aud_ctc["tokenizer"] = "decoder"
     if not 0 <= config.ctc_loss_weight <= 1:
         raise ValueError("ctc_loss_weight must be in [0, 1]")
     if config.fp16 or config.torch_compile:

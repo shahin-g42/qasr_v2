@@ -190,6 +190,9 @@ def run(recipe, model=None, output=None, smoke=False, resume=None):
     )
     if config.ctc_loss_weight and not processor.config.ctc_version:
         raise ValueError("CTC training requires an explicit add-CTC export")
+    from .ctc import validate_training_tokenizer
+
+    validate_training_tokenizer(config, processor.config)
     model.configure_training(stage)
     if model.aud_ctc_head is not None and not config.ctc_loss_weight:
         model.aud_ctc_head.requires_grad_(False)
@@ -376,6 +379,9 @@ def preflight(recipe, model, output, scan=False):
     processor = AUDProcessor.from_pretrained(model)
     if config.ctc_loss_weight and not processor.config.ctc_version:
         raise ValueError("CTC training requires an explicit add-CTC export")
+    from .ctc import validate_training_tokenizer
+
+    validate_training_tokenizer(config, processor.config)
     if config.aud_efficiency["loss_backend"] == "liger":
         from .losses import validate_liger
 

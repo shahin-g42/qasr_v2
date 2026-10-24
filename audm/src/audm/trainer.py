@@ -3,6 +3,7 @@
 import logging
 import math
 import os
+import time
 
 import torch
 from qasr.sampling import WeightedStratifiedLanguageSampler
@@ -12,6 +13,23 @@ from .numerics import check_gradients, check_loss, install_zero2_guard
 
 
 class AUDTrainer(PredictionLoggingTrainer):
+    def get_batch_samples(self, epoch_iterator, num_batches, device):
+        started = time.monotonic()
+        result = super().get_batch_samples(epoch_iterator, num_batches, device)
+        self.model.aud_data_wait_seconds = time.monotonic() - started
+        batches, _ = result
+        if batches and "ctc_targets" in batches[0]:
+            from .ctc import eligibility
+
+            count = sum(
+                eligibility(b["ctc_targets"], b["ctc_input_lengths"]).sum() for b in batches
+            ).to(device)
+            if self.args.average_tokens_across_devices:
+                count = self.accelerator.gather(count).sum()
+            for batch in batches:
+                batch["ctc_num_items"] = count
+        return result
+
     def training_step(self, model, inputs, num_items_in_batch=None):
         if self.is_deepspeed_enabled:
             install_zero2_guard(model.optimizer)
@@ -32,8 +50,11 @@ class AUDTrainer(PredictionLoggingTrainer):
 
                 try:
                     report = save_failure(
-                        self.args.output_dir, inputs,
-                        rank=self.args.process_index, step=self.state.global_step, error=error,
+                        self.args.output_dir,
+                        inputs,
+                        rank=self.args.process_index,
+                        step=self.state.global_step,
+                        error=error,
                     )
                     logging.getLogger("audm").error("Saved failing batch: %s", report["batch"])
                 except Exception:
@@ -46,12 +67,51 @@ class AUDTrainer(PredictionLoggingTrainer):
         # the audio prompt, padding, or the entire supervised sequence at once.
         # Public model forward/generate keep the native Transformers behavior.
         if "labels" in inputs and (model.training or self.args.prediction_loss_only):
+            from .efficiency import DEFAULTS
+
+            efficiency = getattr(self, "aud_efficiency", DEFAULTS)
             inputs = dict(
                 inputs,
                 loss_only=True,
                 use_cache=False,
                 loss_smoothing=getattr(self, "aud_label_smoothing", 0.0),
+                loss_chunk_size=efficiency["loss_chunk_size"],
+                loss_backend=efficiency["loss_backend"],
+                category_metrics=model.training and efficiency["category_metrics"],
             )
+            if "ctc_targets" in inputs:
+                warmup = getattr(self, "aud_ctc_warmup_steps", 100)
+                ramp = (
+                    min(1.0, self.state.global_step / max(1, warmup))
+                    if warmup and model.training
+                    else 1.0
+                )
+                inputs["ctc_weight"] = getattr(self, "aud_ctc_weight", 0.0) * ramp
+                self.accelerator.unwrap_model(model).aud_current_ctc_weight = inputs["ctc_weight"]
+                if (
+                    "ctc_num_items" not in inputs
+                    and self.args.average_tokens_across_devices
+                    and num_items_in_batch is not None
+                ):
+                    from .ctc import eligibility
+
+                    inputs["ctc_num_items"] = self.accelerator.gather(
+                        eligibility(inputs["ctc_targets"], inputs["ctc_input_lengths"]).sum()
+                    ).sum()
+            if model.training and {"input_features_mask", "attention_mask"} <= inputs.keys():
+                unwrapped = self.accelerator.unwrap_model(model)
+                valid = inputs["input_features_mask"]
+                sequence = inputs["attention_mask"]
+                counters = torch.stack(
+                    (
+                        valid.sum(),
+                        torch.tensor(valid.numel(), device=valid.device),
+                        sequence.sum(),
+                        torch.tensor(sequence.numel(), device=sequence.device),
+                    )
+                )
+                previous = getattr(unwrapped, "aud_padding_totals", None)
+                unwrapped.aud_padding_totals = counters if previous is None else previous + counters
         result = super().compute_loss(
             model,
             inputs,
@@ -75,6 +135,18 @@ class AUDTrainer(PredictionLoggingTrainer):
             rank=self.args.process_index,
             language_batch_counts=self._language_batch_counts,
         )
+        from .efficiency import DEFAULTS
+
+        efficiency = getattr(self, "aud_efficiency", DEFAULTS)
+        if efficiency["duration_bucketing"]:
+            from .sampling import UpdateDurationSampler
+
+            sampler = UpdateDurationSampler(
+                sampler,
+                self._balanced_parts,
+                self.args.per_device_train_batch_size,
+                self.args.gradient_accumulation_steps,
+            )
         updates = math.ceil(
             len(sampler)
             / self.args.per_device_train_batch_size
@@ -96,7 +168,24 @@ class AUDTrainer(PredictionLoggingTrainer):
             persistent_workers=self.args.dataloader_persistent_workers
             and self.args.dataloader_num_workers > 0,
             generator=generator,
+            timeout=efficiency["dataloader_timeout"] if self.args.dataloader_num_workers else 0,
+            prefetch_factor=efficiency["prefetch_factor"]
+            if self.args.dataloader_num_workers
+            else None,
         )
+
+    def get_eval_dataloader(self, eval_dataset=None):
+        from .efficiency import DEFAULTS
+
+        efficiency = getattr(self, "aud_efficiency", DEFAULTS)
+        self.args.dataloader_prefetch_factor = (
+            efficiency["prefetch_factor"] if self.args.dataloader_num_workers else None
+        )
+        loader = super().get_eval_dataloader(eval_dataset)
+        base = getattr(loader, "base_dataloader", loader)
+        if base.num_workers:
+            base.timeout = efficiency["dataloader_timeout"]
+        return loader
 
     def create_optimizer(self, model=None):
         if self.optimizer is not None:
@@ -111,7 +200,7 @@ class AUDTrainer(PredictionLoggingTrainer):
                 rate = self._embed_lr_factor
             elif name.startswith("aud_decoder."):
                 rate = self._llm_lr_factor
-            elif name.startswith(("aud_encoder.", "aud_projector.", "aud_pool.")):
+            elif name.startswith(("aud_encoder.", "aud_projector.", "aud_pool.", "aud_ctc_head.")):
                 rate = 1.0
             else:
                 raise ValueError(f"Unclassified trainable AUD parameter: {name}")

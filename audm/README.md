@@ -1,5 +1,9 @@
 # AUD models and training
 
+For the **new AudFlash run from checkpoint-3700**, auxiliary CTC, stride-one
+architecture, 40 × 2 × 8 training, and direct cluster commands, use
+[NEXT_RUN_CLUSTER.md](NEXT_RUN_CLUSTER.md) and `scripts/audflash_next.sh`.
+
 For the exact AudTurbo-only, per-node cluster launch sequence, see
 [AUDTURBO_CLUSTER.md](AUDTURBO_CLUSTER.md) and `scripts/audturbo.sh`.
 
@@ -284,8 +288,8 @@ Partial augmentation overrides merge into the inherited augmentation settings;
 `augmentation: null` disables the complete augmentation pipeline.
 `stage: adapter`, `stage: decoder` (decoder + adapter), and `stage: full` are
 supported. The existing QASR `TrainConfig` supplies optimizer, schedule,
-augmentation, logging and dataset options. AUD rejects unsupported CTC training,
-FP16, torch.compile and ZeRO-3 configurations explicitly in this release.
+augmentation, logging and dataset options. Auxiliary CTC requires an explicit
+stride-one Gemma CTC export (see the new-run guide). AUD rejects FP16, torch.compile and ZeRO-3 configurations explicitly in this release.
 
 ### Resume versus a new fine-tuning stage
 

@@ -34,10 +34,17 @@ def dataset_parts(config, evaluation=False):
         audio_root=config.audio_root,
         validate_audio_paths=config.validate_audio_paths,
     )
-    parts = [JsonlSpeechDataset(path, language=lang, **kwargs) for path, lang in specs]
+    dataset_class = JsonlSpeechDataset
+    cache = getattr(config, "aud_efficiency", {}).get("index_cache")
+    if cache:
+        from .indexed_data import IndexedSpeechDataset
+
+        dataset_class = IndexedSpeechDataset
+        kwargs["cache_directory"] = cache
+    parts = [dataset_class(path, language=lang, **kwargs) for path, lang in specs]
     if not evaluation:
         parts += [
-            JsonlSpeechDataset(path, language=lang, empty_target_ok=True, **kwargs)
+            dataset_class(path, language=lang, empty_target_ok=True, **kwargs)
             for path, lang in config.non_speech_manifest_specs
         ]
     return parts
@@ -57,6 +64,8 @@ def resilient_parts(parts, **options):
 
 def resume_contract(receipt):
     value = copy.deepcopy(receipt)
+    # These runtime knobs preserve the objective and each update's sampled set.
+    value.pop("efficiency", None)
     # Compare resolved semantics; YAML formatting/paths and evaluation-only
     # changes must not require throwing away the optimizer and scheduler.
     for key in ("recipe", "data_recipe", "recipe_sha256", "data_recipe_sha256"):
@@ -179,7 +188,16 @@ def run(recipe, model=None, output=None, smoke=False, resume=None):
         dtype=torch.bfloat16 if config.bf16 else torch.float32,
         attn_implementation=config.attn_implementation or "sdpa",
     )
+    if config.ctc_loss_weight and not processor.config.ctc_version:
+        raise ValueError("CTC training requires an explicit add-CTC export")
     model.configure_training(stage)
+    if model.aud_ctc_head is not None and not config.ctc_loss_weight:
+        model.aud_ctc_head.requires_grad_(False)
+    model.aud_efficiency = config.aud_efficiency
+    if config.aud_efficiency["loss_backend"] == "liger":
+        from .losses import validate_liger
+
+        validate_liger()
     # Qwen's nested causal model owns the loss, unlike QASR's outer lm_head.
     if config.label_smoothing:
         model.aud_decoder.loss_function = make_smoothed_causal_lm_loss(config.label_smoothing)
@@ -276,11 +294,19 @@ def run(recipe, model=None, output=None, smoke=False, resume=None):
     )
     trainer.aud_receipt = receipt
     trainer.aud_label_smoothing = config.label_smoothing
+    trainer.aud_efficiency = config.aud_efficiency
+    trainer.aud_ctc_weight = config.ctc_loss_weight
+    trainer.aud_ctc_warmup_steps = config.aud_ctc["warmup_steps"]
     trainer.add_callback(CUDAMemoryCallback())
+    from .performance import PerformanceCallback
+
+    trainer.add_callback(PerformanceCallback())
     trainer.aud_source = str(Path(checkpoint or config.model_name_or_path).resolve())
     if eval_parts and config.eval_wer_samples_per_language:
         callback = AUDWEREvalCallback(
             batch_size=config.per_device_eval_batch_size,
+            distributed=config.aud_efficiency["distributed_wer"],
+            index_cache=config.aud_efficiency["index_cache"],
             processor=processor,
             eval_manifest_specs=config.eval_manifest_specs,
             samples_per_language=min(2, config.eval_wer_samples_per_language)
@@ -305,8 +331,15 @@ def run(recipe, model=None, output=None, smoke=False, resume=None):
         f"{sum(p.numel() for p in model.parameters() if p.requires_grad):,}",
     )
     LOGGER.info(
-        "AUD loss uses supervised-token chunks of 128; label_smoothing=%s", config.label_smoothing
+        "AUD efficiency=%s; label_smoothing=%s", config.aud_efficiency, config.label_smoothing
     )
+    if config.ctc_loss_weight:
+        LOGGER.info(
+            "AUD CTC native encoder frames; vocab=%d weight=%s warmup_updates=%d",
+            model.config.ctc_vocab_size,
+            config.ctc_loss_weight,
+            config.aud_ctc["warmup_steps"],
+        )
     LOGGER.info(
         "AUD evaluation batch_size=%d for both loss and WER/CER generation",
         config.per_device_eval_batch_size,
@@ -330,6 +363,12 @@ def run(recipe, model=None, output=None, smoke=False, resume=None):
 def preflight(recipe, model, output, scan=False):
     config, stage, receipt = load_recipe(recipe, model, output)
     processor = AUDProcessor.from_pretrained(model)
+    if config.ctc_loss_weight and not processor.config.ctc_version:
+        raise ValueError("CTC training requires an explicit add-CTC export")
+    if config.aud_efficiency["loss_backend"] == "liger":
+        from .losses import validate_liger
+
+        validate_liger()
     paths = (
         config.train_manifest_paths
         + config.eval_manifest_paths

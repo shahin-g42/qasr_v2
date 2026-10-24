@@ -11,6 +11,33 @@ from .modeling import AUDForConditionalGeneration
 from .processing import AUDProcessor
 
 
+def validate_model_tensors(model):
+    """Reject corrupt weights/buffers, allowing native unbounded clamp sentinels."""
+    from transformers.models.gemma4.modeling_gemma4 import Gemma4ClippableLinear
+
+    allowed_bounds = set()
+    for prefix, module in model.named_modules():
+        if isinstance(module, Gemma4ClippableLinear) and module.use_clipped_linears:
+            for kind in ("input", "output"):
+                lower, upper = getattr(module, f"{kind}_min"), getattr(module, f"{kind}_max")
+                if (
+                    torch.isposinf(lower).any()
+                    or torch.isneginf(upper).any()
+                    or torch.isnan(lower).any()
+                    or torch.isnan(upper).any()
+                    or not (lower <= upper).all()
+                ):
+                    raise ValueError(f"Invalid native clamp bounds: {prefix}.{kind}")
+                allowed_bounds.update(f"{prefix}.{kind}_{side}" for side in ("min", "max"))
+    for name, tensor in model.state_dict().items():
+        if (
+            name not in allowed_bounds
+            and tensor.is_floating_point()
+            and not torch.isfinite(tensor).all()
+        ):
+            raise ValueError(f"Nonfinite model tensor: {name}")
+
+
 def verify(directory, device="cpu", smoke=True):
     directory = Path(directory)
     checksum_file = directory / "checksums.json"
@@ -28,6 +55,7 @@ def verify(directory, device="cpu", smoke=True):
         info.get(k) for k in ("missing_keys", "unexpected_keys", "mismatched_keys", "error_msgs")
     ):
         raise ValueError(f"Non-strict reload: {info}")
+    validate_model_tensors(model)
     processor = AUDProcessor.from_pretrained(directory)
     model.to(device).eval()
     report = {

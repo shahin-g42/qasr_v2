@@ -73,7 +73,11 @@ class AUDDataCollator(QASRDataCollator):
         # Keep the stage-02/index contract: this limit applies to transcript
         # tokens. Language markers and EOS are additional supervised tokens.
         if any(
-            len(self.processor.tokenizer.encode(f["text"], add_special_tokens=False))
+            len(
+                f["transcript_ids"]
+                if "transcript_ids" in f and not audits
+                else self.processor.tokenizer.encode(f["text"], add_special_tokens=False)
+            )
             > self.max_target_length
             for f in features
         ):
@@ -130,12 +134,27 @@ class AUDDataCollator(QASRDataCollator):
                 ):
                     spec_mask[i] = 0
             if variant == "audflash" and self.processor.config.flash_encoder == "gemma4":
-                mel = gemma_specaugment(
-                    mel, spec_mask, augmenter
-                )
+                mel = gemma_specaugment(mel, spec_mask, augmenter)
             else:
                 mel = augmenter.augment_features(mel, spec_mask)
             batch["input_features"] = mel.transpose(1, 2) if variant == "audturbo" else mel
         self._validate_audio_contract(batch, len(features))
         allowed = set(self.processor.model_input_names) | {"labels"}
+        if self.processor.config.ctc_version:
+            sequences = [
+                self.processor.ctc_tokenizer.encode(f["text"], add_special_tokens=False).ids
+                if f.get("audio_type", "speech") == "speech" and f["text"].strip()
+                else []
+                for f in features
+            ]
+            targets = torch.full(
+                (len(features), max(1, max(map(len, sequences)))), -100, dtype=torch.long
+            )
+            for i, ids in enumerate(sequences):
+                targets[i, : len(ids)] = torch.tensor(ids, dtype=torch.long)
+            batch["ctc_targets"] = targets
+            batch["ctc_input_lengths"] = self.processor.audio_token_lengths(
+                batch["input_features_mask"]
+            )
+            allowed |= {"ctc_targets", "ctc_input_lengths"}
         return {k: v for k, v in batch.items() if k in allowed}

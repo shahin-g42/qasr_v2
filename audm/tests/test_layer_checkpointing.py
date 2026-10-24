@@ -88,3 +88,49 @@ def test_gemma_encoder_retains_fewer_tensors_for_backward(tmp_path, tokenizer):
         return sum(sizes)
 
     assert measure(model) < measure(reference)
+
+
+def test_selective_checkpoint_policy_recomputes_only_selected_layers(tmp_path, tokenizer):
+    from audm.efficiency import apply_checkpoint_policy, resolve_efficiency
+
+    source = artifact(tmp_path, tokenizer, "audflash")
+    model = AUDForConditionalGeneration.from_pretrained(source)
+    config = copy.deepcopy(model.config)
+    config.audio_config.num_hidden_layers = 2
+    config.text_config.num_hidden_layers = 2
+    config.text_config.layer_types = ["full_attention", "full_attention"]
+    model = AUDForConditionalGeneration(config)
+    model.configure_training("full")
+    model.train()
+    reference = copy.deepcopy(model)
+    model.gradient_checkpointing_enable(gradient_checkpointing_kwargs={"use_reentrant": True})
+    policy = resolve_efficiency(
+        dict(encoder_checkpoint_every=2, decoder_checkpoint_every=2), tmp_path
+    )
+    apply_checkpoint_policy(model, policy)
+    processor = AUDProcessor.from_pretrained(source)
+    batch = processor.prepare_training_batch(
+        [np.random.default_rng(1).normal(0, 0.01, 6400)], ["hello"], ["en"]
+    )
+    counts = Counter()
+    handles = []
+    for kind, layers in (
+        ("encoder", model.aud_encoder.layers),
+        ("decoder", model.aud_decoder.model.layers),
+    ):
+        for index, layer in enumerate(layers):
+
+            def count(module, inputs, key=(kind, index)):
+                counts[key] += 1
+
+            handles.append(layer.register_forward_pre_hook(count))
+    model(**batch, loss_only=True).loss.backward()
+    reference(**batch, loss_only=True).loss.backward()
+    assert counts == {("encoder", 0): 2, ("encoder", 1): 1, ("decoder", 0): 2, ("decoder", 1): 1}
+    for handle in handles:
+        handle.remove()
+    for (name, actual), (_, expected) in zip(
+        model.named_parameters(), reference.named_parameters(), strict=True
+    ):
+        if actual.requires_grad:
+            torch.testing.assert_close(actual.grad, expected.grad, atol=2e-6, rtol=3e-4, msg=name)

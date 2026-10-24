@@ -88,6 +88,7 @@ class AUDProcessor:
 
     def __init__(self, config, tokenizer, feature_extractor, chat_template=None):
         self.config, self.tokenizer, self.feature_extractor = config, tokenizer, feature_extractor
+        self.ctc_tokenizer = None
         self.audio_token_id = config.audio_token_id
         if config.audio_type_version:
             from .audio_types import TOKENS
@@ -149,14 +150,32 @@ class AUDProcessor:
         else:
             frontend = AUDRawFeatureExtractor(data["frame_samples"], config.max_audio_seconds)
         template = directory / "chat_template.jinja"
-        return cls(
+        result = cls(
             config, tokenizer, frontend, template.read_text() if template.is_file() else None
         )
+        if config.ctc_version:
+            import hashlib
+
+            from tokenizers import Tokenizer
+
+            result.ctc_tokenizer = Tokenizer.from_file(str(directory / "ctc_tokenizer.json"))
+            digest = hashlib.sha256(result.ctc_tokenizer.to_str().encode()).hexdigest()
+            if (
+                digest != config.ctc_tokenizer_sha256
+                or result.ctc_tokenizer.get_vocab_size() != config.ctc_vocab_size
+                or result.ctc_tokenizer.token_to_id("<ctc_blank>") != 0
+            ):
+                raise ValueError("CTC tokenizer/config mismatch")
+        return result
 
     def save_pretrained(self, directory, **kwargs):
         directory = Path(directory)
         directory.mkdir(parents=True, exist_ok=True)
         self.tokenizer.save_pretrained(directory)
+        if self.config.ctc_version:
+            if self.ctc_tokenizer is None:
+                raise ValueError("CTC tokenizer missing")
+            self.ctc_tokenizer.save(str(directory / "ctc_tokenizer.json"))
         self.feature_extractor.save_pretrained(directory)
         if self.chat_template:
             (directory / "chat_template.jinja").write_text(self.chat_template)

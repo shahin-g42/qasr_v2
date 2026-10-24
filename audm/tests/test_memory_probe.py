@@ -67,3 +67,53 @@ def test_probe_has_max_shapes_and_keeps_training_contract(tmp_path, tokenizer, m
     assert state["global_step"] == 2
     with pytest.raises(FileExistsError):
         prepare(recipe, source, tmp_path / "probe")
+
+
+def test_ctc_probe_preserves_efficiency_and_guarantees_eligible_quota(tmp_path, tokenizer):
+    from test_ctc import small_tokenizer
+
+    from audm.ctc import export
+
+    source = artifact(tmp_path, tokenizer, "audflash")
+    tok = tmp_path / "tok"
+    tok.mkdir()
+    small_tokenizer().save(str(tok / "tokenizer.json"))
+    export(source, tok, tmp_path / "ctc")
+    path = tmp_path / "recipe.yaml"
+    path.write_text(
+        yaml.safe_dump(
+            dict(
+                data_recipe=str(data_recipe(tmp_path)),
+                stage="full",
+                efficiency={
+                    "loss_chunk_size": 512,
+                    "duration_bucketing": True,
+                    "decoder_checkpoint_every": 2,
+                },
+                training=dict(
+                    per_device_train_batch_size=2,
+                    gradient_accumulation_steps=2,
+                    expected_world_size=1,
+                    bf16=False,
+                    tf32=False,
+                    deepspeed=None,
+                    ctc_loss_weight=0.1,
+                    max_duration_seconds=1,
+                ),
+            )
+        )
+    )
+    report = prepare(path, tmp_path / "ctc", tmp_path / "probe")
+    cfg, _, _ = load_recipe(report["config"])
+    assert cfg.aud_efficiency["loss_chunk_size"] == 512
+    assert cfg.aud_efficiency["decoder_checkpoint_every"] == 2
+    assert cfg.ctc_loss_weight == 0.1 and cfg.aud_ctc["warmup_steps"] == 0
+    assert cfg.language_batch_counts == {"ar": 1, "en": 1}
+    assert report["feasible_ctc_tokens"] > 0
+    run(report["config"])
+    rows = [
+        json.loads(line)
+        for line in (tmp_path / "probe/run/performance.jsonl").read_text().splitlines()
+    ]
+    assert len(rows) == 2
+    assert all(row["ctc"]["eligible"] == 2 for row in rows)

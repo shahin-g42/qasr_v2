@@ -12,6 +12,7 @@ from pathlib import Path
 
 import numpy as np
 import soundfile as sf
+import torch
 import yaml
 
 from .prepare_non_speech import new_directory
@@ -42,6 +43,22 @@ def prepare(config, model, output, steps=2):
     token_count = len(processor.tokenizer.encode(text, add_special_tokens=False))
     if token_count < max(1, limit - 8):
         raise ValueError("Could not construct a near-limit transcript with this tokenizer")
+    ctc_text = text
+    ctc_count = None
+    if processor.config.ctc_version:
+        # Include a feasible CTC path as well as near-limit AR targets in every batch.
+        frames = processor.audio_token_lengths(torch.ones(1, int(seconds * 100), dtype=torch.bool))[
+            0
+        ].item()
+        while True:
+            ctc_ids = processor.ctc_tokenizer.encode(ctc_text, add_special_tokens=False).ids
+            required = len(ctc_ids) + sum(a == b for a, b in zip(ctc_ids, ctc_ids[1:]))
+            if ctc_ids and required <= frames:
+                ctc_count = len(ctc_ids)
+                break
+            ctc_text = ctc_text[: len(ctc_text) // 2].strip()
+            if not ctc_text:
+                raise ValueError("Could not construct a feasible CTC memory probe target")
     disabled_augmentation = {
         name: {"enabled": False}
         for name in ("speed_perturb", "noise_injection", "codec_augment", "spec_augment")
@@ -56,9 +73,24 @@ def prepare(config, model, output, steps=2):
         )
         manifest = stage / "synthetic.jsonl"
         row = dict(audio_filepath=str(destination / wav.name), duration=seconds, text=text)
-        manifest.write_text((json.dumps(row) + "\n") * (world * micro * accumulation * steps))
+        updates = world * accumulation * steps
+        manifests = {"en": [str(destination / manifest.name)]}
+        quotas = {"en": micro * accumulation}
+        if ctc_count is None:
+            manifest.write_text((json.dumps(row) + "\n") * (updates * micro))
+        else:
+            # Separate sampler quota guarantees one feasible CTC example in every
+            # microbatch despite shuffling. Language prefixes here are synthetic.
+            eligible_manifest = stage / "synthetic-ctc.jsonl"
+            eligible_manifest.write_text((json.dumps(dict(row, text=ctc_text)) + "\n") * updates)
+            manifests = {"ar": [str(destination / eligible_manifest.name)]}
+            quotas = {"ar": 1}
+            if micro > 1:
+                manifest.write_text((json.dumps(row) + "\n") * (updates * (micro - 1)))
+                manifests["en"] = [str(destination / manifest.name)]
+                quotas["en"] = micro - 1
         data = dict(
-            train_manifest={"en": [str(destination / manifest.name)]},
+            train_manifest=manifests,
             eval_manifest=None,
             language="en",
             min_duration_seconds=0.1,
@@ -67,7 +99,7 @@ def prepare(config, model, output, steps=2):
             truncate_long_transcripts=False,
             balanced_sampling=True,
             sampling_strategy="weighted_stratified",
-            language_batch_counts={"en": micro * accumulation},
+            language_batch_counts=quotas,
             augmentation=disabled_augmentation,
             code_switch_index=None,
             code_switch_probability=0.0,
@@ -110,6 +142,8 @@ def prepare(config, model, output, steps=2):
                     data_recipe="data.yaml",
                     stage=recipe["stage"],
                     training=training,
+                    efficiency=copy.deepcopy(recipe.get("efficiency", {})),
+                    ctc={"warmup_steps": 0},
                 )
             )
         )
@@ -120,7 +154,14 @@ def prepare(config, model, output, steps=2):
             output=str(destination / "run"),
             stage=recipe["stage"],
             audio_seconds=seconds,
-            transcript_tokens=token_count,
+            transcript_tokens=(
+                len(processor.tokenizer.encode(ctc_text, add_special_tokens=False))
+                if ctc_count is not None and micro == 1
+                else token_count
+            ),
+            feasible_ctc_tokens=ctc_count,
+            guaranteed_ctc_examples_per_microbatch=1 if ctc_count is not None else 0,
+            ctc_vocab_size=processor.config.ctc_vocab_size,
             microbatch=micro,
             accumulation=accumulation,
             ranks=world,

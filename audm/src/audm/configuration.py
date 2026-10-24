@@ -57,6 +57,8 @@ class AUDConfig(PreTrainedConfig):
         flash_encoder="moonshine",
         flash_audio_stride=1,
         ctc_vocab_size=0,
+        ctc_version=0,
+        ctc_tokenizer_sha256=None,
         prompt_prefix=None,
         prompt_suffix=None,
         max_audio_seconds=35.0,
@@ -102,6 +104,16 @@ class AUDConfig(PreTrainedConfig):
         self.projector_pool_stride = int(projector_pool_stride)
         self.adapter_width = int(adapter_width)
         self.ctc_vocab_size = int(ctc_vocab_size)
+        self.ctc_version = ctc_version
+        self.ctc_tokenizer_sha256 = ctc_tokenizer_sha256
+        if ctc_version not in (0, 1):
+            raise ValueError("Unsupported CTC version")
+        if ctc_version and (
+            (variant, flash_encoder, flash_audio_stride) != ("audflash", "gemma4", 1)
+            or ctc_vocab_size < 2
+            or not ctc_tokenizer_sha256
+        ):
+            raise ValueError("CTC v1 requires stride-one Gemma, a vocabulary and tokenizer digest")
         self.prompt_prefix = list(prompt_prefix or [])
         self.prompt_suffix = list(prompt_suffix or [])
         self.max_audio_seconds = float(max_audio_seconds)

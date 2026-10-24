@@ -50,3 +50,12 @@ def toy_tokenizer():
 @pytest.fixture
 def tokenizer():
     return toy_tokenizer()
+
+
+@pytest.fixture(autouse=True)
+def cpu_backend_on_non_cuda_hosts(monkeypatch):
+    # These are CPU/CUDA contract tests. Transformers can select MPS separately
+    # from Accelerate's CPU flag, producing mixed devices on macOS; CTC also
+    # lacks an MPS kernel. Keep this test-only backend choice explicit.
+    if not torch.cuda.is_available():
+        monkeypatch.setattr(torch.backends.mps, "is_available", lambda: False)

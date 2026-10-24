@@ -214,3 +214,35 @@ def test_audflash_rejects_incompatible_export(tmp_path, encoder, stride):
     )
     assert result.returncode != 0
     assert "fresh Gemma4 AudFlash stride-1 export" in result.stderr
+
+
+def test_next_run_direct_launcher_uses_fresh_stage_sources(tmp_path):
+    import json
+
+    capture = tmp_path / "args.json"
+    python = tmp_path / "python"
+    python.write_text(
+        "#!/usr/bin/env python3\nimport json, os, sys\nwith open(os.environ['CAPTURE'], 'w') as f: json.dump({'args':sys.argv[1:], 'slurm':os.environ['AUD_USE_SLURM']}, f)\n"
+    )
+    python.chmod(0o755)
+    env = dict(
+        os.environ,
+        AUD_PYTHON=str(python),
+        CAPTURE=str(capture),
+        AUD_NEXT_ROOT=str(tmp_path / "new run"),
+        AUD_USE_SLURM="1",
+        SLURM_JOB_ID="999",
+        AUD_NNODES="12",
+        AUD_MASTER_ADDR="127.0.0.1",
+    )
+    script = SCRIPT.with_name("audflash_next.sh")
+    for stage, source in (("adaptation", "export"), ("full", "adaptation")):
+        result = subprocess.run(
+            ["bash", str(script), stage], env=env, text=True, capture_output=True
+        )
+        assert result.returncode == 0, result.stderr
+        record = json.loads(capture.read_text())
+        args = record["args"]
+        assert record["slurm"] == "0" and "--nnodes=1" in args and "--nproc-per-node=8" in args
+        assert args[args.index("--model") + 1] == str(tmp_path / "new run" / source)
+        assert "--resume" not in args

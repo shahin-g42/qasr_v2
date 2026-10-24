@@ -144,7 +144,7 @@ class JsonlSpeechDataset:
         self._file: BinaryIO | None = None
         self._file_pid: int | None = None
         self.stats = self._build_index()
-        if not self._offsets:
+        if not len(self._offsets):
             raise ValueError(
                 f"No usable records in {self.manifest_path} after applying duration range "
                 f"[{self.min_duration_seconds}, {self.max_duration_seconds}] seconds"

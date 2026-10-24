@@ -25,9 +25,21 @@ from audm.audio_types import upgrade
     reason="Set RUN_AUD_DDP_TESTS=1 for CPU/Gloo integration",
 )
 @pytest.mark.parametrize("stage", ["decoder", "full"])
-def test_two_ranks_persistent_workers_save_resume_and_eval(tmp_path, tokenizer, stage):
+@pytest.mark.parametrize("ctc", [False, True])
+def test_two_ranks_persistent_workers_save_resume_and_eval(tmp_path, tokenizer, stage, ctc):
     source = artifact(tmp_path, tokenizer, "audflash")
     upgrade(source, tmp_path / "typed")
+    model_path = tmp_path / "typed"
+    if ctc:
+        from test_ctc import small_tokenizer
+
+        from audm.ctc import export
+
+        token_path = tmp_path / "ctc-tokenizer"
+        token_path.mkdir()
+        small_tokenizer().save(str(token_path / "tokenizer.json"))
+        export(model_path, token_path, tmp_path / "ctc")
+        model_path = tmp_path / "ctc"
     negatives = []
     for kind in ("music", "noise", "silence"):
         # Synthetic waves exercise plumbing, not semantic classification quality.
@@ -48,6 +60,12 @@ def test_two_ranks_persistent_workers_save_resume_and_eval(tmp_path, tokenizer, 
             dict(
                 data_recipe=str(data_recipe(tmp_path)),
                 stage=stage,
+                ctc={"warmup_steps": 0},
+                efficiency={
+                    "distributed_wer": True,
+                    "duration_bucketing": True,
+                    "index_cache": str(tmp_path / "cache"),
+                },
                 robustness=dict(
                     non_speech=dict(probability=0.5, manifests=[str(manifest)]),
                     augmentation=dict(
@@ -78,6 +96,7 @@ def test_two_ranks_persistent_workers_save_resume_and_eval(tmp_path, tokenizer, 
                     deepspeed=None,
                     gradient_checkpointing=True,
                     label_smoothing=0.1,
+                    ctc_loss_weight=0.1 if ctc else 0.0,
                     augmentation=dict(spec_augment=dict(enabled=True, p=1)),
                 ),
             )
@@ -119,7 +138,7 @@ def test_two_ranks_persistent_workers_save_resume_and_eval(tmp_path, tokenizer, 
         "--config",
         str(recipe),
         "--model",
-        str(tmp_path / "typed"),
+        str(model_path),
         "--output",
         str(tmp_path / "run"),
     ]

@@ -34,7 +34,7 @@ DATA_KEYS = {
 def load_recipe(path, model=None, output=None, smoke=False, resume=None):
     path = Path(path).resolve()
     recipe = yaml.safe_load(path.read_text())
-    allowed = {"data_recipe", "stage", "training", "robustness", "evaluation"}
+    allowed = {"data_recipe", "stage", "training", "robustness", "evaluation", "efficiency", "ctc"}
     if not isinstance(recipe, dict) or set(recipe) - allowed:
         raise ValueError(f"AUD recipe accepts only {sorted(allowed)}")
     data_path = (path.parent / recipe["data_recipe"]).resolve()
@@ -84,10 +84,15 @@ def load_recipe(path, model=None, output=None, smoke=False, resume=None):
     if resume:
         values["resume_from_checkpoint"] = resume
     config = TrainConfig(**values)
-    if config.ctc_loss_weight != 0:
-        raise ValueError(
-            "AUD preserves old CTC weights but currently trains the causal ASR loss only"
-        )
+    ctc = recipe.get("ctc", {})
+    if not isinstance(ctc, dict) or set(ctc) - {"warmup_steps"}:
+        raise ValueError("ctc accepts only warmup_steps")
+    warmup = ctc.get("warmup_steps", 100)
+    if type(warmup) is not int or warmup < 0:
+        raise ValueError("ctc.warmup_steps must be a nonnegative integer")
+    config.aud_ctc = dict(warmup_steps=warmup)
+    if not 0 <= config.ctc_loss_weight <= 1:
+        raise ValueError("ctc_loss_weight must be in [0, 1]")
     if config.fp16 or config.torch_compile:
         raise ValueError("AUD training currently supports bf16/fp32 without torch_compile")
     # QASR validates quotas per batch; AUD applies them across an accumulation window.
@@ -119,6 +124,8 @@ def load_recipe(path, model=None, output=None, smoke=False, resume=None):
         "quota_window": virtual_batch,
         "resolved": config.to_dict(),
     }
+    if config.ctc_loss_weight:
+        receipt["ctc"] = config.aud_ctc
     robustness = copy.deepcopy(recipe.get("robustness", {}))
     if robustness is None:
         robustness = {}
@@ -169,4 +176,9 @@ def load_recipe(path, model=None, output=None, smoke=False, resume=None):
                 asset.read_bytes()
             ).hexdigest()
     config.aud_robustness = robustness
+    from .efficiency import resolve_efficiency
+
+    config.aud_efficiency = resolve_efficiency(recipe.get("efficiency"), path.parent)
+    if recipe.get("efficiency"):
+        receipt["efficiency"] = config.aud_efficiency
     return config, stage, receipt

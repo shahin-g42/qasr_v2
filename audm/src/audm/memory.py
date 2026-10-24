@@ -38,6 +38,10 @@ def write_memory_report(args, output, status, step):
 class CUDAMemoryCallback(TrainerCallback):
     def on_train_begin(self, args, state, control, **kwargs):
         model = kwargs.get("model")
+        if args.gradient_checkpointing and hasattr(model, "aud_efficiency"):
+            from .efficiency import apply_checkpoint_policy
+
+            apply_checkpoint_policy(model, model.aud_efficiency)
         if hasattr(model, "architecture_report"):
             logging.getLogger("audm").info(
                 "AUD architecture: %s", json.dumps(model.architecture_report())
@@ -48,8 +52,12 @@ class CUDAMemoryCallback(TrainerCallback):
                 and model.config.flash_encoder == "gemma4"
             ):
                 if any(
-                    not getattr(layer, "gradient_checkpointing", False)
-                    for layer in model.aud_encoder.layers
+                    getattr(layer, "gradient_checkpointing", False)
+                    != bool(every and i % every == 0)
+                    for i, layer in enumerate(model.aud_encoder.layers)
+                    for every in [
+                        getattr(model, "aud_efficiency", {}).get("encoder_checkpoint_every", 1)
+                    ]
                 ):
                     raise RuntimeError("Gemma audio-layer checkpointing is not enabled")
         if args.device.type == "cuda":

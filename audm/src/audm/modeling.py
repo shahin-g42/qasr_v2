@@ -183,7 +183,13 @@ class AUDForConditionalGeneration(PreTrainedModel, GenerationMixin):
                 residual=config.variant == "audturbo",
             )
         self.aud_ctc_head = (
-            nn.Linear(config.audio_config.hidden_size, config.ctc_vocab_size, bias=False)
+            nn.Linear(
+                config.audio_config.output_proj_dims
+                if config.ctc_version
+                else config.audio_config.hidden_size,
+                config.ctc_vocab_size,
+                bias=False,
+            )
             if config.ctc_vocab_size
             else None
         )
@@ -229,7 +235,14 @@ class AUDForConditionalGeneration(PreTrainedModel, GenerationMixin):
                     bool(getattr(b, "gradient_checkpointing", False)) for b in blocks
                 ),
             )
+        if self.aud_ctc_head is not None:
+            parameters = list(self.aud_ctc_head.parameters())
+            components["aud_ctc_head"] = dict(
+                parameters=sum(p.numel() for p in parameters),
+                trainable=sum(p.numel() for p in parameters if p.requires_grad),
+            )
         return dict(
+            ctc_version=self.config.ctc_version,
             components=components,
             tied_embeddings=self.get_input_embeddings().weight
             is self.get_output_embeddings().weight,
@@ -253,7 +266,7 @@ class AUDForConditionalGeneration(PreTrainedModel, GenerationMixin):
         if self.aud_pool is not None:
             self.aud_pool.requires_grad_(True)
         if self.aud_ctc_head is not None:
-            self.aud_ctc_head.requires_grad_(False)
+            self.aud_ctc_head.requires_grad_(bool(self.config.ctc_version))
         self.config.use_cache = False
         self.aud_decoder.config.use_cache = False
 
@@ -269,7 +282,7 @@ class AUDForConditionalGeneration(PreTrainedModel, GenerationMixin):
                 module.eval()
         return self
 
-    def encode_audio(self, input_features, input_features_mask):
+    def encode_audio(self, input_features, input_features_mask, return_encoder=False):
         if input_features_mask is None or input_features_mask.ndim != 2:
             raise ValueError("AUD requires a 2D mask with valid audio lengths")
         mask = input_features_mask.bool()
@@ -301,7 +314,8 @@ class AUDForConditionalGeneration(PreTrainedModel, GenerationMixin):
                 output = self.aud_encoder(input_features=features, attention_mask=mask)
             hidden, mask = output.last_hidden_state, output.attention_mask.bool()
             if self.config.variant == "audflash" and self.config.flash_encoder == "gemma4":
-                # Preserve GQASR: project first, then average valid adjacent frames.
+                encoder_hidden, encoder_mask = hidden, mask
+                # Preserve existing checkpoint semantics; new CTC recipes require stride one.
                 hidden = self.aud_projector(hidden).masked_fill(~mask[..., None], 0)
                 if self.config.flash_audio_stride == 2:
                     padding = hidden.shape[1] % 2
@@ -311,7 +325,8 @@ class AUDForConditionalGeneration(PreTrainedModel, GenerationMixin):
                     hidden = hidden.reshape(hidden.shape[0], -1, 2, hidden.shape[-1]).sum(2)
                     hidden = hidden / count.clamp_min(1)[..., None]
                     mask = count > 0
-                return hidden[mask], mask.sum(-1)
+                result = (hidden[mask], mask.sum(-1))
+                return (*result, encoder_hidden, encoder_mask) if return_encoder else result
             if self.aud_pool is not None:
                 hidden, mask = self.aud_pool(hidden, mask.sum(-1))
             lengths = mask.sum(-1)
@@ -333,14 +348,24 @@ class AUDForConditionalGeneration(PreTrainedModel, GenerationMixin):
         loss_only=False,
         loss_chunk_size=128,
         loss_smoothing=0.0,
+        loss_backend="chunked",
+        category_metrics=False,
+        ctc_targets=None,
+        ctc_input_lengths=None,
+        ctc_num_items=None,
+        ctc_weight=0.0,
         **kwargs,
     ):
+        use_ctc = self.config.ctc_version and ctc_targets is not None and loss_only
+        if use_ctc and input_features is None:
+            raise ValueError("CTC requires encoder features")
         if inputs_embeds is None:
             inputs_embeds = self.get_input_embeddings()(input_ids)
         if input_features is not None:
             if input_ids is None:
                 raise ValueError("input_ids are required to locate audio placeholders")
-            audio, lengths = self.encode_audio(input_features, input_features_mask)
+            encoded = self.encode_audio(input_features, input_features_mask, return_encoder=use_ctc)
+            audio, lengths = encoded[:2]
             placeholders = input_ids.eq(self.config.audio_token_id)
             counts = placeholders.sum(-1)
             if counts.shape != lengths.shape or not torch.equal(counts.to(lengths.device), lengths):
@@ -372,8 +397,36 @@ class AUDForConditionalGeneration(PreTrainedModel, GenerationMixin):
                 chunk_size=loss_chunk_size,
                 epsilon=loss_smoothing,
                 num_items_in_batch=denominator,
+                backend=loss_backend,
             )
-            return CausalLMOutputWithPast(loss=loss)
+            if use_ctc:
+                from .ctc import auxiliary_loss
+
+                encoder_hidden, encoder_mask = encoded[2:]
+                if ctc_input_lengths is not None and not torch.equal(
+                    encoder_mask.sum(-1), ctc_input_lengths
+                ):
+                    raise ValueError("CTC encoder/collator lengths disagree")
+                ctc_loss, stats = auxiliary_loss(
+                    encoder_hidden, self.aud_ctc_head, encoder_mask, ctc_targets, ctc_num_items
+                )
+                loss = loss + ctc_weight * ctc_loss
+                if self.training:
+                    previous = getattr(self, "aud_ctc_totals", None)
+                    self.aud_ctc_totals = stats if previous is None else previous + stats
+            result = CausalLMOutputWithPast(loss=loss)
+            if category_metrics and self.config.audio_type_version:
+                from .losses import audio_category_metrics
+
+                metrics = audio_category_metrics(
+                    output.last_hidden_state,
+                    self.aud_decoder.lm_head,
+                    labels,
+                    self.config.audio_type_token_ids,
+                )
+                previous = getattr(self, "aud_category_totals", None)
+                self.aud_category_totals = metrics if previous is None else previous + metrics
+            return result
         return self.aud_decoder(
             inputs_embeds=inputs_embeds,
             attention_mask=attention_mask,

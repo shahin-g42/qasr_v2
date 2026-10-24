@@ -1,7 +1,8 @@
 # AudFlash memory and training audit
 
-The single-node default is now **10 × 8 × 8 = 640** sampled slots per update,
-in the same adapter, full, audio-type decoder and robust-full YAMLs. Workers
+The single-node full-training default is **40 × 2 × 8 = 640** sampled slots per
+update in the same full and robust-full YAMLs. Adapter and audio-type decoder
+warm-up retain **10 × 8 × 8 = 640**. Full loss and WER/CER evaluation use batch 40. Workers
 remain four per GPU, transcripts remain limited to 512 tokens, full training
 remains three epochs and full evaluation/saving remains every 3,700 updates.
 The model architecture, Gemma audio stride of one and speech dataset paths
@@ -44,7 +45,8 @@ audio-prompt/padding projections.
 |---|---:|---|
 | 20 × 4 × 8 | 640 | Previous setting; larger activation peak |
 | 10 × 4 × 8 | 320 | Smaller update batch |
-| **10 × 8 × 8** | **640** | Default; preserves the earlier update size with smaller microbatches |
+| 10 × 8 × 8 | 640 | Adapter/decoder default; smaller activation peak |
+| **40 × 2 × 8** | **640** | Full-training default; benchmark peak memory and throughput on the cluster |
 | 10 × 1 × 8 | 80 | Violates the current per-rank 20-example language quota contract |
 
 Accumulation normally runs separate forward/backward passes, keeping gradients
@@ -156,30 +158,16 @@ uses its native local relative-position computation with FP32 intermediates;
 
 ## Continuing an old run
 
-Changing microbatch 20 to 10 changes the resume contract. Existing checkpoints
-remain usable as weights, but `--resume auto` rejects the changed recipe. Keep
-the original run and start a weights-only continuation with a new output. The
-optimizer, scheduler and nominal three-epoch budget restart; the old epoch
-counter is not continued. Set the completed checkpoint path before running:
+Microbatch/accumulation regrouping is resume-compatible when examples per rank
+per optimizer update remain unchanged, the world size stays fixed, and all other
+training settings and data snapshots match. For example, 10 × 8 and 40 × 2 both
+present 80 examples per rank per update. Floating-point reductions and worker
+augmentation draws need not match bit-for-bit.
 
-```bash
-export AUD_CONTINUE_FROM=/REPLACE/WITH/completed/checkpoint-3700
-export AUD_CONTINUE_OUTPUT="$PWD/output/audflash-full-mb10-v1"
-
-python -m audm preflight --config audm/configs/audflash_full_1node.yaml \
-  --model "$AUD_CONTINUE_FROM" --output "$AUD_CONTINUE_OUTPUT" --scan
-
-AUD_COMMAND=train bash audm/scripts/train_distributed.sh \
-  --config audm/configs/audflash_full_1node.yaml \
-  --model "$AUD_CONTINUE_FROM" --output "$AUD_CONTINUE_OUTPUT" --smoke
-
-AUD_COMMAND=train bash audm/scripts/train_distributed.sh \
-  --config audm/configs/audflash_full_1node.yaml \
-  --model "$AUD_CONTINUE_FROM" --output "$AUD_CONTINUE_OUTPUT"
-```
-
-For the new typed robustness experiment use [ROBUST_CLUSTER.md](ROBUST_CLUSTER.md),
-preserving its typed export → decoder warm-up → full-training sequence.
+For the current typed run, use the receipt-derived batching recipe and resume
+commands in [ROBUST_CLUSTER.md](ROBUST_CLUSTER.md). This retains optimizer and
+scheduler state instead of restarting the three-epoch budget. Changed augmentation
+policies still require a separate weights-only continuation.
 
 ## Local validation
 

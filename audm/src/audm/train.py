@@ -9,13 +9,13 @@ from pathlib import Path
 import torch
 from qasr.augmentation import build_augmenter
 from qasr.data import JsonlSpeechDataset, ResilientAudioDataset
-from qasr.eval_callback import WEREvalCallback
 from qasr.losses import make_smoothed_causal_lm_loss
 from qasr.train import _build_code_switcher, _sample_subset, _StatsSubset, _training_arguments
 from transformers import set_seed
 from transformers.trainer_utils import get_last_checkpoint
 
 from .collator import AUDDataCollator
+from .eval_callback import AUDWEREvalCallback
 from .export import write_json
 from .memory import CUDAMemoryCallback, write_memory_report
 from .modeling import AUDForConditionalGeneration
@@ -65,6 +65,10 @@ def resume_contract(receipt):
         value["resolved"].pop(key, None)
     for key in ("eval_manifest", "per_device_eval_batch_size"):
         value["resolved"].pop(key, None)
+    if "per_device_train_batch_size" in value["resolved"]:
+        value["resolved"]["examples_per_rank_update"] = value["resolved"].pop(
+            "per_device_train_batch_size"
+        ) * value["resolved"].pop("gradient_accumulation_steps")
     # v5 added optional effects but left v4's waveform/SpecAugment behavior
     # unchanged. Compare those legacy policies across versions only when none
     # of the new effect keys is present; older numerical policies stay blocked.
@@ -275,7 +279,8 @@ def run(recipe, model=None, output=None, smoke=False, resume=None):
     trainer.add_callback(CUDAMemoryCallback())
     trainer.aud_source = str(Path(checkpoint or config.model_name_or_path).resolve())
     if eval_parts and config.eval_wer_samples_per_language:
-        callback = WEREvalCallback(
+        callback = AUDWEREvalCallback(
+            batch_size=config.per_device_eval_batch_size,
             processor=processor,
             eval_manifest_specs=config.eval_manifest_specs,
             samples_per_language=min(2, config.eval_wer_samples_per_language)
@@ -301,6 +306,10 @@ def run(recipe, model=None, output=None, smoke=False, resume=None):
     )
     LOGGER.info(
         "AUD loss uses supervised-token chunks of 128; label_smoothing=%s", config.label_smoothing
+    )
+    LOGGER.info(
+        "AUD evaluation batch_size=%d for both loss and WER/CER generation",
+        config.per_device_eval_batch_size,
     )
     try:
         result = trainer.train(resume_from_checkpoint=checkpoint)

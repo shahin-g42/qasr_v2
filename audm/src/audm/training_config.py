@@ -99,8 +99,10 @@ def load_recipe(path, model=None, output=None, smoke=False, resume=None):
     microbatch = config.per_device_train_batch_size
     if microbatch < 1 or config.gradient_accumulation_steps < 1:
         raise ValueError("Microbatch size and gradient accumulation must be positive")
-    if virtual_batch % microbatch:
-        raise ValueError("Microbatch size must divide the language quota window")
+    if virtual_batch % microbatch and microbatch % virtual_batch:
+        raise ValueError(
+            "Microbatch size must divide or be a multiple of the language quota window"
+        )
     if (microbatch * config.gradient_accumulation_steps) % virtual_batch:
         raise ValueError("An optimizer update must contain whole language quota windows")
     validation = copy.deepcopy(config)

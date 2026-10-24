@@ -9,8 +9,8 @@ warm-up → full training**. Do not repeat adapter-only training: its frozen dec
 cannot learn the new tokens. Choose your best completed full-training checkpoint,
 or the completed adapter checkpoint if that is what you have.
 
-Both training stages use **10 × 8 × 8 = 640**, four workers/GPU, BF16, ZeRO-2 and
-checkpointed audio/text layers. Decoder warm-up is 2,000 updates; full training is
+Decoder warm-up uses **10 × 8 × 8 = 640**; full training uses **40 × 2 × 8 = 640**.
+Both use four workers/GPU, BF16, ZeRO-2 and checkpointed audio/text layers. Decoder warm-up is 2,000 updates; full training is
 three weighted coverage epochs, with evaluation/checkpoints every 3,700 updates.
 SpecAugment stays enabled with GQASR-style per-frequency mean fill for Gemma;
 code-switching stays disabled; `RUN_ID=cs_v1_ml_v2`.
@@ -167,13 +167,15 @@ for name, stage in [('AUD_TYPED_DECODER_CONFIG', 'decoder'), ('AUD_TYPED_FULL_CO
         output=os.environ['AUD_TYPED_ROOT'] + '/' + stage)
     assert actual == stage
     assert (cfg.per_device_train_batch_size, cfg.gradient_accumulation_steps,
-            cfg.expected_world_size, cfg.dataloader_num_workers) == (10, 8, 8, 4)
+            cfg.expected_world_size, cfg.dataloader_num_workers) == (
+                (40, 2, 8, 4) if stage == "full" else (10, 8, 8, 4))
     assert cfg.code_switch_probability == 0
     assert cfg.augmentation['spec_augment']['enabled']
     assert cfg.aud_robustness['non_speech']['probability'] == 0.03
     if stage == 'full':
         assert cfg.num_train_epochs == 3 and cfg.max_steps == -1
         assert cfg.eval_steps == cfg.save_steps == 3700
+        assert cfg.per_device_eval_batch_size == 40
     else:
         assert cfg.max_steps == 2000
     print(stage, 'SpecAugment:', cfg.augmentation['spec_augment'])
@@ -317,19 +319,21 @@ AUD_COMMAND=train bash audm/scripts/train_distributed.sh \
 Resume requires a complete Trainer checkpoint with optimizer state. If the newest
 checkpoint is incomplete, specify an earlier completed checkpoint explicitly.
 Changed training recipes/manifests/robustness policies require weights-only
-continuation into a new output. Evaluation batch size changes and removal of
-evaluation languages can retain optimizer/scheduler state. All retained manifest
-snapshots must still match. The current robustness receipt is version 5; a v4
+continuation into a new output. Evaluation batch size changes, removal of evaluation
+languages, and microbatch/accumulation changes that preserve examples per rank per
+update can retain optimizer/scheduler state. All retained manifest snapshots must
+still match. The current robustness receipt is version 5; a v4
 policy using only unchanged legacy effects remains resume-compatible.
 Persistent-worker RNG/prefetch state is not restored bit-for-bit.
 
-### Change full evaluation to batch 32 without Chinese
+### Use 40 × 2 × 8 training and batch-40 evaluation
 
-AudFlash full recipes now use evaluation batch size 32 and exclude `zh` from loss,
+AudFlash full recipes now use evaluation batch size 40 and exclude `zh` from loss,
 WER/CER, and prediction examples. Chinese training and its sampler quota remain
 enabled. Evaluation and checkpoint saving remain every 3,700 optimizer updates.
-The WER callback still generates one utterance at a time; evaluation batch size
-controls the loss pass only.
+The WER/CER callback also generates batches of up to 40 utterances (with a smaller
+last batch); it retains the same fixed samples and metric definitions. The one-node
+full recipes use microbatch 40 and accumulation 2: the update batch remains 640.
 
 For an existing run, derive a recipe from its saved receipt so newer augmentation
 defaults do not accidentally change the training experiment. After the old job
@@ -338,17 +342,17 @@ has stopped and the checkout is updated, use the existing environment and paths:
 ```bash
 python -m audm.evaluation_recipe \
   --run "$AUD_TYPED_ROOT/full" \
-  --output "$AUD_TYPED_ROOT/full-eval32-nozh.yaml" \
-  --batch-size 32 --exclude-language zh
+  --output "$AUD_TYPED_ROOT/full-b40-eval40-nozh.yaml" \
+  --batch-size 40 --exclude-language zh --train-microbatch 40 --accumulation 2
 
-export AUD_TYPED_FULL_CONFIG="$AUD_TYPED_ROOT/full-eval32-nozh.yaml"
+export AUD_TYPED_FULL_CONFIG="$AUD_TYPED_ROOT/full-b40-eval40-nozh.yaml"
 export AUD_NNODES=1 AUD_GPUS_PER_NODE=8 AUD_NODE_RANK=0
 export AUD_MASTER_ADDR="$(hostname -s)"
 set -o pipefail
 AUD_COMMAND=train bash audm/scripts/train_distributed.sh \
   --config "$AUD_TYPED_FULL_CONFIG" --model "$AUD_TYPED_ROOT/decoder" \
   --output "$AUD_TYPED_ROOT/full" --resume auto \
-  2>&1 | tee "$AUD_TYPED_ROOT/logs/train-full-eval32-nozh.log"
+  2>&1 | tee "$AUD_TYPED_ROOT/logs/train-full-b40-eval40-nozh.log"
 ```
 
 The recipe helper refuses to overwrite an existing file. Reuse the generated YAML
@@ -356,7 +360,10 @@ on later resumes. `--resume auto` restores the latest saved complete checkpoint,
 not unsaved updates or the decoder's initial weights. Checkpoint integrity and the
 original training contract are still enforced. Do not launch a second job while
 the old eight-rank job is alive. Benchmark the first loss evaluation on the actual
-cluster; the CPU regression tests do not establish H100 peak memory at batch 32.
+cluster; the CPU regression tests do not establish H100 peak memory at batch 40.
+Use the existing maximum-shape memory probe with this generated recipe before
+production. Changing microbatch grouping preserves the update batch and scheduler,
+but floating-point reductions and worker augmentation draws need not match bit-for-bit.
 
 ## Updating an existing experiment for silence padding
 

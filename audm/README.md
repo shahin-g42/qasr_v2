@@ -221,8 +221,8 @@ The production launch shape is **64 ranks** with DeepSpeed **ZeRO-2**, one
 accumulation × 64 GPUs = 2,560 samples/update**, with two 20-example language quota windows per GPU/update.
 Each quota window contains 10 Arabic, 6 English, 2 Hindi, 1 Malayalam and
 1 Chinese sample. Two windows give 20/12/4/2/2 samples per GPU/update.
-Microbatch must divide the quota window, and each optimizer update must contain
-whole windows. For less activation memory, use microbatch 1 with accumulation
+Microbatch must divide the quota window or contain whole multiples of it, and
+each optimizer update must contain whole windows. For less activation memory, use microbatch 1 with accumulation
 40; global batch and language quotas remain unchanged.
 
 Use the export node for preflight before occupying the training nodes:
@@ -377,8 +377,9 @@ microbatch 10, accumulation 4, and three epochs (1,600 samples/update).
 
 Use [AUDFLASH_CLUSTER.md](AUDFLASH_CLUSTER.md) for the single-node, eight-GPU
 workflow: export, verify, preflight, NCCL, smoke, adapter alignment, full training.
-Both stages use microbatch 20, accumulation 4 and four workers per GPU
-(640 samples/update). Adapter alignment runs 2,000 updates; full training runs
+Adapter training uses microbatch 10 and accumulation 8; full training uses
+microbatch 40 and accumulation 2. Both use four workers per GPU and 640
+samples/update. Full loss and WER/CER evaluation use batches of up to 40. Adapter alignment runs 2,000 updates; full training runs
 three epochs. The launcher isolates `AUDFLASH_*` settings from other AUD runs.
 
 ## Opt-in robustness experiment

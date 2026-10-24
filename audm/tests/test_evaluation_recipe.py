@@ -78,6 +78,23 @@ def test_only_unchanged_legacy_robustness_is_resume_compatible():
     assert resume_contract(previous) != resume_contract(current)
 
 
+def test_resume_regrouping_preserves_update_size(tmp_path):
+    recipe = fixture_recipe(tmp_path)
+    _, _, receipt = load_recipe(recipe)
+    receipt["resolved"].update(per_device_train_batch_size=10, gradient_accumulation_steps=8)
+    run = tmp_path / "run"
+    run.mkdir()
+    (run / "training_recipe.json").write_text(json.dumps(receipt))
+    output = tmp_path / "b40.yaml"
+    prepare(run, output, 40, ["en"], train_microbatch=40, accumulation=2)
+    config, _, updated = load_recipe(output)
+    assert config.per_device_train_batch_size == 40
+    assert config.gradient_accumulation_steps == 2
+    validate_resume_recipe(receipt, updated)
+    with pytest.raises(ValueError, match="preserve examples"):
+        prepare(run, tmp_path / "wrong.yaml", 40, ["en"], train_microbatch=40, accumulation=1)
+
+
 @pytest.mark.parametrize("excluded", [["typo"], "en", [3], ["ar", "en"]])
 def test_invalid_evaluation_exclusions(tmp_path, excluded):
     recipe = fixture_recipe(tmp_path)

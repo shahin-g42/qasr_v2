@@ -6,28 +6,32 @@ full training. The launcher uses direct `torchrun`, ignores Slurm settings, and
 never invokes `srun` or `scontrol`. Node rank is always 0; master defaults to
 127.0.0.1:29611. The other AUD launchers and recipes are unchanged.
 
-Both `audflash_adapter_1node.yaml` and `audflash_full_1node.yaml` use microbatch
-10, accumulation 8 and eight GPUs: **640 samples per optimizer update**.
+`audflash_adapter_1node.yaml` uses microbatch 10 and accumulation 8;
+`audflash_full_1node.yaml` uses microbatch 40 and accumulation 2. Both use eight
+GPUs and **640 samples per optimizer update**.
 There are four DataLoader workers per GPU (32 total), with persistent workers
 and pinned memory. BF16, ZeRO-2 and gradient checkpointing are enabled.
-Evaluation batch size is one per GPU. The transcript limit is **512 tokens**,
+Full loss evaluation and WER/CER generation use batches of up to 40; adapter
+evaluation retains batch size one. Chinese full evaluation is temporarily disabled. The transcript limit is **512 tokens**,
 inherited from the stage-02 data recipe; evaluation can generate up to 768 tokens
 including language markers and EOS. Transcripts above 512 are replaced by the
 resilient loader unless removed in a separately prepared filtered manifest.
 
-Exact `--resume auto` requires the original recipe and data. A run started with
-microbatch 20 cannot resume optimizer state under the new microbatch-10 recipe.
-Its checkpoint remains usable as a weights-only source in a new output directory.
+`--resume auto` requires unchanged training data and settings, but permits
+microbatch/accumulation regrouping that preserves examples per rank per update.
+Use the receipt-derived recipe helper in [ROBUST_CLUSTER.md](ROBUST_CLUSTER.md)
+when changing an existing run; it preserves optimizer/scheduler state.
 See [MEMORY_AUDIT.md](MEMORY_AUDIT.md) for the memory fix, longest-shape rehearsal
 and safe restart instructions. The update also restores Gemma audio-layer
 checkpointing that was missing from the AUD port; existing exports need no
 re-export. The existing YAML filenames and launcher defaults
 are retained; no alternative production config is needed.
 
-The same stage-02 training/evaluation manifests and augmentations are reused.
-Code-switching is disabled; no code-switch index is needed. Each pair of
-10-example microbatches contains the 20-example language quota (10 Arabic,
-6 English, 2 Hindi, 1 Malayalam, 1 Chinese), repeated four times per optimizer update.
+The same stage-02 training manifests and augmentations are reused. Full evaluation
+uses the same manifests except Chinese. Code-switching is disabled; no code-switch
+index is needed. A full-training microbatch contains two 20-example language quota
+windows (each: 10 Arabic, 6 English, 2 Hindi, 1 Malayalam, 1 Chinese), repeated
+four times per optimizer update. Chinese training remains enabled.
 Gemma SpecAugment operates on log-mel features. Recordings longer than 30 seconds
 are filtered to respect the audio tower's context limit; manifest paths stay the same.
 
@@ -142,7 +146,7 @@ bash audm/scripts/audflash.sh adapter "$NODE_RANK" --resume auto
 bash audm/scripts/audflash.sh full "$NODE_RANK" --resume auto
 ```
 
-Microbatch 10 is a conservative starting point, not a measured H100 memory
+Microbatch 40 is the requested full-training setting, not a measured H100 memory
 guarantee. Run the longest-shape rehearsal in [MEMORY_AUDIT.md](MEMORY_AUDIT.md)
 before restarting a long run; ordinary smoke batches may contain only short clips.
 

@@ -112,6 +112,8 @@ def test_two_updates_checkpoint_resume_and_clean_eval(tmp_path, tokenizer, varia
     changed = yaml.safe_load(recipe.read_text())
     changed["training"]["per_device_eval_batch_size"] = 32
     changed["evaluation"] = {"exclude_languages": ["en"]}
+    if encoder_kind == "audflash_gemma":
+        changed["training"].update(per_device_train_batch_size=2, gradient_accumulation_steps=1)
     recipe.write_text(yaml.safe_dump(changed))
     run(
         recipe,
@@ -120,8 +122,12 @@ def test_two_updates_checkpoint_resume_and_clean_eval(tmp_path, tokenizer, varia
         resume=str(tmp_path / "run/checkpoint-1"),
     )
     resumed = AUDForConditionalGeneration.from_pretrained(tmp_path / "run", local_files_only=True)
+    assert json.loads((tmp_path / "run/trainer_state.json").read_text())["global_step"] == 2
     for key in reference:
-        torch.testing.assert_close(resumed.state_dict()[key], reference[key], rtol=0, atol=0)
+        tolerance = (
+            dict(rtol=1e-5, atol=1e-6) if encoder_kind == "audflash_gemma" else dict(rtol=0, atol=0)
+        )
+        torch.testing.assert_close(resumed.state_dict()[key], reference[key], **tolerance)
     with pytest.raises(FileExistsError, match="not empty"):
         run(recipe, model=tmp_path / "aud", output=tmp_path / "run")
 
@@ -172,7 +178,7 @@ def test_production_recipes_reuse_stage02_data_and_augmentation(nodes):
             assert config.eval_manifest == {
                 k: v for k, v in original["eval_manifest"].items() if k != "zh"
             }
-            assert config.per_device_eval_batch_size == 32
+            assert config.per_device_eval_batch_size == 40
         else:
             assert config.eval_manifest == original["eval_manifest"]
         assert config.augmentation == original["augmentation"]
@@ -181,8 +187,13 @@ def test_production_recipes_reuse_stage02_data_and_augmentation(nodes):
         assert config.code_switch_index is None
         assert config.code_switch_probability == 0.0
         assert config.expected_world_size == nodes * 8
-        assert config.per_device_train_batch_size == ({1: 10, 5: 10, 8: 10, 12: 5}[nodes])
-        assert config.gradient_accumulation_steps == (8 if nodes == 1 else 4)
+        assert (
+            config.per_device_train_batch_size
+            == ({1: 40 if stage == "full" else 10, 5: 10, 8: 10, 12: 5}[nodes])
+        )
+        assert config.gradient_accumulation_steps == (
+            (2 if stage == "full" else 8) if nodes == 1 else 4
+        )
         assert config.dataloader_num_workers == 4
         assert (
             config.per_device_train_batch_size * config.gradient_accumulation_steps * nodes * 8
@@ -194,6 +205,34 @@ def test_production_recipes_reuse_stage02_data_and_augmentation(nodes):
             assert config.max_steps == -1
         else:
             assert config.max_steps == 2000
+
+
+def test_40_example_microbatches_keep_all_language_quotas():
+    class Part:
+        def __init__(self, language, size):
+            self.language, self.size = language, size
+
+        def __len__(self):
+            return self.size
+
+    quotas = {"ar": 10, "en": 6, "hi": 2, "ml": 1, "zh": 1}
+    parts = [Part(lang, quota * 8 * 4) for lang, quota in quotas.items()]
+    ends = np.cumsum([len(p) for p in parts])
+    seen = set()
+    for rank in range(8):
+        sampler = WeightedStratifiedLanguageSampler(
+            parts, batch_size=20, seed=42, num_replicas=8, rank=rank, language_batch_counts=quotas
+        )
+        loader = torch.utils.data.DataLoader(range(int(ends[-1])), batch_size=40, sampler=sampler)
+        batches = list(loader)
+        assert len(batches) == 2
+        for batch in batches:
+            counts = {k: 0 for k in quotas}
+            for index in batch.tolist():
+                seen.add(index)
+                counts[parts[int(np.searchsorted(ends, index, side="right"))].language] += 1
+            assert counts == {k: 2 * v for k, v in quotas.items()}
+    assert len(seen) == 640
 
 
 @pytest.mark.parametrize("variant", ["audpro", "audturbo", "audflash", "audflash_gemma"])

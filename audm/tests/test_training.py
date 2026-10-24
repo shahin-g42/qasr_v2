@@ -107,6 +107,12 @@ def test_two_updates_checkpoint_resume_and_clean_eval(tmp_path, tokenizer, varia
     reference = {k: v.clone() for k, v in final.state_dict().items()}
     assert Path(tmp_path / "run/checkpoint-1/optimizer.pt").is_file()
     assert Path(tmp_path / "run/checkpoint-1/preprocessor_config.json").is_file()
+    # An evaluation-only change must preserve optimizer/scheduler and produce
+    # exactly the same final weights when resuming the completed first update.
+    changed = yaml.safe_load(recipe.read_text())
+    changed["training"]["per_device_eval_batch_size"] = 32
+    changed["evaluation"] = {"exclude_languages": ["en"]}
+    recipe.write_text(yaml.safe_dump(changed))
     run(
         recipe,
         model=tmp_path / "aud",
@@ -162,7 +168,13 @@ def test_production_recipes_reuse_stage02_data_and_augmentation(nodes):
     for path in (root / "configs").glob(f"*_{nodes}node.yaml"):
         config, stage, receipt = load_recipe(path, model="/tmp/export", output="/tmp/run")
         assert config.train_manifest == original["train_manifest"]
-        assert config.eval_manifest == original["eval_manifest"]
+        if path.name.startswith("audflash_full"):
+            assert config.eval_manifest == {
+                k: v for k, v in original["eval_manifest"].items() if k != "zh"
+            }
+            assert config.per_device_eval_batch_size == 32
+        else:
+            assert config.eval_manifest == original["eval_manifest"]
         assert config.augmentation == original["augmentation"]
         if path.name.startswith("audflash"):
             assert config.max_duration_seconds == 30.0
@@ -288,8 +300,10 @@ def test_numeric_debug_default_preserves_training_step(monkeypatch):
     from audm.trainer import AUDTrainer
 
     monkeypatch.delenv("AUD_DEBUG_NUMERICS", raising=False)
+
     def step(self, model, inputs, num_items_in_batch=None):
         assert not torch.is_anomaly_enabled()
         return num_items_in_batch
+
     monkeypatch.setattr(PredictionLoggingTrainer, "training_step", step)
     assert object.__new__(AUDTrainer)._aud_training_step(None, {}, 7) == 7

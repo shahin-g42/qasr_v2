@@ -57,11 +57,49 @@ def resilient_parts(parts, **options):
 
 def resume_contract(receipt):
     value = copy.deepcopy(receipt)
-    value.pop("recipe", None)
-    value.pop("data_recipe", None)
+    # Compare resolved semantics; YAML formatting/paths and evaluation-only
+    # changes must not require throwing away the optimizer and scheduler.
+    for key in ("recipe", "data_recipe", "recipe_sha256", "data_recipe_sha256"):
+        value.pop(key, None)
     for key in ("resume_from_checkpoint", "smoke_test", "output_dir", "model_name_or_path"):
         value["resolved"].pop(key, None)
+    for key in ("eval_manifest", "per_device_eval_batch_size"):
+        value["resolved"].pop(key, None)
+    # v5 added optional effects but left v4's waveform/SpecAugment behavior
+    # unchanged. Compare those legacy policies across versions only when none
+    # of the new effect keys is present; older numerical policies stay blocked.
+    effects = value.get("robustness", {}).get("augmentation", {}).get("effects", {})
+    if value.get("robustness_version") in (4, 5) and not {
+        "silence",
+        "pitch",
+        "clipping",
+        "dropout",
+        "compression",
+    }.intersection(effects):
+        value["robustness_version"] = 4
     return value
+
+
+def validate_resume_recipe(previous, current):
+    if resume_contract(previous) != resume_contract(current):
+        raise ValueError(
+            "Resume recipe/data changed; start a new fine-tuning run with --model instead"
+        )
+    old = previous["resolved"].get("eval_manifest")
+    new = current["resolved"].get("eval_manifest")
+    if old != new and (
+        not isinstance(old, dict)
+        or not isinstance(new, dict)
+        or any(old.get(language) != paths for language, paths in new.items())
+    ):
+        raise ValueError("Resume permits removing evaluation languages, not adding/relabeling data")
+
+
+def validate_resume_snapshot(previous, current):
+    # Resume contracts already require identical training manifests. Allow
+    # evaluation removal only; every retained manifest must still match exactly.
+    if any(previous.get(path) != metadata for path, metadata in current.items()):
+        raise ValueError("Training/evaluation manifests changed since the original run")
 
 
 def run(recipe, model=None, output=None, smoke=False, resume=None):
@@ -94,10 +132,7 @@ def run(recipe, model=None, output=None, smoke=False, resume=None):
         if not previous_path.is_file():
             raise ValueError("Resume requires the original run's training_recipe.json")
         previous = json.loads(previous_path.read_text())
-        if resume_contract(previous) != resume_contract(receipt):
-            raise ValueError(
-                "Resume recipe/data changed; start a new fine-tuning run with --model instead"
-            )
+        validate_resume_recipe(previous, receipt)
     elif root.exists() and any(root.iterdir()):
         # A successful rehearsal lives in its own subdirectory; production may
         # create new files in the parent without overwriting that rehearsal.
@@ -156,8 +191,9 @@ def run(recipe, model=None, output=None, smoke=False, resume=None):
     }
     if checkpoint:
         snapshot_path = root / "data_snapshot.json"
-        if not snapshot_path.is_file() or json.loads(snapshot_path.read_text()) != snapshot:
-            raise ValueError("Training/evaluation manifests changed since the original run")
+        if not snapshot_path.is_file():
+            raise ValueError("Resume requires the original run's data_snapshot.json")
+        validate_resume_snapshot(json.loads(snapshot_path.read_text()), snapshot)
     if args.should_save:
         root.mkdir(parents=True, exist_ok=True)
         write_json(root / "training_recipe.json", receipt)

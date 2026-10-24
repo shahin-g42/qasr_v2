@@ -1,6 +1,9 @@
 # 12 nodes x 8 GPUs. Quotas apply over 4 microbatches: 5 x 4 = 20 examples/GPU/update.
 data_recipe: ../../configs/v8.1/02_full_12node.yaml
 stage: full
+# Temporarily exclude Chinese from loss, WER/CER and prediction examples; retain training.
+evaluation:
+  exclude_languages: [zh]
 training:
   # Gemma audio context: filter longer recordings without truncation.
   max_duration_seconds: 30.0
@@ -8,7 +11,7 @@ training:
   code_switch_index: null
   code_switch_probability: 0.0
   per_device_train_batch_size: 5
-  per_device_eval_batch_size: 1
+  per_device_eval_batch_size: 32
   gradient_accumulation_steps: 4
   num_train_epochs: 3.0
   max_steps: -1

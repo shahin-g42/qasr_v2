@@ -316,9 +316,47 @@ AUD_COMMAND=train bash audm/scripts/train_distributed.sh \
 
 Resume requires a complete Trainer checkpoint with optimizer state. If the newest
 checkpoint is incomplete, specify an earlier completed checkpoint explicitly.
-Changed recipes/manifests/robustness policies require weights-only continuation
-into a new output. The current robustness receipt is version 5; persistent-worker
-RNG/prefetch state is not restored bit-for-bit.
+Changed training recipes/manifests/robustness policies require weights-only
+continuation into a new output. Evaluation batch size changes and removal of
+evaluation languages can retain optimizer/scheduler state. All retained manifest
+snapshots must still match. The current robustness receipt is version 5; a v4
+policy using only unchanged legacy effects remains resume-compatible.
+Persistent-worker RNG/prefetch state is not restored bit-for-bit.
+
+### Change full evaluation to batch 32 without Chinese
+
+AudFlash full recipes now use evaluation batch size 32 and exclude `zh` from loss,
+WER/CER, and prediction examples. Chinese training and its sampler quota remain
+enabled. Evaluation and checkpoint saving remain every 3,700 optimizer updates.
+The WER callback still generates one utterance at a time; evaluation batch size
+controls the loss pass only.
+
+For an existing run, derive a recipe from its saved receipt so newer augmentation
+defaults do not accidentally change the training experiment. After the old job
+has stopped and the checkout is updated, use the existing environment and paths:
+
+```bash
+python -m audm.evaluation_recipe \
+  --run "$AUD_TYPED_ROOT/full" \
+  --output "$AUD_TYPED_ROOT/full-eval32-nozh.yaml" \
+  --batch-size 32 --exclude-language zh
+
+export AUD_TYPED_FULL_CONFIG="$AUD_TYPED_ROOT/full-eval32-nozh.yaml"
+export AUD_NNODES=1 AUD_GPUS_PER_NODE=8 AUD_NODE_RANK=0
+export AUD_MASTER_ADDR="$(hostname -s)"
+set -o pipefail
+AUD_COMMAND=train bash audm/scripts/train_distributed.sh \
+  --config "$AUD_TYPED_FULL_CONFIG" --model "$AUD_TYPED_ROOT/decoder" \
+  --output "$AUD_TYPED_ROOT/full" --resume auto \
+  2>&1 | tee "$AUD_TYPED_ROOT/logs/train-full-eval32-nozh.log"
+```
+
+The recipe helper refuses to overwrite an existing file. Reuse the generated YAML
+on later resumes. `--resume auto` restores the latest saved complete checkpoint,
+not unsaved updates or the decoder's initial weights. Checkpoint integrity and the
+original training contract are still enforced. Do not launch a second job while
+the old eight-rank job is alive. Benchmark the first loss evaluation on the actual
+cluster; the CPU regression tests do not establish H100 peak memory at batch 32.
 
 ## Updating an existing experiment for silence padding
 

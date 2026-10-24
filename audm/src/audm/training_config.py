@@ -34,7 +34,7 @@ DATA_KEYS = {
 def load_recipe(path, model=None, output=None, smoke=False, resume=None):
     path = Path(path).resolve()
     recipe = yaml.safe_load(path.read_text())
-    allowed = {"data_recipe", "stage", "training", "robustness"}
+    allowed = {"data_recipe", "stage", "training", "robustness", "evaluation"}
     if not isinstance(recipe, dict) or set(recipe) - allowed:
         raise ValueError(f"AUD recipe accepts only {sorted(allowed)}")
     data_path = (path.parent / recipe["data_recipe"]).resolve()
@@ -59,6 +59,19 @@ def load_recipe(path, model=None, output=None, smoke=False, resume=None):
                 merged[key] = value
         overrides["augmentation"] = merged
     values.update(overrides)
+    evaluation = recipe.get("evaluation", {})
+    if not isinstance(evaluation, dict) or set(evaluation) - {"exclude_languages"}:
+        raise ValueError("evaluation accepts only exclude_languages")
+    excluded = evaluation.get("exclude_languages", [])
+    if not isinstance(excluded, list) or any(not isinstance(lang, str) for lang in excluded):
+        raise ValueError("evaluation.exclude_languages must be a list of language codes")
+    if excluded:
+        manifests = values.get("eval_manifest")
+        if not isinstance(manifests, dict) or set(excluded) - set(manifests):
+            raise ValueError("Excluded evaluation languages must exist in eval_manifest")
+        values["eval_manifest"] = {k: v for k, v in manifests.items() if k not in excluded}
+        if not values["eval_manifest"]:
+            raise ValueError("Keep at least one evaluation language")
     values.update(freeze_audio_tower=stage != "full", freeze_language_model=stage == "adapter")
     if model:
         values["model_name_or_path"] = str(Path(model).resolve())

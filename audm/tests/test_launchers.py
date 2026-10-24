@@ -57,6 +57,7 @@ def test_direct_launch_ignores_inherited_slurm_environment(tmp_path, variant, ra
     python.write_text(
         "#!/usr/bin/env python3\n"
         "import json, os, sys\n"
+        "if sys.argv[1].endswith('/console.py'): os.execv(sys.executable, [sys.executable, *sys.argv[1:]])\n"
         "if sys.argv[1:2] == ['-m']:\n"
         "    with open(os.environ['CAPTURE'], 'w') as f:\n"
         "        json.dump(sys.argv[1:], f)\n"
@@ -222,7 +223,9 @@ def test_next_run_direct_launcher_uses_fresh_stage_sources(tmp_path):
     capture = tmp_path / "args.json"
     python = tmp_path / "python"
     python.write_text(
-        "#!/usr/bin/env python3\nimport json, os, sys\nwith open(os.environ['CAPTURE'], 'w') as f: json.dump({'args':sys.argv[1:], 'slurm':os.environ['AUD_USE_SLURM']}, f)\n"
+        "#!/usr/bin/env python3\nimport json, os, sys\n"
+        "if sys.argv[1].endswith('/console.py'): os.execv(sys.executable, [sys.executable, *sys.argv[1:]])\n"
+        "with open(os.environ['CAPTURE'], 'w') as f: json.dump({'args':sys.argv[1:], 'slurm':os.environ['AUD_USE_SLURM']}, f)\n"
     )
     python.chmod(0o755)
     env = dict(

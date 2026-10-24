@@ -45,6 +45,17 @@ The full source encoder and decoder weights are loaded; bridge tensor provenance
 is recorded explicitly. Flash reuses a compatible trained GQASR bridge by default. The existing
 QASR bridge cannot be reused with Captioner representations.
 
+## Console and debug logs
+
+All distributed shell launchers now show concise rank-zero progress, metrics,
+checkpoints and failure summaries. Full diagnostics are saved automatically in
+new timestamped folders under the run root's `logs` directory (`AUD_LOG_DIR`
+overrides this): `console.log`, per-rank `rank-000.log` files, `launcher.log`, and
+`command.json`. Read `logs/latest-node0.txt` for the latest folder on node zero.
+No `tee` is needed; previous logs are retained. Direct Python CLI/library calls
+keep their original output. See [the runbook](NEXT_RUN_CLUSTER.md#6-console-and-troubleshooting-logs)
+for examples and details.
+
 ## Artifact format and namespace
 
 Each export is one directory containing **one `model.safetensors`**, `config.json`,

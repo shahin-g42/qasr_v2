@@ -26,6 +26,9 @@ if [[ "${AUD_USE_SLURM:-0}" == 1 ]]; then
   AUD_NODE_RANK="${SLURM_PROCID:?Slurm launch requires SLURM_PROCID}"
 fi
 : "${AUD_NODE_RANK:?Set AUD_NODE_RANK on each node}"
-exec "${AUD_PYTHON:-python}" -m torch.distributed.run --nnodes="$AUD_NNODES" --nproc-per-node="$AUD_GPUS_PER_NODE" \
+# The relay retains all launcher output and per-rank diagnostics separately.
+# It lives outside --output so fresh-run and resume checks are unchanged.
+exec "${AUD_PYTHON:-python}" "$AUD_ROOT/audm/src/audm/console.py" -- \
+  "${AUD_PYTHON:-python}" -m torch.distributed.run --nnodes="$AUD_NNODES" --nproc-per-node="$AUD_GPUS_PER_NODE" \
   --node-rank="$AUD_NODE_RANK" --master-addr="$AUD_MASTER_ADDR" --master-port="$AUD_MASTER_PORT" \
   --max-restarts=0 -m audm "$AUD_COMMAND" "$@"

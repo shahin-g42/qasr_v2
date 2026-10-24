@@ -135,7 +135,7 @@ Full training loads the saved adapter model and unfreezes encoder, adapter and
 decoder. It uses three weighted coverage epochs, base LR 2e-5, decoder factor
 0.5, embedding factor 0.25, warmup 500, cosine schedule and checkpoint saving and evaluation every
 3,700 updates. Final model is saved at `$AUDFLASH_RUN_ROOT/full`. Launcher logs
-are under `$AUDFLASH_RUN_ROOT/launcher-logs`; W&B names are
+are under `$AUDFLASH_RUN_ROOT/logs`; W&B names are
 `audflash-adapter-1node` and `audflash-full-1node`.
 
 To resume an interrupted stage with unchanged settings:

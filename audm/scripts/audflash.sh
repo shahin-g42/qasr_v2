@@ -95,11 +95,7 @@ if not torch.cuda.is_bf16_supported():
     raise RuntimeError('BF16 support is required')
 print(f'Torch={torch.__version__}; CUDA={torch.version.cuda}; GPUs={torch.cuda.device_count()}', flush=True)
 PY
-    LOG_DIR="$AUD_RUN_ROOT/launcher-logs"
-    mkdir -p "$LOG_DIR"
-    LOG_FILE="$LOG_DIR/${ACTION}-$(date -u +%Y%m%dT%H%M%SZ)-rank${RANK}-$$.log"
-    exec > >(tee -a "$LOG_FILE") 2>&1
-    echo "AudFlash action=$ACTION rank=$RANK master=$AUD_MASTER_ADDR:$AUD_MASTER_PORT log=$LOG_FILE"
+    export AUD_LOG_DIR="${AUD_LOG_DIR:-$AUD_RUN_ROOT/logs}"
     exec bash "$AUD_REPO_ROOT/audm/scripts/train_distributed.sh" "${ARGS[@]}" "$@"
     ;;
   help|-h|--help)

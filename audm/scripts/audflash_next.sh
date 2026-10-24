@@ -6,6 +6,7 @@ export PYTHONPATH="$AUD_ROOT/audm/src:$AUD_ROOT/src${PYTHONPATH:+:$PYTHONPATH}"
 export AUD_PYTHON="${AUD_PYTHON:-python}"
 export AUD_NEXT_SOURCE="${AUD_NEXT_SOURCE:-$AUD_ROOT/output/audflash-audio-types-v1/full/checkpoint-3700}"
 export AUD_NEXT_ROOT="${AUD_NEXT_ROOT:-$AUD_ROOT/output/audflash-stride1-ctc-v1}"
+export AUD_LOG_DIR="${AUD_LOG_DIR:-$AUD_NEXT_ROOT/logs}"
 export AUD_USE_SLURM=0 AUD_NNODES=1 AUD_NODE_RANK=0 AUD_GPUS_PER_NODE=8 AUD_COMMAND=train
 export AUD_MASTER_ADDR="${AUD_MASTER_ADDR:-127.0.0.1}"
 export AUD_MASTER_PORT="${AUD_MASTER_PORT:-29579}"
@@ -17,6 +18,10 @@ export PYTHONUNBUFFERED=1
 
 command="${1:-help}"
 shift || true
+logged() {
+  exec "$AUD_PYTHON" "$AUD_ROOT/audm/src/audm/console.py" \
+    --log-root "${AUD_LOG_DIR:-$AUD_NEXT_ROOT/logs}" --name "$1" -- "${@:2}"
+}
 stage_model() {
   case "$1" in
     adaptation) AUD_STAGE_MODEL="$AUD_NEXT_ROOT/export" ;;
@@ -28,13 +33,13 @@ case "$command" in
   prepare)
     exec "$AUD_PYTHON" -m audm.next_run --source "$AUD_NEXT_SOURCE" --output "$AUD_NEXT_ROOT" "$@" ;;
   tokenizer)
-    exec "$AUD_PYTHON" -m audm.ctc tokenizer --config "$AUD_NEXT_ROOT/adaptation.yaml" --output "$AUD_NEXT_ROOT/ctc-tokenizer" "$@" ;;
+    logged tokenizer "$AUD_PYTHON" -m audm.ctc tokenizer --config "$AUD_NEXT_ROOT/adaptation.yaml" --output "$AUD_NEXT_ROOT/ctc-tokenizer" "$@" ;;
   export)
-    exec "$AUD_PYTHON" -m audm.ctc export --model-path "$AUD_NEXT_SOURCE" --tokenizer-path "$AUD_NEXT_ROOT/ctc-tokenizer" --output "$AUD_NEXT_ROOT/export" "$@" ;;
+    logged export "$AUD_PYTHON" -m audm.ctc export --model-path "$AUD_NEXT_SOURCE" --tokenizer-path "$AUD_NEXT_ROOT/ctc-tokenizer" --output "$AUD_NEXT_ROOT/export" "$@" ;;
   verify)
     directory="${1:-export}"; shift || true
     case "$directory" in export|adaptation|full) ;; *) echo 'Verify export, adaptation or full' >&2; exit 2 ;; esac
-    exec "$AUD_PYTHON" -m audm verify "$AUD_NEXT_ROOT/$directory" --device "${AUD_VERIFY_DEVICE:-cuda:0}" "$@" ;;
+    logged "verify-$directory" "$AUD_PYTHON" -m audm verify "$AUD_NEXT_ROOT/$directory" --device "${AUD_VERIFY_DEVICE:-cuda:0}" "$@" ;;
   health)
     exec "$AUD_PYTHON" -m audm.health "$@" ;;
   fused-check)
@@ -45,7 +50,7 @@ case "$command" in
   preflight)
     stage="${1:?Specify adaptation or full}"; shift
     stage_model "$stage"
-    exec "$AUD_PYTHON" -m audm preflight --config "$AUD_NEXT_ROOT/$stage.yaml" --model "$AUD_STAGE_MODEL" --output "$AUD_NEXT_ROOT/$stage" "$@" ;;
+    logged "preflight-$stage" "$AUD_PYTHON" -m audm preflight --config "$AUD_NEXT_ROOT/$stage.yaml" --model "$AUD_STAGE_MODEL" --output "$AUD_NEXT_ROOT/$stage" "$@" ;;
   probe)
     stage="${1:?Specify adaptation or full}"; shift
     stage_model "$stage"

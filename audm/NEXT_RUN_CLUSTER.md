@@ -100,14 +100,11 @@ there is no download or corpus-finalization step here.
 bash audm/scripts/audflash_next.sh prepare
 cat "$AUD_NEXT_ROOT/plan.json"
 
-bash audm/scripts/audflash_next.sh tokenizer \
-  2>&1 | tee "$AUD_NEXT_ROOT/logs/tokenizer.log"
+bash audm/scripts/audflash_next.sh tokenizer
 
-bash audm/scripts/audflash_next.sh export \
-  2>&1 | tee "$AUD_NEXT_ROOT/logs/export.log"
+bash audm/scripts/audflash_next.sh export
 
-bash audm/scripts/audflash_next.sh verify export \
-  2>&1 | tee "$AUD_NEXT_ROOT/logs/verify-export.log"
+bash audm/scripts/audflash_next.sh verify export
 ```
 
 The export checks source tensors, preserves legitimate Gemma infinite clamp
@@ -132,17 +129,13 @@ PY
 ## 3. Check assets, collectives and adaptation memory
 
 ```bash
-bash audm/scripts/audflash_next.sh preflight adaptation --scan \
-  2>&1 | tee "$AUD_NEXT_ROOT/logs/preflight-adaptation.log"
+bash audm/scripts/audflash_next.sh preflight adaptation --scan
 
-bash audm/scripts/audflash_next.sh distributed-check \
-  2>&1 | tee "$AUD_NEXT_ROOT/logs/distributed-check.log"
+bash audm/scripts/audflash_next.sh distributed-check
 
-bash audm/scripts/audflash_next.sh probe adaptation --steps 3 \
-  2>&1 | tee "$AUD_NEXT_ROOT/logs/probe-adaptation.log"
+bash audm/scripts/audflash_next.sh probe adaptation --steps 3
 
-bash audm/scripts/audflash_next.sh smoke adaptation \
-  2>&1 | tee "$AUD_NEXT_ROOT/logs/smoke-adaptation.log"
+bash audm/scripts/audflash_next.sh smoke adaptation
 
 python -m audm verify "$AUD_NEXT_ROOT/adaptation/smoke-test" --device cuda:0
 ```
@@ -162,11 +155,9 @@ a new scratch directory. Repeat smoke tests need a new scratch `--output` path.
 ## 4. Run adaptation
 
 ```bash
-bash audm/scripts/audflash_next.sh adaptation \
-  2>&1 | tee "$AUD_NEXT_ROOT/logs/adaptation.log"
+bash audm/scripts/audflash_next.sh adaptation
 
-bash audm/scripts/audflash_next.sh verify adaptation \
-  2>&1 | tee "$AUD_NEXT_ROOT/logs/verify-adaptation.log"
+bash audm/scripts/audflash_next.sh verify adaptation
 ```
 
 Review WER/CER, category metrics and aggregate CTC eligibility. If many speech
@@ -176,19 +167,15 @@ investigation before unfreezing. A synthetic probe is not an accuracy test.
 ## 5. Rehearse and run full training
 
 ```bash
-bash audm/scripts/audflash_next.sh preflight full --scan \
-  2>&1 | tee "$AUD_NEXT_ROOT/logs/preflight-full.log"
+bash audm/scripts/audflash_next.sh preflight full --scan
 
-bash audm/scripts/audflash_next.sh probe full --steps 3 \
-  2>&1 | tee "$AUD_NEXT_ROOT/logs/probe-full.log"
+bash audm/scripts/audflash_next.sh probe full --steps 3
 
-bash audm/scripts/audflash_next.sh smoke full \
-  2>&1 | tee "$AUD_NEXT_ROOT/logs/smoke-full.log"
+bash audm/scripts/audflash_next.sh smoke full
 
 python -m audm verify "$AUD_NEXT_ROOT/full/smoke-test" --device cuda:0
 
-bash audm/scripts/audflash_next.sh full \
-  2>&1 | tee "$AUD_NEXT_ROOT/logs/full.log"
+bash audm/scripts/audflash_next.sh full
 
 bash audm/scripts/audflash_next.sh verify full
 ```
@@ -198,7 +185,47 @@ probe/smoke output. It starts a fresh optimizer and runs three coverage epochs.
 On a later interruption of this *new* run, `full --resume auto` is available;
 that is separate from the weights-only initialization described above.
 
-## 6. Observe performance while it runs
+## 6. Console and troubleshooting logs
+
+The launchers print one timestamped rank-zero progress stream: loss, learning
+rate, gradient norm, update time, estimated remaining training time (excluding
+evaluation/save pauses), WER/CER, checkpoint paths and errors. The first three
+logged warning/error messages on rank zero are summarized; every full message
+remains in the diagnostics. Library progress bars, model/optimizer dumps,
+example transcripts, repeated dataset notices and per-rank memory JSON stay in
+files. W&B metrics, Trainer state and performance reports are unchanged.
+
+Each invocation creates a **new** timestamped directory under
+`$AUD_NEXT_ROOT/logs` (override with `AUD_LOG_DIR`). It prints this path at startup:
+
+- `console.log`: the concise console transcript.
+- `rank-000.log`, `rank-001.log`, etc.: full training stdout/stderr, Python/native
+  messages, warnings, tracebacks and DataLoader subprocess output for that rank.
+- `launcher.log`: torchrun startup/shutdown and any output emitted before worker
+  capture starts. Single-process tokenizer/export output is also captured here.
+- `command.json`: the exact command used; environment secrets are not dumped.
+
+No extra `tee` is needed. Failures retain a nonzero exit status and a short error
+on the console; Ctrl-C is forwarded to this launch's process group. Logging files
+are outside model/checkpoint directories and do not change resume semantics.
+Direct `python -m audm ...` calls keep their existing output; use the supplied
+shell launchers for the clean console. Preparation/health commands still print
+their useful report directly.
+
+To inspect the most recent launch from another shell (a later verification
+command updates this pointer, so keep the printed path for a specific run):
+
+```bash
+AUD_LOG_RUN="$(cat "$AUD_NEXT_ROOT/logs/latest-node0.txt")"
+tail -n 100 -f "$AUD_LOG_RUN/rank-000.log"
+# Inspect launcher.log if failure occurred before workers started.
+```
+
+For multi-node AudPro/AudTurbo, each node writes a separate timestamped folder
+under its run root's `logs`, with `latest-node<N>.txt` pointing to that node's
+latest invocation. Only global rank zero prints training metrics.
+
+## 7. Observe performance while it runs
 
 From another shell with the same paths/environment:
 

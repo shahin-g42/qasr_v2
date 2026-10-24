@@ -51,6 +51,13 @@ def main(argv=None):
     check.add_argument("--expected-world-size", type=int, required=True)
     values = vars(parser.parse_args(argv))
     command = values.pop("command")
+    from .console import worker_logging
+
+    with worker_logging():
+        _dispatch(command, values)
+
+
+def _dispatch(command, values):
     if command == "export":
         from .export import export_model
 

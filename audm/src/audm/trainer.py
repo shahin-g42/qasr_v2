@@ -221,6 +221,14 @@ class AUDTrainer(PredictionLoggingTrainer):
         )
         return self.optimizer
 
+    def evaluate(self, eval_dataset=None, ignore_keys=None, metric_key_prefix="eval"):
+        from .console import emit
+
+        emit(f"Evaluation | step {self.state.global_step:,} | loss and WER/CER")
+        return super().evaluate(
+            eval_dataset=eval_dataset, ignore_keys=ignore_keys, metric_key_prefix=metric_key_prefix
+        )
+
     def _save(self, output_dir=None, state_dict=None):
         super()._save(output_dir, state_dict)
         directory = output_dir or self.args.output_dir

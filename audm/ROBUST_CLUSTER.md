@@ -4,6 +4,12 @@ Run each step to completion before starting the next. All GPU commands run direc
 on **one node with eight H100s**, without Slurm/srun. Use a persistent terminal.
 Stop on a failed command; do not continue to production after a failed probe.
 
+Distributed training now has a concise console by default, with complete per-rank
+and launcher diagnostics in a new timestamped log folder printed at startup.
+The `tee` commands below remain compatible but copy only the concise console;
+the separate `rank-*.log` and `launcher.log` files contain troubleshooting detail.
+See [console and troubleshooting logs](NEXT_RUN_CLUSTER.md#6-console-and-troubleshooting-logs).
+
 The sequence is **completed AudFlash checkpoint → add category tokens → decoder
 warm-up → full training**. Do not repeat adapter-only training: its frozen decoder
 cannot learn the new tokens. Choose your best completed full-training checkpoint,

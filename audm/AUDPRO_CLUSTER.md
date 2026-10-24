@@ -116,7 +116,7 @@ do not wait for it to finish before launching the next node. Full training loads
 `$AUDPRO_MODEL` and trains encoder, adapter/projector and decoder. The final model
 is saved at `$AUDPRO_RUN_ROOT/full`; checkpoints are inside that directory.
 W&B run name: `audpro-full-5node`. Launcher logs are in
-`$AUDPRO_RUN_ROOT/launcher-logs`.
+`$AUDPRO_RUN_ROOT/logs`.
 
 To resume an interrupted run, use the same config, paths and world size, and run
 on all five nodes:

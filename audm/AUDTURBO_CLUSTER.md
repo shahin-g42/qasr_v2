@@ -205,7 +205,7 @@ Use a new output and a weights-only start for a changed fine-tuning recipe.
 
 ```text
 $AUD_MODEL/                         Initial AudTurbo export
-$AUD_RUN_ROOT/launcher-logs/        Per-action, per-node logs
+$AUD_RUN_ROOT/logs/        Per-action, per-node logs
 $AUD_RUN_ROOT/adapter/smoke-test/   Rehearsal output
 $AUD_RUN_ROOT/adapter/              Aligned model, metrics, numbered checkpoints
 $AUD_RUN_ROOT/full/                 Fine-tuned model, metrics, numbered checkpoints

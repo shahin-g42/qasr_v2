@@ -146,7 +146,7 @@ def test_two_ranks_persistent_workers_save_resume_and_eval(tmp_path, tokenizer, 
         log = tmp_path / f"distributed-{attempt}.log"
         with log.open("w") as handle:
             process = subprocess.Popen(
-                cmd + suffix,
+                [sys.executable, str(root / "audm/src/audm/console.py"), "--", *cmd, *suffix],
                 env=env,
                 stdout=handle,
                 stderr=subprocess.STDOUT,
@@ -158,7 +158,19 @@ def test_two_ranks_persistent_workers_save_resume_and_eval(tmp_path, tokenizer, 
                 os.killpg(process.pid, signal.SIGTERM)
                 process.wait(timeout=15)
                 pytest.fail(f"Distributed rehearsal timed out: {log.read_text()[-20000:]}")
-        assert code == 0, log.read_text()[-24000:]
+        latest = Path((tmp_path / "logs/latest-node0.txt").read_text().strip())
+        diagnostics = "\n".join(
+            p.read_text(errors="replace")[-12000:] for p in latest.glob("*.log")
+        )
+        assert code == 0, log.read_text()[-24000:] + diagnostics
+        assert "Training finished" in log.read_text()
+        assert "Checkpoint saved" in log.read_text()
+        assert "Final model saved" in log.read_text()
+        assert "Loading weights:" not in log.read_text()
+        assert "AUD architecture:" not in log.read_text()
+        assert (latest / "rank-000.log").stat().st_size > 0
+        assert (latest / "rank-001.log").stat().st_size > 0
+        assert not (tmp_path / "run/logs").exists()
         state = json.loads((tmp_path / "run/trainer_state.json").read_text())
         assert state["global_step"] == 2
         assert any("eval_loss" in row for row in state["log_history"])

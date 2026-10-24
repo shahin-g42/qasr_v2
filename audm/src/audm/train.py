@@ -292,6 +292,16 @@ def run(recipe, model=None, output=None, smoke=False, resume=None):
         llm_lr_factor=config.llm_lr_factor,
         embed_lr_factor=config.embed_lr_factor,
     )
+    from .console import active, emit
+
+    if active():
+        from transformers.trainer_callback import PrinterCallback, ProgressCallback
+
+        from .console_callback import ConsoleCallback
+
+        trainer.remove_callback(PrinterCallback)
+        trainer.remove_callback(ProgressCallback)
+        trainer.add_callback(ConsoleCallback(model.config.variant, stage))
     trainer.aud_receipt = receipt
     trainer.aud_label_smoothing = config.label_smoothing
     trainer.aud_efficiency = config.aud_efficiency
@@ -358,6 +368,7 @@ def run(recipe, model=None, output=None, smoke=False, resume=None):
         trainer.save_metrics("eval", trainer.evaluate())
     trainer.save_model()
     trainer.save_state()
+    emit(f"Final model saved | {root}")
 
 
 def preflight(recipe, model, output, scan=False):
